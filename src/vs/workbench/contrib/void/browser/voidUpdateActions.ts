@@ -127,7 +127,7 @@ const notifyUpdate = (res: VoidCheckUpdateRespose & { message: string }, notifSe
 	// })
 }
 const notifyErrChecking = (notifService: INotificationService): INotificationHandle => {
-	const message = `Void Error: There was an error checking for updates. If this persists, please get in touch or reinstall Void [here](https://voideditor.com/download-beta)!`
+	const message = `Neural Inverse Error: There was an error checking for updates. If this persists, please get in touch or reinstall Void [here](https://voideditor.com/download-beta)!`
 	const notifController = notifService.notify({
 		severity: Severity.Info,
 		message: message,

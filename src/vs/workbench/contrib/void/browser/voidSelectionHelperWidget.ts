@@ -69,9 +69,8 @@ export class SelectionHelperContribution extends Disposable implements IEditorCo
 			this._reactComponentDisposable = res;
 			this._rerender = res.rerender;
 
-			this._register(this._reactComponentDisposable);
-
-
+			// CHANGE THIS LINE: Use 'res' directly instead of the class property
+			this._register(res);
 		});
 
 		this._rootHTML = root;
