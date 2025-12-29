@@ -387,32 +387,6 @@ export class ActivityBarCompositeBar extends PaneCompositeBar {
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
-			id: 'workbench.action.activityBarLocation.default',
-			title: {
-				...localize2('positionActivityBarDefault', 'Move Activity Bar to Side'),
-				mnemonicTitle: localize({ key: 'miDefaultActivityBar', comment: ['&& denotes a mnemonic'] }, "&&Default"),
-			},
-			shortTitle: localize('default', "Default"),
-			category: Categories.View,
-			toggled: ContextKeyExpr.equals(`config.${LayoutSettings.ACTIVITY_BAR_LOCATION}`, ActivityBarPosition.DEFAULT),
-			menu: [{
-				id: MenuId.ActivityBarPositionMenu,
-				order: 1
-			}, {
-				id: MenuId.CommandPalette,
-				when: ContextKeyExpr.notEquals(`config.${LayoutSettings.ACTIVITY_BAR_LOCATION}`, ActivityBarPosition.DEFAULT),
-			}]
-		});
-	}
-	run(accessor: ServicesAccessor): void {
-		const configurationService = accessor.get(IConfigurationService);
-		configurationService.updateValue(LayoutSettings.ACTIVITY_BAR_LOCATION, ActivityBarPosition.DEFAULT);
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
 			id: 'workbench.action.activityBarLocation.top',
 			title: {
 				...localize2('positionActivityBarTop', 'Move Activity Bar to Top'),
@@ -423,7 +397,7 @@ registerAction2(class extends Action2 {
 			toggled: ContextKeyExpr.equals(`config.${LayoutSettings.ACTIVITY_BAR_LOCATION}`, ActivityBarPosition.TOP),
 			menu: [{
 				id: MenuId.ActivityBarPositionMenu,
-				order: 2
+				order: 1
 			}, {
 				id: MenuId.CommandPalette,
 				when: ContextKeyExpr.notEquals(`config.${LayoutSettings.ACTIVITY_BAR_LOCATION}`, ActivityBarPosition.TOP),
@@ -433,58 +407,6 @@ registerAction2(class extends Action2 {
 	run(accessor: ServicesAccessor): void {
 		const configurationService = accessor.get(IConfigurationService);
 		configurationService.updateValue(LayoutSettings.ACTIVITY_BAR_LOCATION, ActivityBarPosition.TOP);
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'workbench.action.activityBarLocation.bottom',
-			title: {
-				...localize2('positionActivityBarBottom', 'Move Activity Bar to Bottom'),
-				mnemonicTitle: localize({ key: 'miBottomActivityBar', comment: ['&& denotes a mnemonic'] }, "&&Bottom"),
-			},
-			shortTitle: localize('bottom', "Bottom"),
-			category: Categories.View,
-			toggled: ContextKeyExpr.equals(`config.${LayoutSettings.ACTIVITY_BAR_LOCATION}`, ActivityBarPosition.BOTTOM),
-			menu: [{
-				id: MenuId.ActivityBarPositionMenu,
-				order: 3
-			}, {
-				id: MenuId.CommandPalette,
-				when: ContextKeyExpr.notEquals(`config.${LayoutSettings.ACTIVITY_BAR_LOCATION}`, ActivityBarPosition.BOTTOM),
-			}]
-		});
-	}
-	run(accessor: ServicesAccessor): void {
-		const configurationService = accessor.get(IConfigurationService);
-		configurationService.updateValue(LayoutSettings.ACTIVITY_BAR_LOCATION, ActivityBarPosition.BOTTOM);
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'workbench.action.activityBarLocation.hide',
-			title: {
-				...localize2('hideActivityBar', 'Hide Activity Bar'),
-				mnemonicTitle: localize({ key: 'miHideActivityBar', comment: ['&& denotes a mnemonic'] }, "&&Hidden"),
-			},
-			shortTitle: localize('hide', "Hidden"),
-			category: Categories.View,
-			toggled: ContextKeyExpr.equals(`config.${LayoutSettings.ACTIVITY_BAR_LOCATION}`, ActivityBarPosition.HIDDEN),
-			menu: [{
-				id: MenuId.ActivityBarPositionMenu,
-				order: 4
-			}, {
-				id: MenuId.CommandPalette,
-				when: ContextKeyExpr.notEquals(`config.${LayoutSettings.ACTIVITY_BAR_LOCATION}`, ActivityBarPosition.HIDDEN),
-			}]
-		});
-	}
-	run(accessor: ServicesAccessor): void {
-		const configurationService = accessor.get(IConfigurationService);
-		configurationService.updateValue(LayoutSettings.ACTIVITY_BAR_LOCATION, ActivityBarPosition.HIDDEN);
 	}
 });
 

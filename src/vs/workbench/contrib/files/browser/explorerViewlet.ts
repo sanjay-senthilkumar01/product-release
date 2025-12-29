@@ -112,10 +112,10 @@ export class ExplorerViewletViewsContribution extends Disposable implements IWor
 			ctorDescriptor: new SyncDescriptor(OpenEditorsView),
 			containerIcon: openEditorsViewIcon,
 			order: 0,
-			canToggleVisibility: true,
+			canToggleVisibility: false,
 			canMoveView: true,
 			collapsed: false,
-			hideByDefault: true,
+			hideByDefault: false,
 			focusCommand: {
 				id: 'workbench.files.action.focusOpenEditorsView',
 				keybindings: { primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyCode.KeyE) }

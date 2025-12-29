@@ -123,8 +123,8 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: VOID_TOGGLE_SETTINGS_ACTION_ID,
-			title: nls.localize2('voidSettings', "Void: Toggle Settings"),
-			icon: Codicon.settingsGear,
+			title: nls.localize2('voidSettings', "Neural Inverse: Toggle Settings"),
+			icon: Codicon.server,
 			menu: [
 				{
 					id: MenuId.LayoutControlMenuSubmenu,
