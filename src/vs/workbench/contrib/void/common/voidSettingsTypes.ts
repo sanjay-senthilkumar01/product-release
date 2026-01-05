@@ -435,7 +435,7 @@ export const isFeatureNameDisabled = (featureName: FeatureName, settingsState: V
 
 
 
-export type ChatMode = 'agent' | 'gather' | 'normal'
+export type ChatMode = 'ask' | 'reason' | 'validate' | 'copilot'
 
 
 export type GlobalSettings = {
@@ -461,7 +461,7 @@ export const defaultGlobalSettings: GlobalSettings = {
 	syncApplyToChat: true,
 	syncSCMToChat: true,
 	enableFastApply: true,
-	chatMode: 'agent',
+	chatMode: 'ask',
 	autoApprove: {},
 	showInlineSuggestions: true,
 	includeToolLintErrors: true,

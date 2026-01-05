@@ -33,6 +33,15 @@ import './voidUpdateActions.js'
 
 import './convertToLLMMessageWorkbenchContrib.js'
 
+// neural inverse
+// import './neuralInverseService.js'
+
+// register Extension Transfer Service
+import './extensionTransferService.js'
+
+// register MCP Service
+import '../common/mcpService.js'
+
 // tools
 import './toolsService.js'
 import './terminalToolService.js'
@@ -61,6 +70,8 @@ import './miscWokrbenchContrib.js'
 // register file service (for explorer context menu)
 import './fileService.js'
 
+import './voidCommandBarService.js' // Register Command Bar Service
+
 // register source control management
 import './voidSCMService.js'
 
@@ -83,3 +94,5 @@ import '../common/voidUpdateService.js'
 
 // model service
 import '../common/voidModelService.js'
+
+

@@ -22,11 +22,11 @@ import { ChatMode, displayInfoOfProviderName, FeatureName, isFeatureNameDisabled
 import { ICommandService } from '../../../../../../../platform/commands/common/commands.js';
 import { WarningBox } from '../void-settings-tsx/WarningBox.js';
 import { getModelCapabilities, getIsReasoningEnabledState } from '../../../../common/modelCapabilities.js';
-import { AlertTriangle, File, Ban, Check, ChevronRight, Dot, FileIcon, Pencil, Undo, Undo2, X, Flag, Copy as CopyIcon, Info, CirclePlus, Ellipsis, CircleEllipsis, Folder, ALargeSmall, TypeOutline, Text } from 'lucide-react';
+import { AlertTriangle, File, Ban, Check, ChevronRight, Dot, FileIcon, Pencil, Undo, Undo2, X, Flag, Copy as CopyIcon, Info, CirclePlus, Ellipsis, CircleEllipsis, Folder, ALargeSmall, TypeOutline, Text, ArrowRight } from 'lucide-react';
 import { ChatMessage, CheckpointEntry, StagingSelectionItem, ToolMessage } from '../../../../common/chatThreadServiceTypes.js';
 import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolName, ToolName, LintErrorItem, ToolApprovalType, toolApprovalTypes } from '../../../../common/toolsServiceTypes.js';
 import { CopyButton, EditToolAcceptRejectButtonsHTML, IconShell1, JumpToFileButton, JumpToTerminalButton, StatusIndicator, StatusIndicatorForApplyButton, useApplyStreamState, useEditToolStreamState } from '../markdown/ApplyBlockHoverButtons.js';
-import { IsRunningType } from '../../../chatThreadService.js';
+import { IsRunningType } from '../../../chatThreadServiceInterface.js';
 import { acceptAllBg, acceptBorder, buttonFontSize, buttonTextColor, rejectAllBg, rejectBg, rejectBorder } from '../../../../common/helpers/colors.js';
 import { builtinToolNames, isABuiltinToolName, MAX_FILE_CHARS_PAGE, MAX_TERMINAL_INACTIVE_TIME } from '../../../../common/prompt/prompts.js';
 import { RawToolCallObj } from '../../../../common/sendLLMMessageTypes.js';
@@ -248,15 +248,17 @@ const ReasoningOptionSlider = ({ featureName }: { featureName: FeatureName }) =>
 
 
 const nameOfChatMode = {
-	'normal': 'Chat',
-	'gather': 'Gather',
-	'agent': 'Agent',
+	'ask': 'Ask',
+	'reason': 'Reason',
+	'validate': 'Validate',
+	'copilot': 'Copilot',
 }
 
 const detailOfChatMode = {
-	'normal': 'Normal chat',
-	'gather': 'Reads files, but can\'t edit',
-	'agent': 'Edits files and uses tools',
+	'ask': 'Agent can read files but cannot edit. Use for understanding code or asking questions.',
+	'reason': 'Agent plans and designs. Use for complex problems or architectural decisions.',
+	'validate': 'Agent validates changes using tools. Use for running tests or verification.',
+	'copilot': 'Agent executes changes directly. Use for coding, refactoring, or fixing bugs.',
 }
 
 
@@ -266,7 +268,7 @@ const ChatModeDropdown = ({ className }: { className: string }) => {
 	const voidSettingsService = accessor.get('IVoidSettingsService')
 	const settingsState = useSettingsState()
 
-	const options: ChatMode[] = useMemo(() => ['normal', 'gather', 'agent'], [])
+	const options: ChatMode[] = useMemo(() => ['ask', 'reason', 'validate', 'copilot'], [])
 
 	const onChangeOption = useCallback((newVal: ChatMode) => {
 		voidSettingsService.setGlobalSetting('chatMode', newVal)
@@ -281,6 +283,8 @@ const ChatModeDropdown = ({ className }: { className: string }) => {
 		getOptionDropdownName={(val) => nameOfChatMode[val]}
 		getOptionDropdownDetail={(val) => detailOfChatMode[val]}
 		getOptionsEqual={(a, b) => a === b}
+		dropdownTitle='Mode'
+		itemLayout='multiline'
 	/>
 
 }
@@ -342,12 +346,12 @@ export const VoidChatArea: React.FC<VoidChatAreaProps> = ({
 			ref={divRef}
 			className={`
 				gap-x-1
-                flex flex-col p-2 relative input text-left shrink-0
-                rounded-md
-                bg-void-bg-1
+                flex flex-col p-3 relative input text-left shrink-0
+                rounded-xl
+				bg-void-bg-1
 				transition-all duration-200
-				border border-void-border-3 focus-within:border-void-border-1 hover:border-void-border-1
-				max-h-[80vh] overflow-y-auto
+				border border-void-border-2 focus-within:border-void-border-1 hover:border-void-border-1
+				max-h-[70vh] overflow-y-auto
                 ${className}
             `}
 			onClick={(e) => {
@@ -387,7 +391,7 @@ export const VoidChatArea: React.FC<VoidChatAreaProps> = ({
 						<ReasoningOptionSlider featureName={featureName} />
 
 						<div className='flex items-center flex-wrap gap-x-2 gap-y-1 text-nowrap '>
-							{featureName === 'Chat' && <ChatModeDropdown className='text-xs text-void-fg-3 bg-void-bg-1 border border-void-border-2 rounded py-0.5 px-1' />}
+							{featureName === 'Chat' && <ChatModeDropdown className='text-xs text-void-fg-3' />}
 							<ModelDropdown featureName={featureName} className='text-xs text-void-fg-3 bg-void-bg-1 rounded' />
 						</div>
 					</div>
@@ -430,7 +434,7 @@ export const ButtonSubmit = ({ className, disabled, ...props }: ButtonProps & Re
 		// data-tooltip-place='left'
 		{...props}
 	>
-		<IconArrowUp size={DEFAULT_BUTTON_SIZE} className="stroke-[2] p-[2px]" />
+		<ArrowRight size={DEFAULT_BUTTON_SIZE} className="stroke-[2] p-[4px]" />
 	</button>
 }
 
@@ -3077,8 +3081,8 @@ export const SidebarChat = () => {
 	>
 		<VoidInputBox2
 			enableAtToMention
-			className={`min-h-[81px] px-0.5 py-0.5`}
-			placeholder={`@ to mention, ${keybindingString ? `${keybindingString} to add a selection. ` : ''}Enter instructions...`}
+			className={`min-h-[20px] px-0.5 py-0.5`}
+			placeholder={`Ask Anything ( ${keybindingString ? `${keybindingString} ` : ''}), @ to mention.`}
 			onChangeText={onChangeText}
 			onKeyDown={onKeyDown}
 			onFocus={() => { chatThreadsService.setCurrentlyFocusedMessageIdx(undefined) }}
@@ -3101,7 +3105,7 @@ export const SidebarChat = () => {
 		].map((text, index) => (
 			<div
 				key={index}
-				className='py-1 px-2 rounded text-sm bg-zinc-700/5 hover:bg-zinc-700/10 dark:bg-zinc-300/5 dark:hover:bg-zinc-300/10 cursor-pointer opacity-80 hover:opacity-100'
+				className='py-0.5 text-sm cursor-pointer opacity-80 hover:opacity-100 overflow-hidden text-ellipsis whitespace-nowrap'
 				onClick={() => onSubmit(text)}
 			>
 				{text}
@@ -3120,31 +3124,52 @@ export const SidebarChat = () => {
 		</div>
 	</div>
 
-	const landingPageInput = <div>
-		<div className='pt-8'>
+	const workspaceName = accessor.get('ILabelService').getWorkspaceLabel(accessor.get('IWorkspaceContextService').getWorkspace())
+
+	const workspaceContext = accessor.get('IWorkspaceContextService').getWorkspace();
+	const isWorkspaceOpen = workspaceContext.folders.length > 0 || !!workspaceContext.configuration;
+	const titleText = isWorkspaceOpen ? workspaceName : 'Neural Inverse';
+
+	const landingPageInput = <div className='flex flex-col items-center w-full'>
+		{/* Input Area Wrapper */}
+		<div className='w-full max-w-[95%] flex flex-col gap-3'>
+			{/* Header Text - Left aligned, larger, above input */}
+
+			<div className='flex justify-start px-1 select-none'>
+				<span className='text-lg font-bold text-void-fg-1 opacity-90'>
+					{isWorkspaceOpen ? workspaceName : 'Neural Inverse'}
+				</span>
+			</div>
 			{inputChatArea}
 		</div>
 	</div>
 
 	const landingPageContent = <div
 		ref={sidebarRef}
-		className='w-full h-full max-h-full flex flex-col overflow-auto px-4'
+		className='w-full h-full max-h-full flex flex-col px-4'
 	>
-		<ErrorBoundary>
-			{landingPageInput}
-		</ErrorBoundary>
+		<div className='flex-1 flex flex-col justify-center'>
+			<ErrorBoundary>
+				{landingPageInput}
+			</ErrorBoundary>
+		</div>
 
-		{Object.keys(chatThreadsState.allThreads).length > 1 ? // show if there are threads
-			<ErrorBoundary>
-				<div className='pt-8 mb-2 text-void-fg-3 text-root select-none pointer-events-none'>Previous Threads</div>
-				<PastThreadsList />
-			</ErrorBoundary>
-			:
-			<ErrorBoundary>
-				<div className='pt-8 mb-2 text-void-fg-3 text-root select-none pointer-events-none'>Suggestions</div>
-				{initiallySuggestedPromptsHTML}
-			</ErrorBoundary>
-		}
+		<div className='flex-shrink-0 pb-4'>
+			{Object.keys(chatThreadsState.allThreads).length > 1 ? // show if there are threads
+				<ErrorBoundary>
+					<div className='mb-2 text-void-fg-3 text-root select-none pointer-events-none font-medium opacity-80'></div>
+					<PastThreadsList />
+				</ErrorBoundary>
+				:
+				<ErrorBoundary>
+					<div className='mb-2 text-void-fg-3 text-root select-none pointer-events-none font-medium opacity-80'>Suggestions</div>
+					{initiallySuggestedPromptsHTML}
+				</ErrorBoundary>
+			}
+			<div className='mt-4 text-[10px] text-void-fg-4 opacity-60 select-none'>
+				AI may make mistakes. Double-check all generated code.
+			</div>
+		</div>
 	</div>
 
 

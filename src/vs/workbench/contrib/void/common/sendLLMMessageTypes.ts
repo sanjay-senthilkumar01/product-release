@@ -104,11 +104,13 @@ type SendLLMType = {
 	messages: LLMChatMessage[]; // the type of raw chat messages that we send to Anthropic, OAI, etc
 	separateSystemMessage: string | undefined;
 	chatMode: ChatMode | null;
+	allowedToolNames?: string[];
 } | {
 	messagesType: 'FIMMessage';
 	messages: LLMFIMMessage;
 	separateSystemMessage?: undefined;
 	chatMode?: undefined;
+	allowedToolNames?: undefined;
 }
 export type ServiceSendLLMMessageParams = {
 	onText: OnText;
@@ -119,6 +121,7 @@ export type ServiceSendLLMMessageParams = {
 	modelSelectionOptions: ModelSelectionOptions | undefined;
 	overridesOfModel: OverridesOfModel | undefined;
 	onAbort: OnAbort;
+	mcpTools?: InternalToolInfo[];
 } & SendLLMType;
 
 // params to the true sendLLMMessage function

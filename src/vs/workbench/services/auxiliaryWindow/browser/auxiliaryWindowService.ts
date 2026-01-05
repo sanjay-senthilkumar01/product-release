@@ -26,6 +26,8 @@ import { BaseWindow } from '../../../browser/window.js';
 import { IWorkbenchEnvironmentService } from '../../environment/common/environmentService.js';
 import { IHostService } from '../../host/browser/host.js';
 import { IWorkbenchLayoutService } from '../../layout/browser/layoutService.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js'; // Neural Inverse
+import { ILifecycleService } from '../../lifecycle/common/lifecycle.js'; // Neural Inverse
 
 export const IAuxiliaryWindowService = createDecorator<IAuxiliaryWindowService>('auxiliaryWindowService');
 
@@ -48,6 +50,8 @@ export interface IAuxiliaryWindowOpenOptions {
 
 	readonly nativeTitlebar?: boolean;
 	readonly disableFullscreen?: boolean;
+
+	readonly type?: string; // Neural Inverse: Persistent window type
 }
 
 export interface IAuxiliaryWindowService {
@@ -59,6 +63,8 @@ export interface IAuxiliaryWindowService {
 	open(options?: IAuxiliaryWindowOpenOptions): Promise<IAuxiliaryWindow>;
 
 	getWindow(windowId: number): IAuxiliaryWindow | undefined;
+
+	getWindowByType(type: string): IAuxiliaryWindow | undefined; // Neural Inverse
 }
 
 export interface BeforeAuxiliaryWindowUnloadEvent {
@@ -81,6 +87,8 @@ export interface IAuxiliaryWindow extends IDisposable {
 	layout(): void;
 
 	createState(): IAuxiliaryWindowOpenOptions;
+
+	readonly type?: string; // Neural Inverse
 }
 
 const DEFAULT_AUX_WINDOW_DIMENSIONS = new Dimension(DEFAULT_AUX_WINDOW_SIZE.width, DEFAULT_AUX_WINDOW_SIZE.height);
@@ -110,7 +118,8 @@ export class AuxiliaryWindow extends BaseWindow implements IAuxiliaryWindow {
 		stylesHaveLoaded: Barrier,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IHostService hostService: IHostService,
-		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
+		readonly type?: string // Neural Inverse
 	) {
 		super(window, undefined, hostService, environmentService);
 
@@ -235,6 +244,7 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 	readonly onDidOpenAuxiliaryWindow = this._onDidOpenAuxiliaryWindow.event;
 
 	private readonly windows = new Map<number, IAuxiliaryWindow>();
+	private readonly windowsByType = new Map<string, IAuxiliaryWindow>(); // Neural Inverse
 
 	constructor(
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
@@ -242,9 +252,28 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 		@IConfigurationService protected readonly configurationService: IConfigurationService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 		@IHostService protected readonly hostService: IHostService,
-		@IWorkbenchEnvironmentService protected readonly environmentService: IWorkbenchEnvironmentService
+		@IWorkbenchEnvironmentService protected readonly environmentService: IWorkbenchEnvironmentService,
+		@IStorageService private readonly storageService: IStorageService, // Neural Inverse
+		@ILifecycleService private readonly lifecycleService: ILifecycleService // Neural Inverse
 	) {
 		super();
+		this.registerListeners(); // Neural Inverse
+	}
+
+	private registerListeners(): void {
+		this.lifecycleService.onWillShutdown(() => this.saveByTypeWindowsState());
+	}
+
+	private saveByTypeWindowsState(): void {
+		for (const [type, window] of this.windowsByType) {
+			if (type === 'agentManager') { // For now, specifically handling agentManager, or generic
+				const state = {
+					isOpen: true,
+					bounds: window.createState().bounds
+				};
+				this.storageService.store(`neuralInverse.${type}.state`, JSON.stringify(state), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			}
+		}
 	}
 
 	async open(options?: IAuxiliaryWindowOpenOptions): Promise<IAuxiliaryWindow> {
@@ -262,11 +291,19 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 		const containerDisposables = new DisposableStore();
 		const { container, stylesLoaded } = this.createContainer(targetWindow, containerDisposables, options);
 
-		const auxiliaryWindow = this.createAuxiliaryWindow(targetWindow, container, stylesLoaded);
+		const auxiliaryWindow = this.createAuxiliaryWindow(targetWindow, container, stylesLoaded, options);
 
 		const registryDisposables = new DisposableStore();
 		this.windows.set(targetWindow.vscodeWindowId, auxiliaryWindow);
-		registryDisposables.add(toDisposable(() => this.windows.delete(targetWindow.vscodeWindowId)));
+		if (options?.type) {
+			this.windowsByType.set(options.type, auxiliaryWindow);
+		}
+		registryDisposables.add(toDisposable(() => {
+			this.windows.delete(targetWindow.vscodeWindowId);
+			if (options?.type) {
+				this.windowsByType.delete(options.type);
+			}
+		}));
 
 		const eventDisposables = new DisposableStore();
 
@@ -296,8 +333,8 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 		return auxiliaryWindow;
 	}
 
-	protected createAuxiliaryWindow(targetWindow: CodeWindow, container: HTMLElement, stylesLoaded: Barrier): AuxiliaryWindow {
-		return new AuxiliaryWindow(targetWindow, container, stylesLoaded, this.configurationService, this.hostService, this.environmentService);
+	protected createAuxiliaryWindow(targetWindow: CodeWindow, container: HTMLElement, stylesLoaded: Barrier, options?: IAuxiliaryWindowOpenOptions): AuxiliaryWindow {
+		return new AuxiliaryWindow(targetWindow, container, stylesLoaded, this.configurationService, this.hostService, this.environmentService, options?.type);
 	}
 
 	private async openWindow(options?: IAuxiliaryWindowOpenOptions): Promise<Window | undefined> {
@@ -523,6 +560,10 @@ export class BrowserAuxiliaryWindowService extends Disposable implements IAuxili
 
 	getWindow(windowId: number): IAuxiliaryWindow | undefined {
 		return this.windows.get(windowId);
+	}
+
+	getWindowByType(type: string): IAuxiliaryWindow | undefined {
+		return this.windowsByType.get(type);
 	}
 }
 

@@ -15,12 +15,12 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { VOID_TOGGLE_SETTINGS_ACTION_ID } from './voidSettingsPane.js';
 import { VOID_CTRL_L_ACTION_ID } from './actionIDs.js';
 import { localize2 } from '../../../../nls.js';
-import { IChatThreadService } from './chatThreadService.js';
+import { IChatThreadService } from './chatThreadServiceInterface.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 
 // ---------- Register top-level Agents menu ----------
 MenuRegistry.appendMenuItem(MenuId.MenubarMainMenu, {
-	submenu: MenuId.MenubarAgentsMenu,
+	submenu: MenuId.MenubarRecentMenu,
 	title: localize2('agentsMenu', "Agents"),
 	order: 7 // After Run (6), before Terminal (8)
 });
@@ -157,7 +157,7 @@ registerAction2(class extends Action2 {
 				weight: KeybindingWeight.VoidExtension,
 			},
 			icon: { id: 'add' },
-			menu: [{ id: MenuId.ViewTitle, group: 'navigation', when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }],
+			menu: [{ id: MenuId.ViewTitle, group: 'navigation', order: 1, when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }],
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
@@ -214,7 +214,7 @@ registerAction2(class extends Action2 {
 			id: 'void.historyAction',
 			title: 'View Past Chats',
 			icon: { id: 'history' },
-			menu: [{ id: MenuId.ViewTitle, group: 'navigation', when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }]
+			menu: [{ id: MenuId.ViewTitle, group: 'navigation', order: 2, when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }]
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
@@ -243,13 +243,29 @@ registerAction2(class extends Action2 {
 		super({
 			id: 'void.settingsAction',
 			title: `Neural Inverse's Settings`,
-			icon: { id: 'settings-gear' },
-			menu: [{ id: MenuId.ViewTitle, group: 'navigation', when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }]
+			icon: { id: 'ellipsis' },
+			menu: [{ id: MenuId.ViewTitle, group: 'navigation', order: 3, when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }]
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const commandService = accessor.get(ICommandService)
 		commandService.executeCommand(VOID_TOGGLE_SETTINGS_ACTION_ID)
+	}
+})
+
+// Close sidebar button
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'void.closeSidebar',
+			title: 'Close Sidebar',
+			icon: { id: 'close' },
+			menu: [{ id: MenuId.ViewTitle, group: 'navigation', order: 4, when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }]
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const commandService = accessor.get(ICommandService)
+		commandService.executeCommand('workbench.action.closeAuxiliaryBar')
 	}
 })
 

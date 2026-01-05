@@ -524,6 +524,7 @@ export interface IConvertToLLMMessageService {
 	prepareLLMSimpleMessages: (opts: { simpleMessages: SimpleLLMMessage[], systemMessage: string, modelSelection: ModelSelection | null, featureName: FeatureName }) => { messages: LLMChatMessage[], separateSystemMessage: string | undefined }
 	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined }>
 	prepareFIMMessage(opts: { messages: LLMFIMMessage, }): { prefix: string, suffix: string, stopTokens: string[] }
+	generateSystemMessage(chatMode: ChatMode, specialToolFormat: 'openai-style' | 'anthropic-style' | 'gemini-style' | undefined, allowedToolNames?: string[]): Promise<string>
 }
 
 export const IConvertToLLMMessageService = createDecorator<IConvertToLLMMessageService>('ConvertToLLMMessageService');
@@ -552,9 +553,15 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 			let voidRules = '';
 			for (const folder of workspaceFolders) {
 				const uri = URI.joinPath(folder.uri, '.voidrules')
-				const { model } = this.voidModelService.getModel(uri)
-				if (!model) continue
-				voidRules += model.getValue(EndOfLinePreference.LF) + '\n\n';
+				// Check existence implicitly via try-catch or use specific error handling
+				try {
+					const { model } = this.voidModelService.getModel(uri)
+					if (!model) continue
+					voidRules += model.getValue(EndOfLinePreference.LF) + '\n\n';
+				} catch (e) {
+					// Ignore missing files or read errors
+					continue;
+				}
 			}
 			return voidRules.trim();
 		}
@@ -575,15 +582,14 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 	}
 
 
-	// system message
-	private _generateChatMessagesSystemMessage = async (chatMode: ChatMode, specialToolFormat: 'openai-style' | 'anthropic-style' | 'gemini-style' | undefined) => {
+	public generateSystemMessage = async (chatMode: ChatMode, specialToolFormat: 'openai-style' | 'anthropic-style' | 'gemini-style' | undefined, allowedToolNames?: string[]) => {
 		const workspaceFolders = this.workspaceContextService.getWorkspace().folders.map(f => f.uri.fsPath)
 
 		const openedURIs = this.modelService.getModels().filter(m => m.isAttachedToEditor()).map(m => m.uri.fsPath) || [];
 		const activeURI = this.editorService.activeEditor?.resource?.fsPath;
 
 		const directoryStr = await this.directoryStrService.getAllDirectoriesStr({
-			cutOffMessage: chatMode === 'agent' || chatMode === 'gather' ?
+			cutOffMessage: chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'ask' || chatMode === 'reason' || chatMode === 'agent' || chatMode === 'gather' ?
 				`...Directories string cut off, use tools to read more...`
 				: `...Directories string cut off, ask user for more if necessary...`
 		})
@@ -593,8 +599,13 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const mcpTools = this.mcpService.getMCPTools()
 
 		const persistentTerminalIDs = this.terminalToolService.listPersistentTerminalIds()
-		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions })
+		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, allowedToolNames })
 		return systemMessage
+	}
+
+	// system message
+	private _generateChatMessagesSystemMessage = async (chatMode: ChatMode, specialToolFormat: 'openai-style' | 'anthropic-style' | 'gemini-style' | undefined) => {
+		return this.generateSystemMessage(chatMode, specialToolFormat);
 	}
 
 
@@ -763,6 +774,3 @@ gemini response:
 	}
 }
 */
-
-
-

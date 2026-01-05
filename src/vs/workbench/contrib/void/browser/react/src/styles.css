@@ -29,6 +29,7 @@
 	--void-border-3: var(--vscode-commandCenter-inactiveBorder);
 	--void-border-4: var(--vscode-editorGroup-border);
 
+
 	--void-ring-color: #007FD4;
 	--void-link-color: #007FD4;
 }

@@ -16,6 +16,7 @@ import { IModelService } from '../../../../../../../editor/common/services/model
 import { IClipboardService } from '../../../../../../../platform/clipboard/common/clipboardService.js';
 import { IContextViewService, IContextMenuService } from '../../../../../../../platform/contextview/browser/contextView.js';
 import { IFileService } from '../../../../../../../platform/files/common/files.js';
+import { ILabelService } from '../../../../../../../platform/label/common/label.js';
 import { IHoverService } from '../../../../../../../platform/hover/browser/hover.js';
 import { IThemeService } from '../../../../../../../platform/theme/common/themeService.js';
 import { ILLMMessageService } from '../../../../common/sendLLMMessageService.js';
@@ -38,12 +39,12 @@ import { IConfigurationService } from '../../../../../../../platform/configurati
 import { IPathService } from '../../../../../../../workbench/services/path/common/pathService.js'
 import { IMetricsService } from '../../../../../../../workbench/contrib/void/common/metricsService.js'
 import { URI } from '../../../../../../../base/common/uri.js'
-import { IChatThreadService, ThreadsState, ThreadStreamState } from '../../../chatThreadService.js'
+import { IChatThreadService, ThreadsState, ThreadStreamState } from '../../../chatThreadServiceInterface.js'
 import { ITerminalToolService } from '../../../terminalToolService.js'
 import { ILanguageService } from '../../../../../../../editor/common/languages/language.js'
 import { IVoidModelService } from '../../../../common/voidModelService.js'
 import { IWorkspaceContextService } from '../../../../../../../platform/workspace/common/workspace.js'
-import { IVoidCommandBarService } from '../../../voidCommandBarService.js'
+import { IVoidCommandBarService } from '../../../voidCommandBarServiceInterface.js'
 import { INativeHostService } from '../../../../../../../platform/native/common/native.js';
 import { IEditCodeService } from '../../../editCodeServiceInterface.js'
 import { IToolsService } from '../../../toolsService.js'
@@ -226,9 +227,10 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		ITerminalService: accessor.get(ITerminalService),
 		IExtensionManagementService: accessor.get(IExtensionManagementService),
 		IExtensionTransferService: accessor.get(IExtensionTransferService),
-		IMCPService: accessor.get(IMCPService),
 
+		IMCPService: accessor.get(IMCPService),
 		IStorageService: accessor.get(IStorageService),
+		ILabelService: accessor.get(ILabelService),
 
 	} as const
 	return reactAccessor

@@ -1264,6 +1264,8 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 	matchInputWidth = false,
 	gapPx = 0,
 	offsetPx = -6,
+	dropdownTitle,
+	itemLayout = 'inline',
 }: {
 	options: T[];
 	selectedOption: T | undefined;
@@ -1277,6 +1279,8 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 	matchInputWidth?: boolean;
 	gapPx?: number;
 	offsetPx?: number;
+	dropdownTitle?: string;
+	itemLayout?: 'inline' | 'multiline';
 }) => {
 	const [isOpen, setIsOpen] = useState(false);
 	const measureRef = useRef<HTMLDivElement>(null);
@@ -1370,6 +1374,11 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 				className="opacity-0 pointer-events-none absolute -left-[999999px] -top-[999999px] flex flex-col"
 				aria-hidden="true"
 			>
+				{dropdownTitle && (
+					<div className="px-3 py-1.5 text-xs font-semibold text-void-fg-3 border-b border-void-border-3 mb-1">
+						{dropdownTitle}
+					</div>
+				)}
 				{options.map((option) => {
 					const optionName = getOptionDropdownName(option);
 					const optionDetail = getOptionDropdownDetail?.(option) || '';
@@ -1377,9 +1386,9 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 					return (
 						<div key={optionName + optionDetail} className="flex items-center whitespace-nowrap">
 							<div className="w-4" />
-							<span className="flex justify-between w-full">
+							<span className={`flex ${itemLayout === 'multiline' ? 'flex-col items-start' : 'justify-between items-center'} w-full`}>
 								<span>{optionName}</span>
-								<span>{optionDetail}</span>
+								<span className={`${itemLayout === 'multiline' ? 'whitespace-normal max-w-[220px]' : ''}`}>{optionDetail}</span>
 								<span>______</span>
 							</span>
 						</div>
@@ -1398,7 +1407,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 					{getOptionDisplayName(selectedOption)}
 				</span>
 				<svg
-					className={`size-3 flex-shrink-0 ${arrowTouchesText ? '' : 'ml-auto'}`}
+					className={`size-2 flex-shrink-0 ${arrowTouchesText ? '' : 'ml-auto'}`}
 					viewBox="0 0 12 12"
 					fill="none"
 				>
@@ -1416,7 +1425,7 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 			{isOpen && (
 				<div
 					ref={refs.setFloating}
-					className="z-[100] bg-void-bg-1 border-void-border-3 border rounded shadow-lg"
+					className="z-[100] bg-void-bg-2-alt border-void-border-3 border rounded-xl shadow-lg"
 					style={{
 						position: strategy,
 						top: y ?? 0,
@@ -1430,6 +1439,11 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 					}}
 					onWheel={(e) => e.stopPropagation()}
 				><div className='overflow-auto max-h-80'>
+						{dropdownTitle && (
+							<div className="px-3 py-2 text-xs font-semibold text-void-fg-3/80 border-b border-void-border-2 mb-1">
+								{dropdownTitle}
+							</div>
+						)}
 
 						{options.map((option) => {
 							const thisOptionIsSelected = getOptionsEqual(option, selectedOption);
@@ -1439,18 +1453,18 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 							return (
 								<div
 									key={optionName}
-									className={`flex items-center px-2 py-1 pr-4 cursor-pointer whitespace-nowrap
+									className={`flex items-center px-2 py-1.5 pr-4 cursor-pointer whitespace-nowrap
 									transition-all duration-100
-									${thisOptionIsSelected ? 'bg-blue-500 text-white/80' : 'hover:bg-blue-500 hover:text-white/80'}
+									${thisOptionIsSelected ? 'bg-void-bg-3' : 'hover:bg-void-bg-2'}
 								`}
 									onClick={() => {
 										onChangeOption(option);
 										setIsOpen(false);
 									}}
 								>
-									<div className="w-4 flex justify-center flex-shrink-0">
+									<div className={`w-4 flex ${itemLayout === 'multiline' ? 'justify-center items-start pt-[3px] h-full' : 'justify-center flex-shrink-0'}`}>
 										{thisOptionIsSelected && (
-											<svg className="size-3" viewBox="0 0 12 12" fill="none">
+											<svg className="size-3 text-void-fg-1" viewBox="0 0 12 12" fill="none">
 												<path
 													d="M10 3L4.5 8.5L2 6"
 													stroke="currentColor"
@@ -1461,9 +1475,9 @@ export const VoidCustomDropdownBox = <T extends NonNullable<any>>({
 											</svg>
 										)}
 									</div>
-									<span className="flex justify-between items-center w-full gap-x-1">
-										<span>{optionName}</span>
-										<span className='opacity-60'>{optionDetail}</span>
+									<span className={`flex ${itemLayout === 'multiline' ? 'flex-col items-start gap-y-0.5' : 'justify-between items-center gap-x-1'} w-full`}>
+										<span className={`${itemLayout === 'multiline' && thisOptionIsSelected ? 'font-medium text-void-fg-1' : 'text-void-fg-2'} ${itemLayout === 'multiline' ? '' : ''}`}>{optionName}</span>
+										<span className={`${itemLayout === 'multiline' ? 'text-xs whitespace-normal break-words opacity-70 leading-tight max-w-[220px]' : 'opacity-60 text-xs'}`}>{optionDetail}</span>
 									</span>
 								</div>
 							);

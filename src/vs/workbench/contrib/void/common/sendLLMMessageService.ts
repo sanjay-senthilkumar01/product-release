@@ -101,7 +101,8 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 	}
 
 	sendLLMMessage(params: ServiceSendLLMMessageParams) {
-		const { onText, onFinalMessage, onError, onAbort, modelSelection, ...proxyParams } = params;
+
+		const { onText, onFinalMessage, onError, onAbort, modelSelection, mcpTools: extraTools, ...proxyParams } = params;
 
 		// throw an error if no model/provider selected (this should usually never be reached, the UI should check this first, but might happen in cases like Apply where we haven't built much UI/checks yet, good practice to have check logic on backend)
 		if (modelSelection === null) {
@@ -118,7 +119,10 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 
 		const { settingsOfProvider, } = this.voidSettingsService.state
 
-		const mcpTools = this.mcpService.getMCPTools()
+		const mcpTools = [
+			...(this.mcpService.getMCPTools() || []),
+			...(extraTools || [])
+		]
 
 		// add state for request id
 		const requestId = generateUuid();

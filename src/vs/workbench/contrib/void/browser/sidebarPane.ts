@@ -33,6 +33,7 @@ import { IKeybindingService } from '../../../../platform/keybinding/common/keybi
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { IVoidSettingsService } from '../common/voidSettingsService.js';
 import { mountSidebar } from './react/out/sidebar-tsx/index.js';
 
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -63,11 +64,69 @@ class SidebarViewPane extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IHoverService hoverService: IHoverService,
-		// @ICodeEditorService private readonly editorService: ICodeEditorService,
-		// @IContextKeyService private readonly editorContextKeyService: IContextKeyService,
+		@IVoidSettingsService private readonly _voidSettingsService: IVoidSettingsService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService)
+		this._register(this._voidSettingsService.onDidChangeState(() => this._updateTitle()));
+		this._updateTitle();
+	}
 
+	private _currentAnimationInterval: any = undefined;
+
+	private _updateTitle() {
+		const chatMode = this._voidSettingsService.state.globalSettings.chatMode;
+
+		let newTitle = 'Ask';
+		if (chatMode === 'ask') newTitle = 'Ask';
+		else if (chatMode === 'copilot') newTitle = 'Copilot';
+		else if (chatMode === 'reason') newTitle = 'Reasoning';
+		else if (chatMode === 'validate') newTitle = 'Validation';
+
+		if (this.title === newTitle) return;
+
+		this._animateTitle(newTitle);
+	}
+
+	private _animateTitle(targetTitle: string) {
+		if (this._currentAnimationInterval) {
+			clearInterval(this._currentAnimationInterval);
+			this._currentAnimationInterval = undefined;
+		}
+
+		// Typewriter effect:
+		// 1. Delete current title char by char
+		// 2. Type new title char by char
+		// OR just type new title over if we want faster.
+		// Let's do a "scramble" or "replace" style for "magic".
+		// Actually, user asked for "magic animation". A simple typewriter is safest and looks cool.
+
+
+		// const startTitle = this.title;
+		let phase = 'deleting'; // 'deleting' | 'typing'
+
+		// Optimization: Find common prefix?
+		// e.g. "Agent" -> "Agent (Copilot)"
+		// For now, let's just delete all and retype.
+
+		this._currentAnimationInterval = setInterval(() => {
+			const currentText = this.title;
+
+			if (phase === 'deleting') {
+				if (currentText.length > 0) {
+					this.updateTitle(currentText.slice(0, -1));
+				} else {
+					phase = 'typing';
+				}
+			} else { // typing
+				if (currentText.length < targetTitle.length) {
+					this.updateTitle(targetTitle.slice(0, currentText.length + 1));
+				} else {
+					// Done
+					clearInterval(this._currentAnimationInterval);
+					this._currentAnimationInterval = undefined;
+				}
+			}
+		}, 50); // 50ms per char
 	}
 
 
@@ -108,7 +167,7 @@ export const VOID_VIEW_ID = VOID_VIEW_CONTAINER_ID
 const viewContainerRegistry = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry);
 const container = viewContainerRegistry.registerViewContainer({
 	id: VOID_VIEW_CONTAINER_ID,
-	title: nls.localize2('voidContainer', 'Chat'), // this is used to say "Void" (Ctrl + L)
+	title: nls.localize2('voidContainer', 'Agent'), // this is used to say "Void" (Ctrl + L)
 	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [VOID_VIEW_CONTAINER_ID, {
 		mergeViewWithContainerWhenSingleView: true,
 		orientation: Orientation.HORIZONTAL,
@@ -117,7 +176,7 @@ const container = viewContainerRegistry.registerViewContainer({
 	order: 1,
 
 	rejectAddedViews: true,
-	icon: Codicon.symbolMethod,
+
 
 
 }, ViewContainerLocation.AuxiliaryBar, { doNotRegisterOpenCommand: true, isDefault: true });

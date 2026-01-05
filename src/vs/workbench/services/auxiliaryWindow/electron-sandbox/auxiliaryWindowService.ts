@@ -15,8 +15,9 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { CodeWindow } from '../../../../base/browser/window.js';
 import { mark } from '../../../../base/common/performance.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { ShutdownReason } from '../../lifecycle/common/lifecycle.js';
+import { ShutdownReason, ILifecycleService } from '../../lifecycle/common/lifecycle.js'; // Neural Inverse
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js'; // Neural Inverse
 import { Barrier } from '../../../../base/common/async.js';
 import { IHostService } from '../../host/browser/host.js';
 import { applyZoom } from '../../../../platform/window/electron-sandbox/window.js';
@@ -44,9 +45,10 @@ export class NativeAuxiliaryWindow extends AuxiliaryWindow {
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IHostService hostService: IHostService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
-		@IDialogService private readonly dialogService: IDialogService
+		@IDialogService private readonly dialogService: IDialogService,
+		override readonly type?: string // Neural Inverse
 	) {
-		super(window, container, stylesHaveLoaded, configurationService, hostService, environmentService);
+		super(window, container, stylesHaveLoaded, configurationService, hostService, environmentService, type);
 
 		if (!isMacintosh) {
 			// For now, limit this to platforms that have clear maximised
@@ -128,9 +130,11 @@ export class NativeAuxiliaryWindowService extends BrowserAuxiliaryWindowService 
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IHostService hostService: IHostService,
-		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
+		@IStorageService storageService: IStorageService, // Neural Inverse
+		@ILifecycleService lifecycleService: ILifecycleService // Neural Inverse
 	) {
-		super(layoutService, dialogService, configurationService, telemetryService, hostService, environmentService);
+		super(layoutService, dialogService, configurationService, telemetryService, hostService, environmentService, storageService, lifecycleService);
 	}
 
 	protected override async resolveWindowId(auxiliaryWindow: NativeCodeWindow): Promise<number> {
@@ -156,8 +160,8 @@ export class NativeAuxiliaryWindowService extends BrowserAuxiliaryWindowService 
 		return super.createContainer(auxiliaryWindow, disposables);
 	}
 
-	protected override createAuxiliaryWindow(targetWindow: CodeWindow, container: HTMLElement, stylesHaveLoaded: Barrier,): AuxiliaryWindow {
-		return new NativeAuxiliaryWindow(targetWindow, container, stylesHaveLoaded, this.configurationService, this.nativeHostService, this.instantiationService, this.hostService, this.environmentService, this.dialogService);
+	protected override createAuxiliaryWindow(targetWindow: CodeWindow, container: HTMLElement, stylesHaveLoaded: Barrier, options?: IAuxiliaryWindowOpenOptions): AuxiliaryWindow {
+		return new NativeAuxiliaryWindow(targetWindow, container, stylesHaveLoaded, this.configurationService, this.nativeHostService, this.instantiationService, this.hostService, this.environmentService, this.dialogService, options?.type);
 	}
 }
 

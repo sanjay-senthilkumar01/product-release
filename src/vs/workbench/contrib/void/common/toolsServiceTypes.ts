@@ -1,6 +1,6 @@
 import { URI } from '../../../../base/common/uri.js'
 import { RawMCPToolCall } from './mcpServiceTypes.js';
-import { builtinTools } from './prompt/prompts.js';
+
 import { RawToolParamsObj } from './sendLLMMessageTypes.js';
 
 
@@ -89,9 +89,25 @@ export type ToolResult<T extends BuiltinToolName | (string & {})> = T extends Bu
 
 export type BuiltinToolName = keyof BuiltinToolResultType
 
-type BuiltinToolParamNameOfTool<T extends BuiltinToolName> = keyof (typeof builtinTools)[T]['params']
+
+export type SnakeCase<S extends string> =
+	// exact acronym URI
+	S extends 'URI' ? 'uri'
+	// suffix URI: e.g. 'rootURI' -> snakeCase('root') + '_uri'
+	: S extends `${infer Prefix}URI` ? `${SnakeCase<Prefix>}_uri`
+	// default: for each char, prefix '_' on uppercase letters
+	: S extends `${infer C}${infer Rest}`
+	? `${C extends Lowercase<C> ? C : `_${Lowercase<C>}`}${SnakeCase<Rest>}`
+	: S;
+
+export type SnakeCaseKeys<T extends Record<string, any>> = {
+	[K in keyof T as SnakeCase<Extract<K, string>>]: T[K]
+};
+
+type BuiltinToolParamNameOfTool<T extends BuiltinToolName> = keyof SnakeCaseKeys<BuiltinToolCallParams[T]>
 export type BuiltinToolParamName = { [T in BuiltinToolName]: BuiltinToolParamNameOfTool<T> }[BuiltinToolName]
 
 
 export type ToolName = BuiltinToolName | (string & {})
 export type ToolParamName<T extends ToolName> = T extends BuiltinToolName ? BuiltinToolParamNameOfTool<T> : string
+
