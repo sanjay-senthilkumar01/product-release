@@ -239,7 +239,7 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 	}
 
 	protected shouldShowCompositeBar(): boolean {
-		return this.configuration.position !== ActivityBarPosition.HIDDEN;
+		return false;
 	}
 
 	protected getCompositeBarPosition(): CompositeBarPosition {

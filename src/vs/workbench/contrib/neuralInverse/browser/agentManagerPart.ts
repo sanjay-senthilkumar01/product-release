@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Dimension, getWindow } from '../../../../base/browser/dom.js';
+import { getWindow } from '../../../../base/browser/dom.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -12,11 +12,8 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { Part } from '../../../browser/part.js';
 import { IWebviewService, IWebviewElement } from '../../webview/browser/webview.js';
 import { IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
-import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IAgentRegistryService } from '../common/agentRegistryService.js';
-import { IContextGatheringService } from '../../void/browser/contextGatheringService.js';
 import { ILLMMessageService } from '../../void/common/sendLLMMessageService.js';
-
 import { IConvertToLLMMessageService } from '../../void/browser/convertToLLMMessageService.js';
 import { mountSidebar } from '../../void/browser/react/out/sidebar-tsx/index.js';
 import { toDisposable } from '../../../../base/common/lifecycle.js';
@@ -40,9 +37,7 @@ export class AgentManagerPart extends Part {
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IWebviewService private readonly webviewService: IWebviewService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IEditorService private readonly editorService: IEditorService,
 		@IAgentRegistryService private readonly agentRegistryService: IAgentRegistryService,
-		@IContextGatheringService private readonly contextGatheringService: IContextGatheringService,
 		@ILLMMessageService private readonly llmMessageService: ILLMMessageService,
 		@IConvertToLLMMessageService private readonly convertToLLMMessageService: IConvertToLLMMessageService
 	) {
@@ -119,10 +114,8 @@ export class AgentManagerPart extends Part {
 
 
 		// State Management
-		let activeView: 'manager' | 'chat' = 'chat'; // Default to Chat
 
 		const updateView = (view: 'manager' | 'chat') => {
-			activeView = view;
 			if (view === 'manager') {
 				agentContainer.style.display = 'block';
 				voidContainer.style.display = 'none';

@@ -49,7 +49,6 @@ export class QuickInputController extends Disposable {
 	private idPrefix: string;
 	private ui: QuickInputUI | undefined;
 	private dimension?: dom.IDimension;
-	private titleBarOffset?: number;
 	private enabled = true;
 	private readonly onDidAcceptEmitter = this._register(new Emitter<void>());
 	private readonly onDidCustomEmitter = this._register(new Emitter<void>());
@@ -801,7 +800,6 @@ export class QuickInputController extends Disposable {
 
 	layout(dimension: dom.IDimension, titleBarOffset: number): void {
 		this.dimension = dimension;
-		this.titleBarOffset = titleBarOffset;
 		this.updateLayout();
 	}
 

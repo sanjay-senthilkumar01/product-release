@@ -36,7 +36,6 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IVoidSettingsService } from '../common/voidSettingsService.js';
 import { mountSidebar } from './react/out/sidebar-tsx/index.js';
 
-import { Codicon } from '../../../../base/common/codicons.js';
 import { Orientation } from '../../../../base/browser/ui/sash/sash.js';
 // import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { toDisposable } from '../../../../base/common/lifecycle.js';
