@@ -13,6 +13,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions } from '../../../common/contributions.js';
 import { IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
+import { IHostService } from '../../../services/host/browser/host.js';
 import { AgentManagerPart } from './agentManagerPart.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
@@ -105,10 +106,11 @@ registerAction2(class OpenAgentManagerAction extends Action2 {
 		// Actually, since the Contribution is a singleton (effectively), we can't easily access it.
 		// BUT, we can just resolve the services and run the logic.
 		const auxWindowService = accessor.get(IAuxiliaryWindowService);
+		const hostService = accessor.get(IHostService);
 
 		let window = auxWindowService.getWindowByType(AGENT_MANAGER_WINDOW_TYPE);
-		if (window) {
-			window.window.focus();
+		if (window && !window.window.closed) {
+			hostService.focus(window.window, { force: true });
 			return;
 		}
 
