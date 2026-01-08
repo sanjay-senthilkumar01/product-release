@@ -89,6 +89,10 @@ registerAction2(class OpenEnclaveManagerAction extends Action2 {
 			id: 'neuralInverse.openEnclaveManager',
 			title: localize2('neuralInverse.openEnclaveManager', 'Neural Inverse: Open Enclave Manager'),
 			f1: true,
+			keybinding: {
+				weight: 200,
+				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyE,
+			}
 		});
 	}
 

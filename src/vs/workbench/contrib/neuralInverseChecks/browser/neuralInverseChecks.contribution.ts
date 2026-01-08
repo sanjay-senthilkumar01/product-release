@@ -89,6 +89,10 @@ registerAction2(class OpenChecksManagerAction extends Action2 {
 			id: 'neuralInverse.openChecksManager',
 			title: localize2('neuralInverse.openChecksManager', 'Neural Inverse: Open Checks Manager'),
 			f1: true,
+			keybinding: {
+				weight: 200,
+				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyC,
+			}
 		});
 	}
 
