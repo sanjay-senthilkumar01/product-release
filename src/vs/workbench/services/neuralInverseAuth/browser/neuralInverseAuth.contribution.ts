@@ -18,6 +18,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { registerAction2, Action2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { NEURAL_INVERSE_LOGO } from './neuralInverseLogo.js';
 
 // --- Actions for Command Palette ---
 
@@ -116,13 +117,73 @@ export class NeuralInverseAuthContribution extends Disposable implements IWorkbe
 		overlay.style.left = '0';
 		overlay.style.width = '100vw';
 		overlay.style.height = '100vh';
-		overlay.style.backgroundColor = '#1e1e1e';
-		overlay.style.color = '#ffffff';
-		overlay.style.zIndex = '2147483647'; // Max z-index
+
+		// Overlay Styles: White Theme
+		overlay.style.backgroundColor = '#ffffff';
+		overlay.style.color = '#000000'; // Dark text for contrast if needed
+		// ... existing zIndex, display, etc. ...
+		overlay.style.zIndex = '2147483647';
 		overlay.style.display = 'flex';
 		overlay.style.flexDirection = 'column';
 		overlay.style.alignItems = 'center';
 		overlay.style.justifyContent = 'center';
+		overlay.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+
+		// Inject keyframe styles (Premium Intro Animation)
+		const style = document.createElement('style');
+		style.textContent = `
+			@keyframes premiumScaleIn {
+				0% {
+					transform: scale(0.9) translateY(10px);
+					opacity: 0;
+					filter: blur(10px);
+				}
+				100% {
+					transform: scale(1) translateY(0);
+					opacity: 1;
+					filter: blur(0);
+				}
+			}
+			@keyframes slideUpFade {
+				0% {
+					transform: translateY(20px);
+					opacity: 0;
+				}
+				100% {
+					transform: translateY(0);
+					opacity: 1;
+				}
+			}
+			@keyframes pulse {
+				0% { transform: scale(1); }
+				50% { transform: scale(1.02); }
+				100% { transform: scale(1); }
+			}
+
+			.ni-intro-logo {
+				opacity: 0;
+				animation: premiumScaleIn 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+			}
+
+			/* Optional: Add subtle pulse after intro */
+			/* .ni-intro-logo { animation: premiumScaleIn 1.2s ..., pulse 3s infinite 2s; } */
+
+			.ni-btn {
+				opacity: 0;
+				animation: slideUpFade 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+				animation-delay: 0.5s;
+			}
+			.ni-btn:hover {
+				background-color: #358DF6 !important;
+				transform: translateY(-1px);
+				box-shadow: 0 4px 12px rgba(53, 141, 246, 0.4);
+			}
+			.ni-btn:active {
+				transform: translateY(0);
+			}
+		`;
+		document.head.appendChild(style);
 
 		const devToolsListener = (e: KeyboardEvent) => {
 			if ((e.metaKey && e.altKey && e.code === 'KeyI') || e.code === 'F12') {
@@ -131,24 +192,42 @@ export class NeuralInverseAuthContribution extends Disposable implements IWorkbe
 		};
 		window.addEventListener('keydown', devToolsListener);
 
-		const title = document.createElement('h1');
-		title.textContent = 'Neural Inverse';
-		title.style.marginBottom = '20px';
-		title.style.fontSize = '2.5em';
-		title.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
-		title.style.fontWeight = '300';
-		title.style.color = '#ffffff';
+
+		// Main Container (Column: Logo | Button)
+		const mainContainer = document.createElement('div');
+		mainContainer.style.display = 'flex';
+		mainContainer.style.flexDirection = 'column';
+		mainContainer.style.alignItems = 'center';
+		mainContainer.style.justifyContent = 'center';
+		mainContainer.style.gap = '40px';
+		mainContainer.classList.add('ni-intro-logo'); // Animate the container/logo
+
+		// Unified Logo Image
+		const logo = document.createElement('img');
+		logo.src = NEURAL_INVERSE_LOGO;
+		logo.style.width = '300px'; // Wider to accommodate text in SVG
+		logo.style.height = 'auto'; // Maintain aspect ratio
+		logo.style.objectFit = 'contain';
 
 		const loginBtn = document.createElement('button');
-		loginBtn.textContent = 'Log in with Neural Inverse';
-		loginBtn.style.padding = '12px 24px';
-		loginBtn.style.fontSize = '1.2em';
+		loginBtn.textContent = 'Login with Neural Inverse';
+		loginBtn.classList.add('ni-btn');
+
+		// Button Base Styles
+		loginBtn.style.display = 'flex';
+		loginBtn.style.alignItems = 'center';
+		loginBtn.style.justifyContent = 'center';
+		loginBtn.style.padding = '14px 40px';
+		loginBtn.style.fontSize = '1.1em';
+		loginBtn.style.fontWeight = '600';
 		loginBtn.style.cursor = 'pointer';
-		loginBtn.style.backgroundColor = '#007acc';
+		loginBtn.style.backgroundColor = '#358DF6';
 		loginBtn.style.color = 'white';
 		loginBtn.style.border = 'none';
-		loginBtn.style.borderRadius = '5px';
-		loginBtn.style.marginTop = '20px';
+		loginBtn.style.borderRadius = '8px';
+		loginBtn.style.transition = 'all 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease';
+		loginBtn.style.boxShadow = '0 4px 14px rgba(0,0,0,0.1)'; // Lighter shadow for light theme
+		loginBtn.style.minWidth = '220px';
 
 		loginBtn.onclick = async () => {
 			try {
@@ -181,8 +260,11 @@ export class NeuralInverseAuthContribution extends Disposable implements IWorkbe
 			}
 		}
 
-		overlay.appendChild(title);
-		overlay.appendChild(loginBtn);
+		// Assemble
+		mainContainer.appendChild(logo);
+		mainContainer.appendChild(loginBtn);
+
+		overlay.appendChild(mainContainer);
 
 		// Append to body to ensure it covers everything
 		document.body.appendChild(overlay);
