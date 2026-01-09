@@ -21,7 +21,6 @@ import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultS
 import { SettingsEditor2 } from '../../preferences/browser/settingsEditor2.js';
 import { SettingsEditor2Input } from '../../../services/preferences/common/preferencesEditorInput.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IPreferencesService } from '../../../services/preferences/common/preferences.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { InputBox } from '../../../../base/browser/ui/inputbox/inputBox.js';
@@ -49,7 +48,6 @@ export class NeuralInverseProfileEditor extends EditorPane {
 		@INeuralInverseUserProfileService private readonly userProfileService: INeuralInverseUserProfileService,
 
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IPreferencesService private readonly preferencesService: IPreferencesService,
 		@IContextViewService private readonly contextViewService: IContextViewService
 	) {
 		super(NeuralInverseProfileEditor.ID, group, telemetryService, themeService, storageService);
