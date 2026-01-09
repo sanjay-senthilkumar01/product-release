@@ -18,6 +18,8 @@ import { AgentManagerPart } from './agentManagerPart.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
 import '../common/agentRegistryService.js'; // Register service
+import '../../neuralInverseUserProfile/browser/neuralInverseUserProfile.contribution.js'; // Register Profile UI
+
 
 
 const AGENT_MANAGER_WINDOW_TYPE = 'agentManager';

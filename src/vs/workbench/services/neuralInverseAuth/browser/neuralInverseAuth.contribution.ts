@@ -7,6 +7,7 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { INeuralInverseAuthService } from '../common/neuralInverseAuth.js';
 import { NeuralInverseAuthService } from './neuralInverseAuthService.js';
 
+
 registerSingleton(INeuralInverseAuthService, NeuralInverseAuthService, InstantiationType.Eager);
 
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -17,36 +18,13 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { registerAction2, Action2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ServicesAccessor, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { NEURAL_INVERSE_LOGO } from './neuralInverseLogo.js';
+
 
 // --- Actions for Command Palette ---
 
-class ShowAuthStatusAction extends Action2 {
-	constructor() {
-		super({
-			id: 'neuralInverse.showAuthStatus',
-			title: { value: 'Neural Inverse: Show Auth Status', original: 'Neural Inverse: Show Auth Status' },
-			f1: true, // Show in Command Palette
-			category: { value: 'Neural Inverse', original: 'Neural Inverse' }
-		});
-	}
 
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const authService = accessor.get(INeuralInverseAuthService);
-		const notificationService = accessor.get(INotificationService);
-
-		const isAuth = await authService.isAuthenticated();
-		const token = await authService.getToken();
-		console.log('NeuralInverseAuth: Manual Check ->', isAuth, token ? 'Token exists' : 'No token');
-
-		if (isAuth) {
-			notificationService.info('Neural Inverse: Authenticated');
-		} else {
-			notificationService.warn('Neural Inverse: Not Authenticated');
-		}
-	}
-}
 
 class LogoutAction extends Action2 {
 	constructor() {
@@ -272,7 +250,6 @@ export class NeuralInverseAuthContribution extends Disposable implements IWorkbe
 }
 
 // Register Actions
-registerAction2(ShowAuthStatusAction);
 registerAction2(LogoutAction);
 
 // Register Contributions
@@ -282,5 +259,7 @@ Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench)
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench)
 	.registerWorkbenchContribution(NeuralInverseAuthContribution, LifecyclePhase.Restored);
 
+// --- Profile Editor Registration Removed (Moved to UserProfile module)
+
 // Helper interface for Service Accessor if we were to expose the contribution, but strictly not needed for this logic.
-const INeuralInverseAuthContribution = 'INeuralInverseAuthContribution'; // Placeholder
+

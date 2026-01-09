@@ -27,7 +27,6 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 	readonly onDidChangeAuthStatus = this._onDidChangeAuthStatus.event;
 
 	private _isAuthenticated = false;
-
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
 		@ISecretStorageService private readonly secretStorageService: ISecretStorageService,
@@ -68,6 +67,8 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 		}
 	}
 
+
+
 	async isAuthenticated(): Promise<boolean> {
 		if (this._isAuthenticated) return true;
 		const token = await this.secretStorageService.get(TOKEN_KEY);
@@ -77,6 +78,8 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 	async getToken(): Promise<string | undefined> {
 		return this.secretStorageService.get(TOKEN_KEY);
 	}
+
+
 
 	async login(): Promise<void> {
 		const verifier = this.generateCodeVerifier();
@@ -141,6 +144,9 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 			if (accessToken) {
 				await this.secretStorageService.set(TOKEN_KEY, accessToken);
 				this._isAuthenticated = true;
+
+
+
 				this._onDidChangeAuthStatus.fire(true);
 
 				// Clear verifier
@@ -155,6 +161,7 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 	async logout(): Promise<void> {
 		await this.secretStorageService.delete(TOKEN_KEY);
 		this._isAuthenticated = false;
+
 		this._onDidChangeAuthStatus.fire(false);
 
 		// Optional: Open logout URL
