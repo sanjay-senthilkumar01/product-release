@@ -435,7 +435,7 @@ export const isFeatureNameDisabled = (featureName: FeatureName, settingsState: V
 
 
 
-export type ChatMode = 'ask' | 'reason' | 'validate' | 'copilot'
+export type ChatMode = 'ask' | 'reason' | 'validate' | 'copilot' | 'agent' | 'gather'
 
 
 export type GlobalSettings = {
