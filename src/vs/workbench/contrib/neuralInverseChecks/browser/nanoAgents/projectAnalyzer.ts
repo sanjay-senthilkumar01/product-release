@@ -4,6 +4,7 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { ILanguageFeaturesService } from '../../../../../editor/common/services/languageFeatures.js';
 import { ITextModelService } from '../../../../../editor/common/services/resolverService.js';
+import { IMarkerService } from '../../../../../platform/markers/common/markers.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { relativePath, dirname } from '../../../../../base/common/resources.js';
@@ -19,6 +20,21 @@ import { CapabilitiesCollector } from './capabilities/capabilitiesCollector.js';
 import { EncryptionService } from './encryptionService.js';
 import { HistoryService } from './historyService.js';
 
+export interface IDashboardState {
+	metrics: {
+		totalLines: number;
+		totalSymbols: number;
+		avgComplexity: number;
+	};
+	capabilities: Set<string>;
+	stats: {
+		filesAnalyzed: number;
+		functions: number;
+		classes: number;
+	};
+	lastScan: string;
+}
+
 export class ProjectAnalyzer extends Disposable {
 	public readonly inverseDir: URI;
 	public readonly encryptionService: EncryptionService;
@@ -29,11 +45,19 @@ export class ProjectAnalyzer extends Disposable {
 	private readonly metricsCollector: MetricsCollector;
 	private readonly capabilitiesCollector: CapabilitiesCollector;
 
+	private dashboardState: IDashboardState = {
+		metrics: { totalLines: 0, totalSymbols: 0, avgComplexity: 0 },
+		capabilities: new Set<string>(),
+		stats: { filesAnalyzed: 0, functions: 0, classes: 0 },
+		lastScan: 'Never'
+	};
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@ILanguageFeaturesService languageFeaturesService: ILanguageFeaturesService,
 		@ITextModelService private readonly textModelService: ITextModelService,
+		@IMarkerService private readonly markerService: IMarkerService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IConfigurationService private readonly configurationService: IConfigurationService
 	) {
@@ -61,6 +85,14 @@ export class ProjectAnalyzer extends Disposable {
 	public async analyzeWorkspace(): Promise<void> {
 		console.log('Starting full workspace analysis...');
 
+		// Reset Dashboard State
+		this.dashboardState = {
+			metrics: { totalLines: 0, totalSymbols: 0, avgComplexity: 0 },
+			capabilities: new Set<string>(),
+			stats: { filesAnalyzed: 0, functions: 0, classes: 0 },
+			lastScan: new Date().toISOString()
+		};
+
 		try {
 			// Protection: Hide folder and Unlock for writing
 			await this.hideInverseFolder();
@@ -85,6 +117,76 @@ export class ProjectAnalyzer extends Disposable {
 			// Protection: Re-lock files
 			await this.setReadOnly(true);
 		}
+	}
+
+	public getAnalysisState(): any {
+		return {
+			...this.dashboardState,
+			capabilities: Array.from(this.dashboardState.capabilities) // Convert Set to Array for messaging
+		};
+	}
+
+	public async getDetailedAnalysis(resource: URI): Promise<any> {
+		// 1. Fetch Cached Data
+		const metrics = await this.readData('metrics', resource);
+		const capabilities = await this.readData('capabilities', resource);
+		const lsp = await this.readData('lsp', resource);
+		const callHierarchy = await this.readData('call_hierarchy', resource);
+		const ast = await this.readData('ast', resource);
+
+		// 2. Diagnostics
+		const markers = this.markerService.read({ resource });
+		const diagnostics = {
+			errors: markers.filter(m => m.severity === 1 /* Error */).length, // 1 is Error in VS Code enum usually, verifying... actually MarkerSeverity.Error is 8. Let's use internal check or assume mapped.
+			// VS Code MarkerSeverity: Hint=1, Info=2, Warning=4, Error=8.
+			// However IMarkerService usually returns IMarkerData.
+			// Let's safe-guard:
+			errorCount: markers.filter(m => m.severity === 8).length,
+			warningCount: markers.filter(m => m.severity === 4).length
+		};
+
+		// 3. File Stats (Change Surface)
+		let fileStat: any = {};
+		try {
+			const stat = await this.fileService.resolve(resource);
+			fileStat = {
+				size: stat.size,
+				mtime: stat.mtime
+			};
+		} catch (e) { }
+
+		return {
+			resource: resource.toString(),
+			metrics,
+			capabilities,
+			lsp,
+			callHierarchy,
+			ast,
+			diagnostics,
+			fileStat
+		};
+	}
+
+	private async readData(category: string, resource: URI): Promise<any | undefined> {
+		const folder = this.workspaceContextService.getWorkspaceFolder(resource);
+		let relativePathStr = '';
+		if (folder) {
+			const rel = relativePath(folder.uri, resource);
+			if (rel) relativePathStr = rel;
+		} else {
+			relativePathStr = resource.path.split('/').pop() || 'unknown';
+		}
+
+		const targetUri = URI.joinPath(this.inverseDir, category, relativePathStr + '.json');
+		try {
+			if (await this.fileService.exists(targetUri)) {
+				const content = await this.fileService.readFile(targetUri);
+				const encrypted = content.value.toString();
+				const decrypted = await this.encryptionService.decrypt(encrypted);
+				return JSON.parse(decrypted);
+			}
+		} catch (e) { }
+		return undefined;
 	}
 
 	private async crawl(dir: URI): Promise<URI[]> {
@@ -164,6 +266,22 @@ export class ProjectAnalyzer extends Disposable {
 			if (callHierarchyData) await this.saveData('call_hierarchy', resource, callHierarchyData);
 			if (metricsData) await this.saveData('metrics', resource, metricsData);
 			if (capabilitiesData) await this.saveData('capabilities', resource, capabilitiesData);
+
+			// Aggregate Dashboard State
+			this.dashboardState.stats.filesAnalyzed++;
+			if (metricsData) {
+				this.dashboardState.metrics.totalLines += metricsData.lineCount || 0;
+				this.dashboardState.metrics.totalSymbols += metricsData.symbolCount || 0;
+				this.dashboardState.stats.functions += metricsData.functions || 0;
+				this.dashboardState.stats.classes += metricsData.classes || 0;
+				this.dashboardState.metrics.avgComplexity = 0; // Placeholder until complexity logic is added
+			}
+			if (capabilitiesData) {
+				if (capabilitiesData.hasAsync) this.dashboardState.capabilities.add('Async/Await');
+				if (capabilitiesData.hasClasses) this.dashboardState.capabilities.add('Object Oriented');
+				if (capabilitiesData.isTestFile) this.dashboardState.capabilities.add('Testing');
+				if (capabilitiesData.hasInterfaces) this.dashboardState.capabilities.add('TypeScript Interfaces');
+			}
 
 			ref.dispose();
 		} catch (error) {
@@ -362,6 +480,9 @@ export class ProjectAnalyzer extends Disposable {
 			// This is critical to prevent "No checkpoints found" / failed git operations
 			await this.setReadOnly(false);
 
+			// Save Analysis Snapshot before git operations
+			await this.saveAnalysisSnapshot();
+
 			// 2. Ensure shadow git init
 			try {
 				const gitDir = URI.joinPath(this.inverseDir, '.git');
@@ -385,6 +506,21 @@ export class ProjectAnalyzer extends Disposable {
 		} finally {
 			// 4. Re-lock
 			await this.setReadOnly(true);
+		}
+	}
+
+	private async saveAnalysisSnapshot(): Promise<void> {
+		const snapshot = {
+			timestamp: new Date().toISOString(),
+			dashboard: this.getAnalysisState(), // Use getter to handle Set->Array conversion
+		};
+		const content = JSON.stringify(snapshot, null, 2);
+		const encryptedContent = await this.encryptionService.encrypt(content);
+		const snapshotUri = URI.joinPath(this.inverseDir, 'analysis_snapshot.json');
+		try {
+			await this.fileService.writeFile(snapshotUri, VSBuffer.fromString(encryptedContent));
+		} catch (e) {
+			console.error('Failed to save analysis snapshot', e);
 		}
 	}
 }

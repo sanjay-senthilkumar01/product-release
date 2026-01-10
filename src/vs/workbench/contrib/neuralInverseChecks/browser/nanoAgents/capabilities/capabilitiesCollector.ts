@@ -12,6 +12,14 @@ export class CapabilitiesCollector {
 		const isTestFile = /test|spec/.test(model.uri.path.toLowerCase()) ||
 			/\b(describe|it|test)\s*\(/.test(content); // simplistic JS/TS check
 
+		// Extended Capabilities Detection (Mission Critical Pillars)
+		const hasNetwork = /\b(fetch|http|https|axios|XMLHttpRequest|Request|Response)\b/i.test(content);
+		const hasFileSystem = /\b(fs|readFile|writeFile|open|close|createReadStream)\b/.test(content);
+		const hasCrypto = /\b(crypto|tls|ssl|hash|cipher|encrypt|decrypt)\b/i.test(content);
+		const hasAuth = /\b(password|token|auth|login|credential|secret|jwt)\b/i.test(content);
+		const hasDatabase = /\b(sql|mongo|dynamo|db|query|connect|schema)\b/i.test(content);
+		const hasEnv = /\b(process\.env|getenv|config)\b/i.test(content);
+
 		// Heuristics based on symbols
 		let hasClasses = false;
 		let hasFunctions = false;
@@ -38,7 +46,13 @@ export class CapabilitiesCollector {
 			isTestFile,
 			hasClasses,
 			hasFunctions,
-			hasInterfaces
+			hasInterfaces,
+			hasNetwork,
+			hasFileSystem,
+			hasCrypto,
+			hasAuth,
+			hasDatabase,
+			hasEnv
 		};
 	}
 }

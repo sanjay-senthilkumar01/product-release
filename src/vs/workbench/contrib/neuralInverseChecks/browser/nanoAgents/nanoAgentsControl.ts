@@ -13,6 +13,19 @@ export class NanoAgentsControl extends Disposable {
 	private webviewElement: IWebviewElement | undefined;
 	private projectAnalyzer: ProjectAnalyzer;
 
+	public layout(width: number, height: number) {
+		this.container.style.width = `${width}px`;
+		this.container.style.height = `${height}px`;
+	}
+
+	public show() {
+		this.container.style.display = 'block';
+	}
+
+	public hide() {
+		this.container.style.display = 'none';
+	}
+
 	constructor(
 		parent: HTMLElement,
 		@IWebviewService private readonly webviewService: IWebviewService,
@@ -61,6 +74,13 @@ export class NanoAgentsControl extends Disposable {
 
 		this._register(this.webviewElement.onMessage(async e => {
 			switch (e.message.command) {
+				case 'getAnalysisState':
+					const state = this.projectAnalyzer.getAnalysisState();
+					this.webviewElement?.postMessage({ command: 'analysisState', state });
+					break;
+				case 'inspectCurrentFile':
+					await this.inspectCurrentFile();
+					break;
 				case 'analyzeProject':
 					await this.runAnalysis();
 					break;
@@ -74,6 +94,10 @@ export class NanoAgentsControl extends Disposable {
 					break;
 				case 'openDiff':
 					await this.openDiff(e.message.hash, e.message.file);
+					break;
+				case 'getSnapshot':
+					const snapshot = await this.projectAnalyzer.historyService.getSnapshot(e.message.hash);
+					this.webviewElement?.postMessage({ command: 'snapshotData', hash: e.message.hash, data: snapshot });
 					break;
 			}
 		}));
@@ -167,6 +191,17 @@ export class NanoAgentsControl extends Disposable {
 
 		} catch (e) {
 			console.error('Failed to open diff', e);
+		}
+	}
+
+	private async inspectCurrentFile() {
+		const editor = this.editorService.activeEditorPane;
+		if (editor && editor.group.activeEditor) {
+			const resource = editor.group.activeEditor.resource;
+			if (resource) {
+				const data = await this.projectAnalyzer.getDetailedAnalysis(resource);
+				this.webviewElement?.postMessage({ command: 'deepAnalysis', data });
+			}
 		}
 	}
 
@@ -264,15 +299,113 @@ export class NanoAgentsControl extends Disposable {
 				.file-item:hover {
 					text-decoration: underline;
 				}
+				.tag {
+					display: inline-block;
+					background: var(--vscode-badge-background);
+					color: var(--vscode-badge-foreground);
+					padding: 2px 8px;
+					border-radius: 12px;
+					font-size: 0.8em;
+					margin-right: 5px;
+					margin-bottom: 5px;
+				}
+				.stat-row {
+					display: flex;
+					justify-content: space-between;
+					padding: 5px 0;
+					border-bottom: 1px solid var(--vscode-panel-border);
+				}
+				.stat-label { opacity: 0.8; }
+				.stat-value { font-weight: bold; }
+				.sub-section {
+					margin-bottom: 10px;
+					border-left: 2px solid var(--vscode-textLink-foreground);
+					padding-left: 10px;
+				}
+				.pillar-title { font-weight: bold; font-size: 0.9em; margin-bottom: 5px; opacity: 0.9; }
+				.pillar-content { font-size: 0.85em; opacity: 0.8; }
+
             </style>
         </head>
         <body>
 			<div class="tabs">
-				<div class="tab active" onclick="showTab('control')">Control</div>
+				<div class="tab active" onclick="showTab('dashboard')">Dashboard</div>
+				<div class="tab" onclick="showTab('inspect')">Inspect</div>
+				<div class="tab" onclick="showTab('control')">Control</div>
 				<div class="tab" onclick="showTab('history')">History</div>
 			</div>
 
-            <div id="control" class="content active">
+			<div id="inspect" class="content">
+				<h1>Mission Critical Inspection</h1>
+				<button onclick="inspectCurrent()" style="width:100%; margin-bottom:10px;">Inspect Active File</button>
+				<div id="inspect-loading" style="display:none; text-align:center;">Analyzing...</div>
+
+				<div id="inspect-result" style="display:none;">
+					<div class="card">
+						<div class="pillar-title">1️⃣ Code Structure</div>
+						<div class="pillar-content" id="p-structure">-</div>
+					</div>
+					<div class="card">
+						<div class="pillar-title">2️⃣ Call Relationships</div>
+						<div class="pillar-content" id="p-calls">-</div>
+					</div>
+					<div class="card">
+						<div class="pillar-title">3️⃣ Capability Touchpoints</div>
+						<div class="pillar-content" id="p-capabilities">-</div>
+					</div>
+					<div class="card">
+						<div class="pillar-title">4️⃣ Diagnostics</div>
+						<div class="pillar-content" id="p-diagnostics">-</div>
+					</div>
+					<div class="card">
+						<div class="pillar-title">5️⃣ Size & Shape</div>
+						<div class="pillar-content" id="p-size">-</div>
+					</div>
+					<div class="card">
+						<div class="pillar-title">6️⃣ Change Surface</div>
+						<div class="pillar-content" id="p-change">-</div>
+					</div>
+					<div class="card">
+						<div class="pillar-title">7️⃣ Classification</div>
+						<div class="pillar-content">Awaiting analysis</div>
+					</div>
+				</div>
+			</div>
+
+			<div id="dashboard" class="content active">
+				<h1>Project Health</h1>
+				<div class="card">
+					<div class="stat-row">
+						<span class="stat-label">Files Analyzed</span>
+						<span class="stat-value" id="stat-files">-</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Total Lines</span>
+						<span class="stat-value" id="stat-lines">-</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Functions</span>
+						<span class="stat-value" id="stat-functions">-</span>
+					</div>
+					<div class="stat-row">
+						<span class="stat-label">Classes</span>
+						<span class="stat-value" id="stat-classes">-</span>
+					</div>
+					<div class="stat-row" style="border:none;">
+						<span class="stat-label">Last Scan</span>
+						<span class="stat-value" id="stat-last">-</span>
+					</div>
+				</div>
+
+				<h1>Capabilities Detected</h1>
+				<div class="card" id="capabilities-list">
+					Running analysis...
+				</div>
+			</div>
+
+
+
+            <div id="control" class="content">
                 <h1>Nano Agents</h1>
                 <div class="card">
                     <p>Nano Agents Registry initialized.</p>
@@ -299,6 +432,11 @@ export class NanoAgentsControl extends Disposable {
 					document.getElementById(id).classList.add('active');
 
 					if (id === 'history') refreshHistory();
+					if (id === 'dashboard') refreshDashboard();
+				}
+
+				function refreshDashboard() {
+					vscode.postMessage({ command: 'getAnalysisState' });
 				}
 
                 function triggerAnalysis() {
@@ -327,6 +465,39 @@ export class NanoAgentsControl extends Disposable {
 					vscode.postMessage({ command: 'openDiff', hash: hash, file: file });
 				}
 
+				function inspectCurrent() {
+					document.getElementById('inspect-loading').style.display = 'block';
+					document.getElementById('inspect-result').style.display = 'none';
+					vscode.postMessage({ command: 'inspectCurrentFile' });
+				}
+
+				function viewSnapshot(hash) {
+					vscode.postMessage({ command: 'getSnapshot', hash: hash });
+				}
+
+				function renderDashboard(s) {
+					document.getElementById('stat-files').innerText = s.stats.filesAnalyzed;
+					document.getElementById('stat-functions').innerText = s.stats.functions;
+					document.getElementById('stat-classes').innerText = s.stats.classes;
+					document.getElementById('stat-lines').innerText = s.metrics.totalLines;
+
+					const ts = s.lastScan || s.timestamp;
+					document.getElementById('stat-last').innerText = ts ? new Date(ts).toLocaleTimeString() : '-';
+
+					const capContainer = document.getElementById('capabilities-list');
+					if (s.capabilities.length === 0) {
+						capContainer.innerText = 'None detected yet.';
+					} else {
+						capContainer.innerHTML = '';
+						s.capabilities.forEach(c => {
+							const span = document.createElement('span');
+							span.className = 'tag';
+							span.innerText = c;
+							capContainer.appendChild(span);
+						});
+					}
+				}
+
 				window.addEventListener('message', event => {
 					const message = event.data;
 					if (message.command === 'historyData') {
@@ -339,15 +510,27 @@ export class NanoAgentsControl extends Disposable {
 						message.data.forEach(cp => {
 							const div = document.createElement('div');
 							div.className = 'checkpoint';
-							div.innerHTML = \`
-								<div class="checkpoint-header" onclick="toggleFiles('\${cp.hash}')">
-									<span>\${cp.message}</span>
-									<span class="checkpoint-date">\${new Date(cp.date).toLocaleString()}</span>
-								</div>
-								<div id="files-\${cp.hash}" class="file-list">Loading files...</div>
-							\`;
+							div.innerHTML =
+								'<div class="checkpoint-header" onclick="toggleFiles(\\'' + cp.hash + '\\')">' +
+									'<span>' + cp.message + '</span>' +
+									'<span class="checkpoint-date">' + new Date(cp.date).toLocaleString() + '</span>' +
+								'</div>' +
+								'<div style="padding: 2px 10px;">' +
+									'<button onclick="viewSnapshot(\\'' + cp.hash + '\\')" style="font-size: 0.8em; padding: 2px 5px; cursor: pointer;">View Analysis Snapshot</button>' +
+								'</div>' +
+								'<div id="files-' + cp.hash + '" class="file-list">Loading files...</div>';
 							list.appendChild(div);
 						});
+					} else if (message.command === 'analysisState') {
+						renderDashboard(message.state);
+					} else if (message.command === 'snapshotData') {
+						if (message.data && message.data.dashboard) {
+							renderDashboard(message.data.dashboard);
+							showTab('dashboard');
+						} else {
+							// Optional: alert or log
+							console.log('No snapshot data found');
+						}
 					} else if (message.command === 'changedFiles') {
 						const container = document.getElementById('files-' + message.hash);
 						container.innerHTML = '';
@@ -363,24 +546,66 @@ export class NanoAgentsControl extends Disposable {
 							});
 						}
 					} else if (message.command === 'analysisComplete') {
+						refreshDashboard();
 						// Maybe verify history automatically?
 						// refreshHistory();
 					}
-				});
-            </script>
-        </body>
-        </html>`;
+
+					// Init load
+					if (message.command === 'init') {
+						refreshDashboard();
+					}
+
+					// Deep Inspection Result
+					if (message.command === 'deepAnalysis') {
+						document.getElementById('inspect-loading').style.display = 'none';
+						document.getElementById('inspect-result').style.display = 'block';
+
+						const d = message.data;
+						if (!d.metrics) {
+							document.getElementById('p-structure').innerText = 'No analysis data found (Run full scan first)';
+							return;
+						}
+
+						// 1. Structure
+						const symbols = d.lsp?.symbols?.map(s => s.name).join(', ') || 'None';
+						document.getElementById('p-structure').innerText = symbols.substring(0, 100) + (symbols.length > 20 ? '...' : '');
+
+						// 2. Calls
+						// Need better summarization here, just showing counts for now
+						let incoming = 0, outgoing = 0;
+						// TODO: aggregate from Call Hierarchy data if available
+						document.getElementById('p-calls').innerText = 'Incoming: - | Outgoing: - (Drill-down coming soon)';
+
+						// 3. Capabilities
+						const caps = [];
+						if (d.capabilities?.hasNetwork) caps.push('Network');
+						if (d.capabilities?.hasFileSystem) caps.push('File System');
+						if (d.capabilities?.hasCrypto) caps.push('Crypto');
+						if (d.capabilities?.hasAuth) caps.push('Auth');
+						if (d.capabilities?.hasDatabase) caps.push('Database');
+						if (d.capabilities?.hasEnv) caps.push('Env');
+						document.getElementById('p-capabilities').innerHTML = caps.length ? caps.map(c => '<span class="tag">' + c + '</span>').join('') : 'None';
+
+		// 4. Diagnostics
+		document.getElementById('p-diagnostics').innerHTML =
+			'<span style="color:var(--vscode-errorForeground)">Errors: ' + d.diagnostics.errorCount + '</span> | Warnings: ' + d.diagnostics.warningCount;
+
+		// 5. Size
+		document.getElementById('p-size').innerText =
+			'Lines: ' + d.metrics.lineCount + ', Depth: ' + d.metrics.maxDepth + ', Avg Params: ' + d.metrics.avgParams;
+
+		// 6. Change
+		const mtime = d.fileStat?.mtime ? new Date(d.fileStat.mtime).toLocaleString() : 'Unknown';
+		document.getElementById('p-change').innerText = 'Last Modified: ' + mtime;
 	}
 
-	public show() {
-		this.container.style.display = 'block';
+
+});
+</script>
+	</body>
+	</html>`;
 	}
 
-	public hide() {
-		this.container.style.display = 'none';
-	}
 
-	public layout(width: number, height: number) {
-		// Pass layout calls if needed, mostly for webview resizing
-	}
 }

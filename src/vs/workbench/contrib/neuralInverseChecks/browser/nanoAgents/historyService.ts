@@ -101,6 +101,29 @@ export class HistoryService extends Disposable {
 		}
 	}
 
+	public async getSnapshot(commitHash: string): Promise<any | null> {
+		const workspaceRoot = dirname(this.inverseDir);
+		const outFile = URI.joinPath(workspaceRoot, '.inverse_history_snapshot');
+		const statusFile = URI.joinPath(workspaceRoot, '.inverse_history_status');
+
+		await this.cleanup([outFile, statusFile]);
+
+		const cmd = `git --git-dir=.git --work-tree=. show ${commitHash}:"analysis_snapshot.json" > "../.inverse_history_snapshot" && echo "DONE" > "../.inverse_history_status"`;
+		await this.runCommand(cmd, statusFile);
+
+		try {
+			const content = await this.fileService.readFile(outFile);
+			const encrypted = content.value.toString();
+			await this.cleanup([outFile, statusFile]);
+			const decrypted = await this.encryptionService.decrypt(encrypted);
+			return JSON.parse(decrypted);
+		} catch (e) {
+			// Expected for older checkpoints without snapshot
+			await this.cleanup([outFile, statusFile]);
+			return null;
+		}
+	}
+
 	private async runCommand(cmd: string, waitFile: URI): Promise<void> {
 		let terminal = this.terminalService.instances.find(t => t.title === this.terminalName);
 		if (!terminal) {
