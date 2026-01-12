@@ -2,7 +2,6 @@
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
-import { dirname } from '../../../../../base/common/resources.js';
 
 export class EncryptionService {
 	private key: CryptoKey | null = null;

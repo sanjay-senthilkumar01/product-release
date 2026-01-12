@@ -17,6 +17,10 @@ import { ITerminalService, ITerminalInstance } from '../../terminal/browser/term
 import { Sash, IHorizontalSashLayoutProvider, Orientation, ISashEvent } from '../../../../base/browser/ui/sash/sash.js';
 
 import { NanoAgentsControl } from './nanoAgents/nanoAgentsControl.js';
+import { CodeAsPolicyControl } from './codeAsPolicy/codeAsPolicyControl.js';
+import { ArchitectureAsCodeControl } from './architectureAsCode/architectureAsCodeControl.js';
+import { ComplianceAsCodeControl } from './complianceAsCode/complianceAsCodeControl.js';
+import { SecurityAsCodeControl } from './securityAsCode/securityAsCodeControl.js';
 
 export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProvider {
 
@@ -29,6 +33,10 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
     private webviewElement: IWebviewElement | undefined;
     private nanoAgentsControl: NanoAgentsControl | undefined;
+    private codeAsPolicyControl: CodeAsPolicyControl | undefined;
+    private architectureAsCodeControl: ArchitectureAsCodeControl | undefined;
+    private complianceAsCodeControl: ComplianceAsCodeControl | undefined;
+    private securityAsCodeControl: SecurityAsCodeControl | undefined;
     private sidebarVisible: boolean = true;
     private terminalContainer: HTMLElement | undefined;
     private terminalBody: HTMLElement | undefined;
@@ -76,7 +84,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         titlebar.style.setProperty('-webkit-app-region', 'drag');
         rootContainer.appendChild(titlebar);
 
-        // Left Spacer (to balance layout if needed, or just empty)
+        // Left Spacer (to balance layout if needed, or just flex.
         const leftSpacer = document.createElement('div');
         leftSpacer.style.width = '20px'; // Approx width of toggle button to center title perfectly? Or just flex.
         titlebar.appendChild(leftSpacer);
@@ -305,8 +313,39 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         this.nanoAgentsControl = this.instantiationService.createInstance(NanoAgentsControl, nanoContainer);
         this._register(this.nanoAgentsControl);
 
+        // VIEW 3: Code as Policy
+        const policyContainer = document.createElement('div');
+        policyContainer.style.width = '100%';
+        policyContainer.style.height = '100%';
+        body.appendChild(policyContainer);
+        this.codeAsPolicyControl = this.instantiationService.createInstance(CodeAsPolicyControl, policyContainer);
+        this._register(this.codeAsPolicyControl);
 
-        // VIEW 3: Void Sidebar (Shared Chat)
+        // VIEW 4: Architecture as Code (AaC)
+        const aacContainer = document.createElement('div');
+        aacContainer.style.width = '100%';
+        aacContainer.style.height = '100%';
+        body.appendChild(aacContainer);
+        this.architectureAsCodeControl = this.instantiationService.createInstance(ArchitectureAsCodeControl, aacContainer);
+        this._register(this.architectureAsCodeControl);
+
+        // VIEW 5: Compliance as Code (CaC)
+        const cacContainer = document.createElement('div');
+        cacContainer.style.width = '100%';
+        cacContainer.style.height = '100%';
+        body.appendChild(cacContainer);
+        this.complianceAsCodeControl = this.instantiationService.createInstance(ComplianceAsCodeControl, cacContainer);
+        this._register(this.complianceAsCodeControl);
+
+        // VIEW 6: Security as Code (SaC)
+        const sacContainer = document.createElement('div');
+        sacContainer.style.width = '100%';
+        sacContainer.style.height = '100%';
+        body.appendChild(sacContainer);
+        this.securityAsCodeControl = this.instantiationService.createInstance(SecurityAsCodeControl, sacContainer);
+        this._register(this.securityAsCodeControl);
+
+        // VIEW 6: Void Sidebar (Shared Chat)
         const voidContainer = document.createElement('div');
         voidContainer.style.width = '100%';
         voidContainer.style.height = '100%';
@@ -319,12 +358,20 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         // Sidebar Navigation Logic
         const sidebarItems: Record<string, HTMLElement> = {};
 
-        const updateView = (view: 'manager' | 'nano' | 'chat') => {
+        const updateView = (view: 'manager' | 'nano' | 'policy' | 'aac' | 'cac' | 'sac' | 'chat') => {
             // Hide all first
             checksContainer.style.display = 'none';
             voidContainer.style.display = 'none';
             nanoContainer.style.display = 'none';
+            policyContainer.style.display = 'none';
+            aacContainer.style.display = 'none';
+            cacContainer.style.display = 'none';
+            sacContainer.style.display = 'none';
             this.nanoAgentsControl?.hide();
+            this.codeAsPolicyControl?.hide();
+            this.architectureAsCodeControl?.hide();
+            this.complianceAsCodeControl?.hide();
+            this.securityAsCodeControl?.hide();
 
             // Update Sidebar Selection styles
             Object.keys(sidebarItems).forEach(key => {
@@ -345,12 +392,30 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 nanoContainer.style.display = 'block';
                 this.nanoAgentsControl?.show();
                 this.nanoAgentsControl?.layout(body.clientWidth, body.clientHeight);
+            } else if (view === 'policy') {
+                policyContainer.style.display = 'block';
+                this.codeAsPolicyControl?.show();
+                this.codeAsPolicyControl?.layout(body.clientWidth, body.clientHeight);
+            } else if (view === 'aac') {
+                aacContainer.style.display = 'block';
+                this.architectureAsCodeControl?.show();
+                this.architectureAsCodeControl?.layout(body.clientWidth, body.clientHeight);
+            } else if (view === 'cac') {
+                console.log('ChecksManagerPart: Switching to Compliance as Code view');
+                cacContainer.style.display = 'block';
+                this.complianceAsCodeControl?.show();
+                this.complianceAsCodeControl?.layout(body.clientWidth, body.clientHeight);
+            } else if (view === 'sac') {
+                console.log('ChecksManagerPart: Switching to Security as Code view');
+                sacContainer.style.display = 'block';
+                this.securityAsCodeControl?.show();
+                this.securityAsCodeControl?.layout(body.clientWidth, body.clientHeight);
             } else {
                 voidContainer.style.display = 'block';
             }
         };
 
-        const createSidebarItem = (text: string, viewId: 'manager' | 'nano' | 'chat') => {
+        const createSidebarItem = (text: string, viewId: 'manager' | 'nano' | 'policy' | 'aac' | 'cac' | 'sac' | 'chat') => {
             const item = document.createElement('div');
             item.textContent = text;
             item.style.padding = '8px 15px';
@@ -387,6 +452,10 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
         createSidebarItem('Checks', 'manager');
         createSidebarItem('Nano Agents', 'nano');
+        createSidebarItem('Policy as Code', 'policy');
+        createSidebarItem('Architecture as Code', 'aac');
+        createSidebarItem('Compliance as Code', 'cac');
+        createSidebarItem('Security as Code', 'sac');
         createSidebarItem('Chat', 'chat');
 
         // Initialize view
@@ -551,6 +620,10 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         const contentHeight = Math.max(0, height - titlebarHeight - terminalHeight);
 
         this.nanoAgentsControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.codeAsPolicyControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.architectureAsCodeControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.complianceAsCodeControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.securityAsCodeControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
 
         if (this.terminalVisible && this.terminalInstance && this.terminalInstance.xterm) {
             const font = this.terminalInstance.xterm.getFont();
@@ -564,6 +637,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 this.terminalInstance.xterm.resize(cols, rows);
             }
         }
+
 
         if (this.terminalVisible && this._sash) {
             this._sash.layout();
