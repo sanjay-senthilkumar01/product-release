@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -12,6 +13,10 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 
 import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions } from '../../../common/contributions.js';
+import { Extensions as ViewExtensions, IViewContainersRegistry, ViewContainerLocation, IViewsRegistry } from '../../../common/views.js';
+import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
+import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
+import { ChecksViewPane } from './checksViewPane.js';
 import { IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { IHostService } from '../../../services/host/browser/host.js';
 import { ChecksManagerPart } from './checksManagerPart.js';
@@ -125,3 +130,26 @@ registerAction2(class OpenChecksManagerAction extends Action2 {
 });
 
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(ChecksManagerContribution, LifecyclePhase.Restored);
+
+// Register Checks Panel
+const VIEW_CONTAINER_ID = 'workbench.view.checks';
+const VIEW_CONTAINER = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
+	id: VIEW_CONTAINER_ID,
+	title: localize2('checks.panel.title', "Checks"),
+	icon: Codicon.shield,
+	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [VIEW_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: true }]),
+	storageId: VIEW_CONTAINER_ID,
+	hideIfEmpty: false,
+	order: 10,
+}, ViewContainerLocation.Panel);
+
+Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([{
+	id: ChecksViewPane.ID,
+	name: localize2('checks.pane.title', "Checks"),
+	ctorDescriptor: new SyncDescriptor(ChecksViewPane),
+	canToggleVisibility: true,
+	workspace: true,
+	canMoveView: true,
+	containerIcon: { id: 'codicon/shield' }
+}], VIEW_CONTAINER);
+
