@@ -21,6 +21,10 @@ import { CodeAsPolicyControl } from './codeAsPolicy/codeAsPolicyControl.js';
 import { ArchitectureAsCodeControl } from './architectureAsCode/architectureAsCodeControl.js';
 import { ComplianceAsCodeControl } from './complianceAsCode/complianceAsCodeControl.js';
 import { SecurityAsCodeControl } from './securityAsCode/securityAsCodeControl.js';
+import { DataIntegrityControl } from './dataIntegrity/dataIntegrityControl.js';
+import { AuditAndEvidenceControl } from './auditAndEvidence/auditAndEvidenceControl.js';
+import { FailSafeDefaultsControl } from './failSafeDefaults/failSafeDefaultsControl.js';
+import { FormalVerificationControl } from './formalVerification/formalVerificationControl.js';
 
 export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProvider {
 
@@ -37,6 +41,10 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
     private architectureAsCodeControl: ArchitectureAsCodeControl | undefined;
     private complianceAsCodeControl: ComplianceAsCodeControl | undefined;
     private securityAsCodeControl: SecurityAsCodeControl | undefined;
+    private dataIntegrityControl: DataIntegrityControl | undefined;
+    private auditAndEvidenceControl: AuditAndEvidenceControl | undefined;
+    private failSafeDefaultsControl: FailSafeDefaultsControl | undefined;
+    private formalVerificationControl: FormalVerificationControl | undefined;
     private sidebarVisible: boolean = true;
     private terminalContainer: HTMLElement | undefined;
     private terminalBody: HTMLElement | undefined;
@@ -345,6 +353,38 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         this.securityAsCodeControl = this.instantiationService.createInstance(SecurityAsCodeControl, sacContainer);
         this._register(this.securityAsCodeControl);
 
+        // VIEW 8: Data Integrity (DIC)
+        const dicContainer = document.createElement('div');
+        dicContainer.style.width = '100%';
+        dicContainer.style.height = '100%';
+        body.appendChild(dicContainer);
+        this.dataIntegrityControl = this.instantiationService.createInstance(DataIntegrityControl, dicContainer);
+        this._register(this.dataIntegrityControl);
+
+        // VIEW 9: Audit & Evidence (AED)
+        const aedContainer = document.createElement('div');
+        aedContainer.style.width = '100%';
+        aedContainer.style.height = '100%';
+        body.appendChild(aedContainer);
+        this.auditAndEvidenceControl = this.instantiationService.createInstance(AuditAndEvidenceControl, aedContainer);
+        this._register(this.auditAndEvidenceControl);
+
+        // VIEW 10: Fail-Safe Defaults (FSD)
+        const fsdContainer = document.createElement('div');
+        fsdContainer.style.width = '100%';
+        fsdContainer.style.height = '100%';
+        body.appendChild(fsdContainer);
+        this.failSafeDefaultsControl = this.instantiationService.createInstance(FailSafeDefaultsControl, fsdContainer);
+        this._register(this.failSafeDefaultsControl);
+
+        // VIEW 11: Formal Verification (FV)
+        const fvContainer = document.createElement('div');
+        fvContainer.style.width = '100%';
+        fvContainer.style.height = '100%';
+        body.appendChild(fvContainer);
+        this.formalVerificationControl = this.instantiationService.createInstance(FormalVerificationControl, fvContainer);
+        this._register(this.formalVerificationControl);
+
         // VIEW 6: Void Sidebar (Shared Chat)
         const voidContainer = document.createElement('div');
         voidContainer.style.width = '100%';
@@ -358,7 +398,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         // Sidebar Navigation Logic
         const sidebarItems: Record<string, HTMLElement> = {};
 
-        const updateView = (view: 'manager' | 'nano' | 'policy' | 'aac' | 'cac' | 'sac' | 'chat') => {
+        const updateView = (view: 'manager' | 'nano' | 'policy' | 'aac' | 'cac' | 'sac' | 'dic' | 'aed' | 'fsd' | 'fv' | 'chat') => {
             // Hide all first
             checksContainer.style.display = 'none';
             voidContainer.style.display = 'none';
@@ -367,11 +407,19 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
             aacContainer.style.display = 'none';
             cacContainer.style.display = 'none';
             sacContainer.style.display = 'none';
+            dicContainer.style.display = 'none';
+            aedContainer.style.display = 'none';
+            fsdContainer.style.display = 'none';
+            fvContainer.style.display = 'none';
             this.nanoAgentsControl?.hide();
             this.codeAsPolicyControl?.hide();
             this.architectureAsCodeControl?.hide();
             this.complianceAsCodeControl?.hide();
             this.securityAsCodeControl?.hide();
+            this.dataIntegrityControl?.hide();
+            this.auditAndEvidenceControl?.hide();
+            this.failSafeDefaultsControl?.hide();
+            this.formalVerificationControl?.hide();
 
             // Update Sidebar Selection styles
             Object.keys(sidebarItems).forEach(key => {
@@ -410,12 +458,32 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 sacContainer.style.display = 'block';
                 this.securityAsCodeControl?.show();
                 this.securityAsCodeControl?.layout(body.clientWidth, body.clientHeight);
+            } else if (view === 'dic') {
+                console.log('ChecksManagerPart: Switching to Data Integrity view');
+                dicContainer.style.display = 'block';
+                this.dataIntegrityControl?.show();
+                this.dataIntegrityControl?.layout(body.clientWidth, body.clientHeight);
+            } else if (view === 'aed') {
+                console.log('ChecksManagerPart: Switching to Audit & Evidence view');
+                aedContainer.style.display = 'block';
+                this.auditAndEvidenceControl?.show();
+                this.auditAndEvidenceControl?.layout(body.clientWidth, body.clientHeight);
+            } else if (view === 'fsd') {
+                console.log('ChecksManagerPart: Switching to Fail-Safe Defaults view');
+                fsdContainer.style.display = 'block';
+                this.failSafeDefaultsControl?.show();
+                this.failSafeDefaultsControl?.layout(body.clientWidth, body.clientHeight);
+            } else if (view === 'fv') {
+                console.log('ChecksManagerPart: Switching to Formal Verification view');
+                fvContainer.style.display = 'block';
+                this.formalVerificationControl?.show();
+                this.formalVerificationControl?.layout(body.clientWidth, body.clientHeight);
             } else {
                 voidContainer.style.display = 'block';
             }
         };
 
-        const createSidebarItem = (text: string, viewId: 'manager' | 'nano' | 'policy' | 'aac' | 'cac' | 'sac' | 'chat') => {
+        const createSidebarItem = (text: string, viewId: 'manager' | 'nano' | 'policy' | 'aac' | 'cac' | 'sac' | 'dic' | 'aed' | 'fsd' | 'fv' | 'chat') => {
             const item = document.createElement('div');
             item.textContent = text;
             item.style.padding = '8px 15px';
@@ -451,11 +519,15 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         };
 
         createSidebarItem('Checks', 'manager');
-        createSidebarItem('Nano Agents', 'nano');
-        createSidebarItem('Policy as Code', 'policy');
-        createSidebarItem('Architecture as Code', 'aac');
-        createSidebarItem('Compliance as Code', 'cac');
+        createSidebarItem('Fail-Safe Defaults', 'fsd');
         createSidebarItem('Security as Code', 'sac');
+        createSidebarItem('Formal Verification', 'fv');
+        createSidebarItem('Compliance as Code', 'cac');
+        createSidebarItem('Audit & Evidence', 'aed');
+        createSidebarItem('Policy as Code', 'policy');
+        createSidebarItem('Data Integrity', 'dic');
+        createSidebarItem('Architecture as Code', 'aac');
+        createSidebarItem('Nano Agents', 'nano');
         createSidebarItem('Chat', 'chat');
 
         // Initialize view
@@ -574,6 +646,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
     }
 
     private getDashboardHtml(): string {
+        console.log('ChecksManagerPart: Generating Dashboard HTML');
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
@@ -624,6 +697,11 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         this.architectureAsCodeControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
         this.complianceAsCodeControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
         this.securityAsCodeControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.dataIntegrityControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.auditAndEvidenceControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.failSafeDefaultsControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.formalVerificationControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        this.auditAndEvidenceControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
 
         if (this.terminalVisible && this.terminalInstance && this.terminalInstance.xterm) {
             const font = this.terminalInstance.xterm.getFont();

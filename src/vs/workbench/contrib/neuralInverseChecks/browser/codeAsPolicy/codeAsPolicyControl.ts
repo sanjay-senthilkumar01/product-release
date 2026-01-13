@@ -1,68 +1,72 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Neural Inverse Corporation. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { IWebviewService, IWebviewElement } from '../../../webview/browser/webview.js';
 import { getWindow } from '../../../../../base/browser/dom.js';
 
 export class CodeAsPolicyControl extends Disposable {
-	private readonly container: HTMLElement;
-	private webviewElement: IWebviewElement | undefined;
+    private readonly container: HTMLElement;
+    private webviewElement: IWebviewElement | undefined;
 
-	constructor(
-		parent: HTMLElement,
-		@IWebviewService private readonly webviewService: IWebviewService
-	) {
-		super();
-		this.container = document.createElement('div');
-		this.container.style.width = '100%';
-		this.container.style.height = '100%';
-		this.container.style.display = 'none';
-		parent.appendChild(this.container);
+    constructor(
+        parent: HTMLElement,
+        @IWebviewService private readonly webviewService: IWebviewService
+    ) {
+        super();
+        this.container = document.createElement('div');
+        this.container.style.width = '100%';
+        this.container.style.height = '100%';
+        this.container.style.display = 'none';
+        parent.appendChild(this.container);
 
-		this.initWebview();
-	}
+        this.initWebview();
+    }
 
-	public layout(width: number, height: number) {
-		this.container.style.width = `${width}px`;
-		this.container.style.height = `${height}px`;
-	}
+    public layout(width: number, height: number) {
+        this.container.style.width = `${width}px`;
+        this.container.style.height = `${height}px`;
+    }
 
-	public show() {
-		this.container.style.display = 'block';
-	}
+    public show() {
+        this.container.style.display = 'block';
+    }
 
-	public hide() {
-		this.container.style.display = 'none';
-	}
+    public hide() {
+        this.container.style.display = 'none';
+    }
 
-	private initWebview() {
-		this.webviewElement = this.webviewService.createWebviewElement({
-			title: 'Policy as Code',
-			options: {
-				enableFindWidget: true,
-				tryRestoreScrollPosition: true,
-				retainContextWhenHidden: true,
-			},
-			contentOptions: {
-				allowScripts: true,
-			},
-			extension: undefined
-		});
+    private initWebview() {
+        this.webviewElement = this.webviewService.createWebviewElement({
+            title: 'Policy as Code',
+            options: {
+                enableFindWidget: true,
+                tryRestoreScrollPosition: true,
+                retainContextWhenHidden: true,
+            },
+            contentOptions: {
+                allowScripts: true,
+            },
+            extension: undefined
+        });
 
-		this.webviewElement.mountTo(this.container, getWindow(this.container));
-		this.webviewElement.setHtml(this.getHtml());
+        this.webviewElement.mountTo(this.container, getWindow(this.container));
+        this.webviewElement.setHtml(this.getHtml());
 
-		this._register(this.webviewElement);
+        this._register(this.webviewElement);
 
-		this._register(this.webviewElement.onMessage(e => {
-			if (e.message.command === 'savePolicy') {
-				// Mock Save
-				this.webviewElement?.postMessage({ command: 'saveSuccess' });
-			}
-		}));
-	}
+        this._register(this.webviewElement.onMessage(e => {
+            if (e.message.command === 'savePolicy') {
+                // Mock Save
+                this.webviewElement?.postMessage({ command: 'saveSuccess' });
+            }
+        }));
+    }
 
-	private getHtml(): string {
-		return `<!DOCTYPE html>
+    private getHtml(): string {
+        return `<!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
@@ -592,5 +596,5 @@ export class CodeAsPolicyControl extends Disposable {
             </script>
         </body>
         </html>`;
-	}
+    }
 }

@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
- *  Copyright (c) Microsoft Corporation. All rights reserved.
- *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *  Copyright (c) Neural Inverse Corporation. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
@@ -9,54 +9,54 @@ import { getWindow } from '../../../../../base/browser/dom.js';
 
 export class SecurityAsCodeControl extends Disposable {
 
-	private webviewElement: IWebviewElement;
+    private webviewElement: IWebviewElement;
 
-	constructor(
-		private readonly container: HTMLElement,
-		@IWebviewService private readonly webviewService: IWebviewService
-	) {
-		super();
-		console.log('SecurityAsCodeControl: Constructor called');
+    constructor(
+        private readonly container: HTMLElement,
+        @IWebviewService private readonly webviewService: IWebviewService
+    ) {
+        super();
+        console.log('SecurityAsCodeControl: Constructor called');
 
-		this.webviewElement = this.webviewService.createWebviewElement({
-			title: 'Security as Code',
-			options: {
-				enableFindWidget: true,
-				tryRestoreScrollPosition: true,
-				retainContextWhenHidden: true,
-			},
-			contentOptions: {
-				allowScripts: true,
-			},
-			extension: undefined
-		});
+        this.webviewElement = this.webviewService.createWebviewElement({
+            title: 'Security as Code',
+            options: {
+                enableFindWidget: true,
+                tryRestoreScrollPosition: true,
+                retainContextWhenHidden: true,
+            },
+            contentOptions: {
+                allowScripts: true,
+            },
+            extension: undefined
+        });
 
-		this.webviewElement.mountTo(this.container, getWindow(this.container));
-		this.webviewElement.setHtml(this.getHtml());
+        this.webviewElement.mountTo(this.container, getWindow(this.container));
+        this.webviewElement.setHtml(this.getHtml());
 
-		this._register(this.webviewElement.onMessage(async e => {
-			const message = e.message;
-			if (message && message.command === 'log') {
-				console.log('SecurityAsCode Webview:', message.message);
-			}
-		}));
-	}
+        this._register(this.webviewElement.onMessage(async e => {
+            const message = e.message;
+            if (message && message.command === 'log') {
+                console.log('SecurityAsCode Webview:', message.message);
+            }
+        }));
+    }
 
-	public layout(width: number, height: number): void {
-		this.container.style.width = `${width}px`;
-		this.container.style.height = `${height}px`;
-	}
+    public layout(width: number, height: number): void {
+        this.container.style.width = `${width}px`;
+        this.container.style.height = `${height}px`;
+    }
 
-	public show(): void {
-		this.container.style.display = 'block';
-	}
+    public show(): void {
+        this.container.style.display = 'block';
+    }
 
-	public hide(): void {
-		this.container.style.display = 'none';
-	}
+    public hide(): void {
+        this.container.style.display = 'none';
+    }
 
-	private getHtml(): string {
-		return `<!DOCTYPE html>
+    private getHtml(): string {
+        return `<!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
@@ -434,5 +434,5 @@ export class SecurityAsCodeControl extends Disposable {
             </script>
         </body>
         </html>`;
-	}
+    }
 }

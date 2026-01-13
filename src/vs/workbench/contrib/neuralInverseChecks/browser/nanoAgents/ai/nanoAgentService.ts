@@ -1,3 +1,8 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Neural Inverse Corporation. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
 import { Disposable } from '../../../../../../base/common/lifecycle.js';
 import { ProjectAnalyzer } from '../projectAnalyzer.js';
 import { ILLMMessageService } from '../../../../void/common/sendLLMMessageService.js';
