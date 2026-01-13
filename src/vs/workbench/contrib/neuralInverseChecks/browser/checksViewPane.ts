@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
- *  Copyright (c) Microsoft Corporation. All rights reserved.
- *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *  Copyright (c) Neural Inverse Corporation. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -21,6 +21,7 @@ export class ChecksViewPane extends ViewPane {
 
 	public static readonly ID = 'workbench.view.checks.pane';
 	private projectAnalyzer: ProjectAnalyzer;
+	private lastCheckpointLabel: HTMLElement | undefined;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -45,41 +46,97 @@ export class ChecksViewPane extends ViewPane {
 		container.style.padding = '20px';
 		container.style.display = 'flex';
 		container.style.flexDirection = 'column';
-		container.style.gap = '10px';
+		container.style.alignItems = 'flex-start';
+		container.style.gap = '15px';
+
+		// Header / Description
+		const headerContainer = document.createElement('div');
+		headerContainer.style.display = 'flex';
+		headerContainer.style.flexDirection = 'column';
+		headerContainer.style.gap = '5px';
+		container.appendChild(headerContainer);
+
+		const title = document.createElement('h3');
+		title.textContent = 'Project Security & Integrity';
+		title.style.margin = '0';
+		title.style.fontSize = '1.1em';
+		title.style.fontWeight = '500';
+		title.style.color = 'var(--vscode-foreground)';
+		headerContainer.appendChild(title);
 
 		const description = document.createElement('div');
-		description.textContent = 'Create a secure checkpoint of your current project state for analysis.';
-		description.style.marginBottom = '10px';
+		description.textContent = 'Create a secure checkpoint to analyze your project structure, dependencies, and code patterns for security insights.';
 		description.style.color = 'var(--vscode-descriptionForeground)';
-		container.appendChild(description);
+		description.style.lineHeight = '1.4';
+		description.style.fontSize = '12px';
+		headerContainer.appendChild(description);
 
-		const buttonContainer = document.createElement('div');
-		container.appendChild(buttonContainer);
+		// Action Area
+		const actionContainer = document.createElement('div');
+		actionContainer.style.display = 'flex';
+		actionContainer.style.flexDirection = 'column';
+		actionContainer.style.gap = '10px';
+		actionContainer.style.width = '100%';
+		actionContainer.style.maxWidth = '400px';
+		container.appendChild(actionContainer);
 
-		const button = new Button(buttonContainer, {
-			title: 'Analyze Project & Create Checkpoint',
+		const button = new Button(actionContainer, {
+			title: 'Run full analysis and create an encrypted checkpoint',
 			secondary: false,
 			...defaultButtonStyles
 		});
-		button.label = 'Create Checkpoint';
+		button.label = 'Run Analysis & Create Checkpoint';
+
+		// Status / Timestamp
+		this.lastCheckpointLabel = document.createElement('div');
+		this.lastCheckpointLabel.style.fontSize = '11px';
+		this.lastCheckpointLabel.style.color = 'var(--vscode-descriptionForeground)';
+		this.lastCheckpointLabel.style.display = 'flex';
+		this.lastCheckpointLabel.style.alignItems = 'center';
+		this.lastCheckpointLabel.style.gap = '5px';
+		this.lastCheckpointLabel.textContent = 'Last checkpoint: Checking...';
+		actionContainer.appendChild(this.lastCheckpointLabel);
 
 		this._register(button.onDidClick(async () => {
 			button.enabled = false;
-			button.label = 'Running Analysis...';
+			const originalLabel = button.label;
+			button.label = '$(loading~spin) Analyzing Project...';
+
 			try {
 				await this.projectAnalyzer.analyzeProject();
 				await this.projectAnalyzer.createCheckpoint();
+				await this.updateLastCheckpointTime(); // Update time after success
 			} catch (error) {
 				console.error('Analysis failed', error);
 			} finally {
 				button.enabled = true;
-				button.label = 'Create Checkpoint';
+				button.label = originalLabel;
 			}
 		}));
+
+		// Initial fetch
+		this.updateLastCheckpointTime();
+	}
+
+	private async updateLastCheckpointTime(): Promise<void> {
+		if (!this.lastCheckpointLabel) return;
+
+		try {
+			const checkpoints = await this.projectAnalyzer.historyService.getCheckpoints();
+			if (checkpoints.length > 0) {
+				const latest = checkpoints[0];
+				const date = new Date(latest.date);
+				this.lastCheckpointLabel.innerHTML = `$(check) Last checkpoint: <span style="color: var(--vscode-textLink-foreground);">${date.toLocaleString()}</span>`;
+			} else {
+				this.lastCheckpointLabel.textContent = 'Last checkpoint: Never';
+			}
+		} catch (e) {
+			this.lastCheckpointLabel.textContent = 'Last checkpoint: Unknown';
+		}
 	}
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		// No specific layout needed for this simple view
+		// Dynamic layout adjustments if needed
 	}
 }

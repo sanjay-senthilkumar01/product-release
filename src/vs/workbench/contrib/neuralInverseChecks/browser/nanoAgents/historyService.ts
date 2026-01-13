@@ -2,6 +2,7 @@
  *  Copyright (c) Neural Inverse Corporation. All rights reserved.
  *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
@@ -28,6 +29,14 @@ export class HistoryService extends Disposable {
 	}
 
 	public async getCheckpoints(): Promise<ICheckpoint[]> {
+		try {
+			if (!(await this.fileService.exists(this.inverseDir))) {
+				return [];
+			}
+		} catch (e) {
+			return [];
+		}
+
 		// Use parent directory (workspace root) effectively for temp files to bypass read-only .inverse
 		const workspaceRoot = dirname(this.inverseDir);
 		const loadFile = URI.joinPath(workspaceRoot, '.inverse_history_log');
