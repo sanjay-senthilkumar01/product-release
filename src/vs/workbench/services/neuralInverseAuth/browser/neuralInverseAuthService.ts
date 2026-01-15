@@ -66,13 +66,34 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 		return false;
 	}
 
+	private _syncInterval: any;
+
 	private async initialize(): Promise<void> {
 		const token = await this.secretStorageService.get(TOKEN_KEY);
 		if (token) {
 			this._isAuthenticated = true;
 			this._onDidChangeAuthStatus.fire(true);
-			this.syncWithWebConsole();
+			this.startPeriodicSync();
 		}
+	}
+
+	private startPeriodicSync(): void {
+		// Sync immediately
+		this.syncWithWebConsole();
+
+		// Clear existing if any
+		if (this._syncInterval) {
+			clearInterval(this._syncInterval);
+		}
+
+		// Sync every 30 seconds to check for blocks/revocations
+		this._syncInterval = setInterval(() => {
+			if (this._isAuthenticated) {
+				this.syncWithWebConsole();
+			} else {
+				clearInterval(this._syncInterval);
+			}
+		}, 30000);
 	}
 
 
@@ -306,7 +327,10 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 			this.logService.info(`NeuralInverseAuth: Sync response status ${response.statusCode}`);
 
 
-			if (response.statusCode >= 400) {
+			if (response.statusCode === 403) {
+				this.logService.warn(`NeuralInverseAuth: Device Revoked/Blocked (403). Logging out.`);
+				this.logout();
+			} else if (response.statusCode >= 400) {
 				this.logService.error(`NeuralInverseAuth: Failed to sync: ${response.statusCode}`);
 				this.logService.error(`NeuralInverseAuth: Response body: ${response.body}`);
 			} else {
