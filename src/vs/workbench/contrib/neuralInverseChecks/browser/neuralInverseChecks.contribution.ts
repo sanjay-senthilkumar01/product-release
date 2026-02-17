@@ -24,6 +24,11 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
 import './context/autocomplete/policy/policyService.js';
 
+// GRC Engine Services (side-effect imports to register singletons)
+import './engine/grcEngineService.js';
+import './engine/auditTrailService.js';
+import { GRCDiagnosticsContribution } from './diagnostics/grcDiagnosticsContribution.js';
+
 
 const CHECKS_MANAGER_WINDOW_TYPE = 'checksManager';
 const CHECKS_MANAGER_STORAGE_KEY = 'neuralInverseChecks.state';
@@ -154,3 +159,5 @@ Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([{
 	containerIcon: { id: 'codicon/shield' }
 }], VIEW_CONTAINER);
 
+// Register GRC Diagnostics (real-time editor squiggly underlines)
+Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(GRCDiagnosticsContribution, LifecyclePhase.Restored);
