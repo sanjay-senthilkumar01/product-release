@@ -25,9 +25,11 @@ import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js'
 import './context/autocomplete/policy/policyService.js';
 
 // GRC Engine Services (side-effect imports to register singletons)
-import './engine/grcEngineService.js';
-import './engine/auditTrailService.js';
+import './engine/framework/frameworkRegistry.js'; // Must load before grcEngineService
+import './engine/services/grcEngineService.js';
+import './engine/services/auditTrailService.js';
 import { GRCDiagnosticsContribution } from './diagnostics/grcDiagnosticsContribution.js';
+import { GRCAnalyzerRegistration } from './engine/analyzers/analyzerRegistration.js';
 
 
 const CHECKS_MANAGER_WINDOW_TYPE = 'checksManager';
@@ -161,3 +163,6 @@ Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([{
 
 // Register GRC Diagnostics (real-time editor squiggly underlines)
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(GRCDiagnosticsContribution, LifecyclePhase.Restored);
+
+// Register Core Analyzers (AST, External)
+Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(GRCAnalyzerRegistration, LifecyclePhase.Restored);

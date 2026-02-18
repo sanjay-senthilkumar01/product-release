@@ -52,7 +52,8 @@ export class CodeAsPolicyControl extends Disposable {
         if (!this.webviewElement) { return; }
         const results = this.grcEngine.getResultsForDomain('policy');
         const rules = this.grcEngine.getRules().filter(r => r.domain === 'policy');
-        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'policy', results, rules }));
+        const activeFrameworks = this.grcEngine.getActiveFrameworks();
+        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'policy', results, rules, activeFrameworks }));
     }
 
     layout(width: number, height: number) {

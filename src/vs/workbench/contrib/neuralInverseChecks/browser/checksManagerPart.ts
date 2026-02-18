@@ -25,6 +25,7 @@ import { DataIntegrityControl } from './dataIntegrity/dataIntegrityControl.js';
 import { AuditAndEvidenceControl } from './auditAndEvidence/auditAndEvidenceControl.js';
 import { FailSafeDefaultsControl } from './failSafeDefaults/failSafeDefaultsControl.js';
 import { FormalVerificationControl } from './formalVerification/formalVerificationControl.js';
+import { IGRCEngineService } from './engine/services/grcEngineService.js';
 
 export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProvider {
 
@@ -62,6 +63,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         @IInstantiationService private readonly instantiationService: IInstantiationService,
         @IWebviewService private readonly webviewService: IWebviewService,
         @ITerminalService private readonly terminalService: ITerminalService,
+        @IGRCEngineService private readonly grcEngine: IGRCEngineService,
     ) {
         super(ChecksManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
     }
@@ -549,6 +551,38 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         this.webviewElement.mountTo(checksContainer, getWindow(checksContainer));
         this.webviewElement.setHtml(this.getDashboardHtml());
 
+        // Handle messages from the dashboard webview (framework import)
+        this._register(this.webviewElement.onMessage(async (event) => {
+            const msg = event.message as { type: string; json?: string };
+            if (msg.type === 'importFramework' && msg.json) {
+                const result = await this.grcEngine.importFramework(msg.json);
+                if (this.webviewElement) {
+                    this.webviewElement.postMessage({
+                        type: 'importResult',
+                        valid: result.valid,
+                        errors: result.errors ?? [],
+                        warnings: result.warnings ?? []
+                    });
+                    // Refresh dashboard to show newly imported framework
+                    if (result.valid) {
+                        this.webviewElement.setHtml(this.getDashboardHtml());
+                    }
+                }
+            }
+        }));
+
+        // Subscribe to engine events to refresh dashboard
+        this._register(this.grcEngine.onDidCheckComplete(() => {
+            if (this.webviewElement) {
+                this.webviewElement.setHtml(this.getDashboardHtml());
+            }
+        }));
+        this._register(this.grcEngine.onDidRulesChange(() => {
+            if (this.webviewElement) {
+                this.webviewElement.setHtml(this.getDashboardHtml());
+            }
+        }));
+
         // Mount Void Sidebar
         // HACK: Override createElement to bypass "Not allowed to create elements in child window" error
         const auxDoc = parent.ownerDocument;
@@ -646,35 +680,267 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
     }
 
     private getDashboardHtml(): string {
-        console.log('ChecksManagerPart: Generating Dashboard HTML');
+        const frameworks = this.grcEngine.getActiveFrameworks();
+        const domainSummary = this.grcEngine.getDomainSummary();
+        const allResults = this.grcEngine.getAllResults();
+        const blockingViolations = this.grcEngine.getBlockingViolations();
+        const rules = this.grcEngine.getRules();
+        const totalRules = rules.length;
+        const totalViolations = allResults.length;
+        const passRate = totalRules > 0 ? Math.round(((totalRules - totalViolations) / totalRules) * 100) : 100;
+        const totalErrors = domainSummary.reduce((s, d) => s + d.errorCount, 0);
+        const totalWarnings = domainSummary.reduce((s, d) => s + d.warningCount, 0);
+
+        const domainRowsHtml = domainSummary.map(d => {
+            const violations = d.errorCount + d.warningCount + d.infoCount;
+            const status = violations === 0 ? 'pass' : d.errorCount > 0 ? 'fail' : 'warn';
+            const statusLabel = status === 'pass' ? 'PASS' : status === 'fail' ? 'FAIL' : 'WARN';
+            return `<tr>
+                <td>${this._esc(d.domain)}</td>
+                <td class="num">${d.errorCount}</td>
+                <td class="num">${d.warningCount}</td>
+                <td class="num">${d.infoCount}</td>
+                <td class="num">${d.enabledRules}/${d.totalRules}</td>
+                <td><span class="status-${status}">${statusLabel}</span></td>
+            </tr>`;
+        }).join('');
+
+        const fwRowsHtml = frameworks.length > 0
+            ? frameworks.map(fw => {
+                const fwRuleCount = rules.filter(r => r.frameworkId === fw.id).length;
+                return `<tr>
+                    <td>${this._esc(fw.id)}</td>
+                    <td>${this._esc(fw.name)}</td>
+                    <td class="num">${this._esc(fw.version)}</td>
+                    <td class="num">${fwRuleCount}</td>
+                </tr>`;
+            }).join('')
+            : `<tr><td colspan="4" class="muted">No frameworks loaded</td></tr>`;
+
+        const blockingRowsHtml = blockingViolations.length > 0
+            ? blockingViolations.slice(0, 8).map(v => {
+                const file = v.fileUri.path.split('/').pop() || '';
+                return `<tr>
+                    <td class="mono">${this._esc(file)}:${v.line}</td>
+                    <td>${this._esc(v.message)}</td>
+                    <td>${this._esc(v.ruleId)}</td>
+                </tr>`;
+            }).join('')
+            : `<tr><td colspan="3" class="muted">No blocking violations</td></tr>`;
+
+        const passColor = passRate >= 80 ? '#73c991' : passRate >= 50 ? '#cca700' : 'var(--error-fg)';
+
         return `<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Checks</title>
-            <style>
-                body {
-                    font-family: var(--vscode-font-family);
-                    font-size: var(--vscode-font-size);
-                    padding: 20px;
-                    background-color: var(--vscode-editor-background);
-                    color: var(--vscode-editor-foreground);
-                    margin: 0;
-                }
-                h1 {
-                    font-size: 1.2em;
-                    font-weight: 500;
-                    margin: 0;
-                    color: var(--vscode-foreground);
-                }
-            </style>
-        </head>
-        <body>
-            <h1>Checks Manager</h1>
-        </body>
-        </html>`;
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+:root {
+    --fg: var(--vscode-foreground, #ccc);
+    --fg-muted: var(--vscode-descriptionForeground, #888);
+    --bg: var(--vscode-editor-background, #1e1e1e);
+    --bg-alt: var(--vscode-editorWidget-background, #252526);
+    --border: var(--vscode-widget-border, #333);
+    --input-bg: var(--vscode-input-background, #3c3c3c);
+    --input-border: var(--vscode-input-border, #555);
+    --input-fg: var(--vscode-input-foreground, #ccc);
+    --btn-bg: var(--vscode-button-background, #0e639c);
+    --btn-fg: var(--vscode-button-foreground, #fff);
+    --btn-hover: var(--vscode-button-hoverBackground, #1177bb);
+    --btn-sec-bg: var(--vscode-button-secondaryBackground, #3a3d41);
+    --btn-sec-fg: var(--vscode-button-secondaryForeground, #ccc);
+    --error-fg: var(--vscode-errorForeground, #f48771);
+    --warn-fg: var(--vscode-editorWarning-foreground, #cca700);
+    --link: var(--vscode-textLink-foreground, #4fc1ff);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-size: 12px; line-height: 1.5;
+    background: var(--bg); color: var(--fg);
+    padding: 16px 20px;
+}
+.header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+.header h1 { font-size: 14px; font-weight: 600; letter-spacing: -0.2px; }
+.header .sub { font-size: 11px; color: var(--fg-muted); }
+.metrics {
+    display: flex; gap: 20px; align-items: center;
+    padding: 10px 0; margin-bottom: 14px;
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.metric { display: flex; align-items: baseline; gap: 5px; }
+.metric-val { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.metric-label { font-size: 11px; color: var(--fg-muted); }
+.metric-val.error { color: var(--error-fg); }
+.metric-val.warning { color: var(--warn-fg); }
+.metric-val.good { color: #73c991; }
+.progress-bar {
+    flex: 1; height: 4px; border-radius: 2px;
+    background: var(--border); overflow: hidden; margin-left: 8px;
+}
+.progress-fill { height: 100%; border-radius: 2px; }
+.section { margin-bottom: 16px; }
+.section-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 0; margin-bottom: 4px;
+}
+.section-title {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; color: var(--fg-muted);
+}
+table { width: 100%; border-collapse: collapse; }
+th {
+    text-align: left; font-size: 11px; font-weight: 500;
+    color: var(--fg-muted); padding: 4px 8px 4px 0;
+    border-bottom: 1px solid var(--border);
+}
+td {
+    padding: 4px 8px 4px 0; font-size: 12px;
+    border-bottom: 1px solid var(--border);
+}
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.mono { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+td.muted { color: var(--fg-muted); font-style: italic; padding: 8px 0; }
+tr:last-child td { border-bottom: none; }
+.status-pass, .status-fail, .status-warn {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    padding: 1px 6px; border-radius: 3px; letter-spacing: 0.3px;
+}
+.status-pass { background: rgba(115,201,145,0.15); color: #73c991; }
+.status-fail { background: rgba(244,135,113,0.15); color: var(--error-fg); }
+.status-warn { background: rgba(204,167,0,0.15); color: var(--warn-fg); }
+.btn {
+    font-size: 11px; padding: 4px 10px; border: none; border-radius: 3px;
+    cursor: pointer; font-family: inherit;
+    background: var(--btn-bg); color: var(--btn-fg);
+}
+.btn:hover { background: var(--btn-hover); }
+.btn-sec { background: var(--btn-sec-bg); color: var(--btn-sec-fg); }
+.btn-sec:hover { opacity: 0.9; }
+.import-panel {
+    display: none; margin-top: 8px; padding: 12px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg-alt);
+}
+.import-panel.visible { display: block; }
+.import-panel textarea {
+    width: 100%; height: 120px; resize: vertical;
+    background: var(--input-bg); color: var(--input-fg);
+    border: 1px solid var(--input-border); border-radius: 3px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px; padding: 8px; margin-bottom: 8px;
+}
+.import-panel textarea:focus { outline: 1px solid var(--link); }
+.import-actions { display: flex; gap: 8px; align-items: center; }
+.import-feedback { font-size: 11px; margin-left: 8px; }
+.import-feedback.err { color: var(--error-fg); }
+.import-feedback.ok { color: #73c991; }
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>Checks Manager</h1>
+    <span class="sub">${totalRules} rules &middot; ${totalViolations} violations &middot; ${frameworks.length} framework${frameworks.length !== 1 ? 's' : ''}</span>
+</div>
+
+<div class="metrics">
+    <div class="metric">
+        <span class="metric-val${passRate >= 80 ? ' good' : passRate >= 50 ? ' warning' : ' error'}">${passRate}%</span>
+        <span class="metric-label">pass rate</span>
+    </div>
+    <div class="progress-bar">
+        <div class="progress-fill" style="width:${passRate}%;background:${passColor}"></div>
+    </div>
+    <div class="metric">
+        <span class="metric-val error">${totalErrors}</span>
+        <span class="metric-label">errors</span>
+    </div>
+    <div class="metric">
+        <span class="metric-val warning">${totalWarnings}</span>
+        <span class="metric-label">warnings</span>
+    </div>
+    <div class="metric">
+        <span class="metric-val${blockingViolations.length > 0 ? ' error' : ' good'}">${blockingViolations.length}</span>
+        <span class="metric-label">blocking</span>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-hdr"><span class="section-title">Domains</span></div>
+    <table>
+        <thead><tr><th>Domain</th><th class="num">Errors</th><th class="num">Warnings</th><th class="num">Info</th><th class="num">Rules</th><th>Status</th></tr></thead>
+        <tbody>${domainRowsHtml || '<tr><td colspan="6" class="muted">No domains discovered</td></tr>'}</tbody>
+    </table>
+</div>
+
+<div class="section">
+    <div class="section-hdr">
+        <span class="section-title">Frameworks</span>
+        <button class="btn" id="importBtn" onclick="toggleImport()">Import Framework</button>
+    </div>
+    <div class="import-panel" id="importPanel">
+        <textarea id="fwJson" placeholder='Paste framework JSON here...'></textarea>
+        <div class="import-actions">
+            <button class="btn" onclick="submitImport()">Validate &amp; Import</button>
+            <button class="btn btn-sec" onclick="toggleImport()">Cancel</button>
+            <span class="import-feedback" id="importFeedback"></span>
+        </div>
+    </div>
+    <table>
+        <thead><tr><th>ID</th><th>Name</th><th class="num">Version</th><th class="num">Rules</th></tr></thead>
+        <tbody>${fwRowsHtml}</tbody>
+    </table>
+</div>
+
+<div class="section">
+    <div class="section-hdr"><span class="section-title">Commit Blockers</span></div>
+    <table>
+        <thead><tr><th>Location</th><th>Message</th><th>Rule</th></tr></thead>
+        <tbody>${blockingRowsHtml}</tbody>
+    </table>
+</div>
+
+<script>
+const vscode = acquireVsCodeApi();
+function toggleImport() {
+    document.getElementById('importPanel').classList.toggle('visible');
+    document.getElementById('importFeedback').textContent = '';
+}
+function submitImport() {
+    const json = document.getElementById('fwJson').value.trim();
+    if (!json) return;
+    try { JSON.parse(json); } catch (e) {
+        showFb('Invalid JSON: ' + e.message, true); return;
     }
+    showFb('Importing...', false);
+    vscode.postMessage({ type: 'importFramework', json: json });
+}
+function showFb(msg, isErr) {
+    const el = document.getElementById('importFeedback');
+    el.textContent = msg;
+    el.className = 'import-feedback ' + (isErr ? 'err' : 'ok');
+}
+window.addEventListener('message', function(ev) {
+    var msg = ev.data;
+    if (msg.type === 'importResult') {
+        if (msg.valid) {
+            showFb('Framework imported successfully', false);
+            document.getElementById('fwJson').value = '';
+        } else {
+            showFb((msg.errors || []).join('; ') || 'Validation failed', true);
+        }
+    }
+});
+</script>
+</body>
+</html>`;
+    }
+
+    /** HTML-escape to prevent XSS in webview content */
+    private _esc(s: string): string {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
 
     override layout(width: number, height: number, top: number, left: number): void {
         super.layout(width, height, top, left);

@@ -48,7 +48,8 @@ export class ArchitectureAsCodeControl extends Disposable {
         if (!this.webviewElement) { return; }
         const results = this.grcEngine.getResultsForDomain('architecture');
         const rules = this.grcEngine.getRules().filter(r => r.domain === 'architecture');
-        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'architecture', results, rules }));
+        const activeFrameworks = this.grcEngine.getActiveFrameworks();
+        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'architecture', results, rules, activeFrameworks }));
     }
 
     layout(width: number, height: number) {

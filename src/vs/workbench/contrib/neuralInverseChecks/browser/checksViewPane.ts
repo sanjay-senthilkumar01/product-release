@@ -13,13 +13,13 @@ import { IViewDescriptorService } from '../../../common/views.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
-import { IGRCEngineService } from './engine/grcEngineService.js';
-import { GRCDomain, ICheckResult } from './engine/grcTypes.js';
+import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js';
+
+const GRC_MARKER_OWNER = 'neuralInverse.grc';
 
 export class ChecksViewPane extends ViewPane {
 
 	public static readonly ID = 'workbench.view.checks.pane';
-
 	private _container: HTMLElement | undefined;
 
 	constructor(
@@ -33,7 +33,7 @@ export class ChecksViewPane extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
-		@IGRCEngineService private readonly grcEngine: IGRCEngineService,
+		@IMarkerService private readonly markerService: IMarkerService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -45,8 +45,10 @@ export class ChecksViewPane extends ViewPane {
 
 		this._renderContent();
 
-		this._register(this.grcEngine.onDidCheckComplete(() => this._renderContent()));
-		this._register(this.grcEngine.onDidRulesChange(() => this._renderContent()));
+		// Re-render when markers change
+		this._register(this.markerService.onMarkerChanged(() => {
+			this._renderContent();
+		}));
 	}
 
 	private _renderContent(): void {
@@ -54,12 +56,13 @@ export class ChecksViewPane extends ViewPane {
 		const c = this._container;
 		c.innerHTML = '';
 
-		const summary = this.grcEngine.getDomainSummary();
-		const allResults = this.grcEngine.getAllResults();
-		const totalErrors = summary.reduce((a, s) => a + s.errorCount, 0);
-		const totalWarnings = summary.reduce((a, s) => a + s.warningCount, 0);
-		const totalInfos = summary.reduce((a, s) => a + s.infoCount, 0);
-		const totalIssues = totalErrors + totalWarnings + totalInfos;
+		// Read all GRC markers from the marker service
+		const allMarkers = this.markerService.read({ owner: GRC_MARKER_OWNER });
+
+		const errors = allMarkers.filter(m => m.severity === MarkerSeverity.Error);
+		const warnings = allMarkers.filter(m => m.severity === MarkerSeverity.Warning);
+		const infos = allMarkers.filter(m => m.severity === MarkerSeverity.Info);
+		const total = allMarkers.length;
 
 		// ─── Styles ───
 		const style = document.createElement('style');
@@ -75,27 +78,17 @@ export class ChecksViewPane extends ViewPane {
 			.grc-stat-label { font-size:9px; opacity:0.6; text-transform:uppercase; letter-spacing:0.3px; }
 			.grc-stat-val { font-size:20px; font-weight:700; margin-top:2px; }
 			.grc-stat-val.err { color:#ff5252; } .grc-stat-val.warn { color:#ff9800; } .grc-stat-val.info { color:#64b5f6; }
-			.grc-domain { margin-bottom:8px; }
-			.grc-domain-header { display:flex; align-items:center; gap:8px; padding:6px 8px; cursor:pointer; border-radius:4px; user-select:none; }
-			.grc-domain-header:hover { background:rgba(255,255,255,0.04); }
-			.grc-domain-name { flex:1; font-weight:600; text-transform:capitalize; }
-			.grc-domain-count { font-size:10px; font-weight:700; padding:1px 6px; border-radius:10px; }
-			.grc-count-err { background:rgba(255,82,82,0.15); color:#ff5252; }
-			.grc-count-warn { background:rgba(255,152,0,0.15); color:#ff9800; }
-			.grc-count-ok { background:rgba(76,175,80,0.15); color:#4caf50; }
-			.grc-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-			.grc-dot-security { background:#ff5252; } .grc-dot-compliance { background:#7c4dff; }
-			.grc-dot-data-integrity { background:#00bcd4; } .grc-dot-fail-safe { background:#ff9800; }
-			.grc-dot-architecture { background:#42a5f5; } .grc-dot-policy { background:#66bb6a; }
-			.grc-issues { margin-left:16px; margin-bottom:4px; }
-			.grc-issue { display:flex; align-items:flex-start; gap:6px; padding:4px 8px; font-size:11px; border-left:2px solid transparent; cursor:default; }
-			.grc-issue:hover { background:rgba(255,255,255,0.03); }
+			.grc-sep { border:none; border-top:1px solid var(--vscode-panel-border); margin:10px 0; }
+			.grc-issue { display:flex; align-items:flex-start; gap:6px; padding:6px 8px; font-size:11px; border-left:2px solid transparent; cursor:default; }
+			.grc-issue:hover { background:rgba(255,255,255,0.04); }
 			.grc-issue-err { border-left-color:#ff5252; } .grc-issue-warn { border-left-color:#ff9800; } .grc-issue-info { border-left-color:#64b5f6; }
+			.grc-issue-sev { font-size:9px; font-weight:700; flex-shrink:0; width:60px; font-family:monospace; }
 			.grc-issue-msg { flex:1; line-height:1.4; }
 			.grc-issue-file { font-size:10px; color:#888; font-family:monospace; }
-			.grc-issue-sev { font-size:9px; font-weight:700; flex-shrink:0; }
 			.grc-empty { text-align:center; padding:24px; opacity:0.5; font-size:12px; }
-			.grc-sep { border:none; border-top:1px solid var(--vscode-panel-border); margin:10px 0; }
+			.grc-file-group { margin-bottom:10px; }
+			.grc-file-header { padding:4px 8px; font-size:11px; font-weight:600; opacity:0.7; cursor:pointer; user-select:none; border-radius:3px; }
+			.grc-file-header:hover { background:rgba(255,255,255,0.04); }
 		`;
 		c.appendChild(style);
 
@@ -106,83 +99,68 @@ export class ChecksViewPane extends ViewPane {
 		// ─── Header ───
 		const header = document.createElement('div');
 		header.className = 'grc-header';
-		header.innerHTML = `<h3>GRC Checks</h3><span class="grc-badge ${totalIssues === 0 ? 'grc-badge-ok' : 'grc-badge-issues'}">${totalIssues === 0 ? 'ALL CLEAR' : totalIssues + ' issue' + (totalIssues > 1 ? 's' : '')}</span>`;
+		header.innerHTML = `<h3>GRC Checks</h3><span class="grc-badge ${total === 0 ? 'grc-badge-ok' : 'grc-badge-issues'}">${total === 0 ? 'ALL CLEAR' : total + ' issue' + (total > 1 ? 's' : '')}</span>`;
 		panel.appendChild(header);
 
 		// ─── Stats ───
 		const stats = document.createElement('div');
 		stats.className = 'grc-stats';
 		stats.innerHTML = `
-			<div class="grc-stat"><div class="grc-stat-label">Errors</div><div class="grc-stat-val err">${totalErrors}</div></div>
-			<div class="grc-stat"><div class="grc-stat-label">Warnings</div><div class="grc-stat-val warn">${totalWarnings}</div></div>
-			<div class="grc-stat"><div class="grc-stat-label">Info</div><div class="grc-stat-val info">${totalInfos}</div></div>
+			<div class="grc-stat"><div class="grc-stat-label">Errors</div><div class="grc-stat-val err">${errors.length}</div></div>
+			<div class="grc-stat"><div class="grc-stat-label">Warnings</div><div class="grc-stat-val warn">${warnings.length}</div></div>
+			<div class="grc-stat"><div class="grc-stat-label">Info</div><div class="grc-stat-val info">${infos.length}</div></div>
 		`;
 		panel.appendChild(stats);
 
-		// ─── Separator ───
-		const sep = document.createElement('hr');
-		sep.className = 'grc-sep';
-		panel.appendChild(sep);
+		panel.appendChild(Object.assign(document.createElement('hr'), { className: 'grc-sep' }));
 
-		// ─── Per-Domain Collapsible Sections ───
-		const domains: GRCDomain[] = ['security', 'compliance', 'data-integrity', 'architecture', 'fail-safe', 'policy'];
-
-		if (totalIssues === 0) {
+		// ─── Issues grouped by file ───
+		if (total === 0) {
 			const empty = document.createElement('div');
 			empty.className = 'grc-empty';
 			empty.textContent = '✓ No GRC violations detected';
 			panel.appendChild(empty);
+			return;
 		}
 
-		for (const domain of domains) {
-			const domainResults = allResults.filter(r => r.domain === domain);
-			const domainErrors = domainResults.filter(r => r.severity === 'error').length;
-			const domainTotal = domainResults.length;
+		// Group by file
+		const byFile = new Map<string, typeof allMarkers>();
+		for (const m of allMarkers) {
+			const key = m.resource.path;
+			if (!byFile.has(key)) { byFile.set(key, []); }
+			byFile.get(key)!.push(m);
+		}
 
-			if (domainTotal === 0) { continue; }
+		for (const [filePath, markers] of byFile) {
+			const group = document.createElement('div');
+			group.className = 'grc-file-group';
+			panel.appendChild(group);
 
-			const section = document.createElement('div');
-			section.className = 'grc-domain';
-			panel.appendChild(section);
+			const fileName = filePath.split('/').pop() || filePath;
+			const fileHeader = document.createElement('div');
+			fileHeader.className = 'grc-file-header';
+			fileHeader.textContent = `${fileName} (${markers.length})`;
+			group.appendChild(fileHeader);
 
-			const domainHeader = document.createElement('div');
-			domainHeader.className = 'grc-domain-header';
-			const countClass = domainErrors > 0 ? 'grc-count-err' : 'grc-count-warn';
-			domainHeader.innerHTML = `
-				<span class="grc-dot grc-dot-${domain}"></span>
-				<span class="grc-domain-name">${domain}</span>
-				<span class="grc-domain-count ${countClass}">${domainTotal}</span>
-			`;
-			section.appendChild(domainHeader);
+			const issuesDiv = document.createElement('div');
+			group.appendChild(issuesDiv);
 
-			const issuesContainer = document.createElement('div');
-			issuesContainer.className = 'grc-issues';
-			issuesContainer.style.display = 'block';
-			section.appendChild(issuesContainer);
-
-			// Toggle collapse
-			domainHeader.addEventListener('click', () => {
-				issuesContainer.style.display = issuesContainer.style.display === 'none' ? 'block' : 'none';
+			fileHeader.addEventListener('click', () => {
+				issuesDiv.style.display = issuesDiv.style.display === 'none' ? 'block' : 'none';
 			});
 
-			for (const result of domainResults) {
-				this._renderIssue(issuesContainer, result);
+			for (const m of markers) {
+				const sevClass = m.severity === MarkerSeverity.Error ? 'grc-issue-err' : m.severity === MarkerSeverity.Warning ? 'grc-issue-warn' : 'grc-issue-info';
+				const sevColor = m.severity === MarkerSeverity.Error ? '#ff5252' : m.severity === MarkerSeverity.Warning ? '#ff9800' : '#64b5f6';
+				const issue = document.createElement('div');
+				issue.className = `grc-issue ${sevClass}`;
+				issue.innerHTML = `
+					<span class="grc-issue-sev" style="color:${sevColor}">${this._esc(String(m.code || ''))}</span>
+					<span class="grc-issue-msg">${this._esc(m.message)}<br><span class="grc-issue-file">${this._esc(fileName)}:${m.startLineNumber}</span></span>
+				`;
+				issuesDiv.appendChild(issue);
 			}
 		}
-	}
-
-	private _renderIssue(parent: HTMLElement, r: ICheckResult): void {
-		const issue = document.createElement('div');
-		const sevClass = r.severity === 'error' ? 'grc-issue-err' : r.severity === 'warning' ? 'grc-issue-warn' : 'grc-issue-info';
-		issue.className = `grc-issue ${sevClass}`;
-
-		const filePath = r.fileUri.path.split('/').pop() || r.fileUri.path;
-
-		issue.innerHTML = `
-			<span class="grc-issue-sev" style="color:${r.severity === 'error' ? '#ff5252' : r.severity === 'warning' ? '#ff9800' : '#64b5f6'}">${r.ruleId}</span>
-			<span class="grc-issue-msg">${this._esc(r.message)}<br><span class="grc-issue-file">${this._esc(filePath)}:${r.line}</span></span>
-		`;
-		parent.appendChild(issue);
 	}
 
 	private _esc(t: string): string {

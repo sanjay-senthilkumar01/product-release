@@ -41,7 +41,8 @@ export class FailSafeDefaultsControl extends Disposable {
     private _updateView(): void {
         const results = this.grcEngine.getResultsForDomain('fail-safe');
         const rules = this.grcEngine.getRules().filter(r => r.domain === 'fail-safe');
-        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'fail-safe', results, rules }));
+        const activeFrameworks = this.grcEngine.getActiveFrameworks();
+        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'fail-safe', results, rules, activeFrameworks }));
     }
 
     public layout(width: number, height: number): void {

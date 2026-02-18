@@ -6,9 +6,9 @@
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { IWebviewElement, IWebviewService } from '../../../webview/browser/webview.js';
 import { getWindow } from '../../../../../base/browser/dom.js';
-import { IGRCEngineService } from '../engine/grcEngineService.js';
-import { IAuditTrailService } from '../engine/auditTrailService.js';
-import { buildAuditViewHtml } from '../engine/checkViewHtml.js';
+import { IGRCEngineService } from '../engine/services/grcEngineService.js';
+import { IAuditTrailService } from '../engine/services/auditTrailService.js';
+import { buildAuditViewHtml } from '../engine/ui/checkViewHtml.js';
 
 export class AuditAndEvidenceControl extends Disposable {
 
@@ -30,6 +30,7 @@ export class AuditAndEvidenceControl extends Disposable {
         this.webviewElement.mountTo(this.container, getWindow(this.container));
         this._updateView();
         this._register(this.grcEngine.onDidCheckComplete(() => this._updateView()));
+        this._register(this.grcEngine.onDidRulesChange(() => this._updateView()));
     }
 
     private async _updateView(): Promise<void> {

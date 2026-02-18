@@ -41,7 +41,8 @@ export class DataIntegrityControl extends Disposable {
     private _updateView(): void {
         const results = this.grcEngine.getResultsForDomain('data-integrity');
         const rules = this.grcEngine.getRules().filter(r => r.domain === 'data-integrity');
-        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'data-integrity', results, rules }));
+        const activeFrameworks = this.grcEngine.getActiveFrameworks();
+        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'data-integrity', results, rules, activeFrameworks }));
     }
 
     public layout(width: number, height: number): void {

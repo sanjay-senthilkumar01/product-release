@@ -3,14 +3,39 @@
  *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { IFileService } from '../../../../../platform/files/common/files.js';
-import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
-import { URI } from '../../../../../base/common/uri.js';
-import { Emitter, Event } from '../../../../../base/common/event.js';
-import { VSBuffer } from '../../../../../base/common/buffer.js';
-import { IGRCConfig, IGRCRule, DEFAULT_GRC_CONFIG } from './grcTypes.js';
+/**
+ * # GRC Config Loader
+ *
+ * Loads and merges GRC rules from three sources (in priority order):
+ *
+ * 1. **Built-in rules** (`builtinRules.ts`) — always present, the default framework
+ * 2. **Framework rules** (`.inverse/frameworks/*.json`) — enterprise-imported frameworks
+ * 3. **User config** (`.inverse/grc-rules.json`) — user overrides and custom rules
+ *
+ * ## Merge Strategy
+ *
+ * - Built-in rules are the base layer
+ * - Framework rules are added alongside built-in rules
+ * - User config can override ANY rule (built-in or framework) by matching rule ID
+ * - User config can also add entirely new custom rules
+ * - User config can disable framework rules via `frameworkOverrides`
+ *
+ * ## File Watching
+ *
+ * The config loader watches `.inverse/grc-rules.json` for changes and reloads
+ * automatically. It also listens to `IFrameworkRegistry.onDidFrameworksChange`
+ * to re-merge when frameworks are added/removed.
+ */
+
+import { Disposable } from '../../../../../../base/common/lifecycle.js';
+import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
+import { URI } from '../../../../../../base/common/uri.js';
+import { Emitter, Event } from '../../../../../../base/common/event.js';
+import { VSBuffer } from '../../../../../../base/common/buffer.js';
+import { IGRCConfig, IGRCRule, DEFAULT_GRC_CONFIG } from '../types/grcTypes.js';
 import { BUILTIN_RULES } from './builtinRules.js';
+import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
 
 const GRC_FOLDER = '.inverse';
 const GRC_CONFIG_FILE = 'grc-rules.json';
@@ -18,9 +43,10 @@ const GRC_CONFIG_FILE = 'grc-rules.json';
 /**
  * Loads GRC rules from:
  * 1. Built-in rules (builtinRules.ts) - always present
- * 2. User config (.inverse/grc-rules.json) - overrides/additions
+ * 2. Framework rules (IFrameworkRegistry) - enterprise-imported frameworks
+ * 3. User config (.inverse/grc-rules.json) - overrides/additions
  *
- * Watches the config file for changes and reloads automatically.
+ * Watches the config file and framework changes, reloads automatically.
  */
 export class GRCConfigLoader extends Disposable {
 
@@ -32,7 +58,8 @@ export class GRCConfigLoader extends Disposable {
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IFrameworkRegistry private readonly frameworkRegistry: IFrameworkRegistry,
 	) {
 		super();
 		this._initialize();
@@ -42,6 +69,7 @@ export class GRCConfigLoader extends Disposable {
 		await this._ensureConfigExists();
 		await this._loadConfig();
 		this._registerFileWatcher();
+		this._registerFrameworkWatcher();
 	}
 
 	private _registerFileWatcher(): void {
@@ -55,6 +83,21 @@ export class GRCConfigLoader extends Disposable {
 				console.log('[GRCConfigLoader] Config file changed, reloading...');
 				this._loadConfig();
 			}
+		}));
+	}
+
+	/**
+	 * Re-merge rules whenever frameworks change.
+	 *
+	 * When an enterprise adds, removes, or modifies a framework file,
+	 * the registry fires onDidFrameworksChange. We re-merge to include
+	 * or exclude those framework rules.
+	 */
+	private _registerFrameworkWatcher(): void {
+		this._register(this.frameworkRegistry.onDidFrameworksChange(() => {
+			console.log('[GRCConfigLoader] Frameworks changed, re-merging rules...');
+			this._mergedRules = this._mergeRules();
+			this._onDidChange.fire();
 		}));
 	}
 
@@ -108,7 +151,7 @@ export class GRCConfigLoader extends Disposable {
 			const exists = await this.fileService.exists(configUri);
 			if (!exists) {
 				this._config = DEFAULT_GRC_CONFIG;
-				this._mergedRules = [...BUILTIN_RULES];
+				this._mergedRules = this._mergeRules();
 				this._onDidChange.fire();
 				return;
 			}
@@ -123,11 +166,23 @@ export class GRCConfigLoader extends Disposable {
 			this._config = DEFAULT_GRC_CONFIG;
 		}
 
-		// Merge: start with built-in rules, then apply user overrides
+		// Merge: built-in + framework + user overrides
 		this._mergedRules = this._mergeRules();
 		this._onDidChange.fire();
 	}
 
+	/**
+	 * Merges rules from all three sources:
+	 *
+	 * 1. Start with built-in rules
+	 * 2. Add framework rules (from IFrameworkRegistry)
+	 * 3. Apply user overrides (from .inverse/grc-rules.json)
+	 *
+	 * User rules can:
+	 * - Override any built-in or framework rule by ID (change severity, disable, etc.)
+	 * - Add entirely new custom rules
+	 * - Use frameworkOverrides to disable specific framework rules
+	 */
 	private _mergeRules(): IGRCRule[] {
 		const merged: IGRCRule[] = [];
 		const userRulesById = new Map<string, IGRCRule>();
@@ -137,7 +192,10 @@ export class GRCConfigLoader extends Disposable {
 			userRulesById.set(rule.id, rule);
 		}
 
-		// Process built-in rules (may be overridden by user)
+		// Get framework overrides from config
+		const frameworkOverrides = this._config.frameworkOverrides ?? {};
+
+		// ── Layer 1: Built-in rules ──────────────────────────────────────
 		for (const builtin of BUILTIN_RULES) {
 			const userOverride = userRulesById.get(builtin.id);
 			if (userOverride) {
@@ -153,7 +211,51 @@ export class GRCConfigLoader extends Disposable {
 			}
 		}
 
-		// Add remaining user-defined rules (non-overrides)
+		// ── Layer 2: Framework rules ─────────────────────────────────────
+		const frameworkRules = this.frameworkRegistry.getAllFrameworkRules();
+		for (const fwRule of frameworkRules) {
+			// Skip if a built-in rule already exists with this ID
+			// (built-in takes precedence)
+			if (merged.some(r => r.id === fwRule.id)) {
+				continue;
+			}
+
+			// Check framework-level overrides
+			const fwOverrides = fwRule.frameworkId ? frameworkOverrides[fwRule.frameworkId] : undefined;
+
+			// Check if rule is disabled via frameworkOverrides
+			if (fwOverrides?.disabledRules?.includes(fwRule.id)) {
+				merged.push({ ...fwRule, enabled: false });
+				continue;
+			}
+
+			// Check if severity is overridden
+			let severityOverride: string | undefined;
+			if (fwOverrides?.severityOverrides?.[fwRule.id]) {
+				severityOverride = fwOverrides.severityOverrides[fwRule.id];
+			}
+
+			// Check if user has a direct rule override
+			const userOverride = userRulesById.get(fwRule.id);
+			if (userOverride) {
+				merged.push({
+					...fwRule,
+					...userOverride,
+					frameworkId: fwRule.frameworkId, // Preserve framework origin
+					builtin: false,
+				});
+				userRulesById.delete(fwRule.id);
+			} else if (severityOverride) {
+				merged.push({
+					...fwRule,
+					severity: severityOverride,
+				});
+			} else {
+				merged.push({ ...fwRule });
+			}
+		}
+
+		// ── Layer 3: Remaining user-defined rules (custom, non-override) ─
 		for (const [, userRule] of userRulesById) {
 			merged.push({
 				...userRule,
@@ -161,11 +263,17 @@ export class GRCConfigLoader extends Disposable {
 			});
 		}
 
+		console.log(
+			`[GRCConfigLoader] Merged rules: ${BUILTIN_RULES.length} built-in + ` +
+			`${frameworkRules.length} framework + ${this._config.rules.length} user → ` +
+			`${merged.length} total (${merged.filter(r => r.enabled).length} enabled)`
+		);
+
 		return merged;
 	}
 
 	/**
-	 * Get all merged rules (built-in + user overrides + user additions).
+	 * Get all merged rules (built-in + framework + user overrides + user additions).
 	 */
 	public getRules(): IGRCRule[] {
 		return this._mergedRules;
@@ -209,7 +317,7 @@ export class GRCConfigLoader extends Disposable {
 		if (existing) {
 			existing.enabled = enabled;
 		} else {
-			// Create override entry for built-in rule
+			// Create override entry for built-in or framework rule
 			this._config.rules.push({ id: ruleId, enabled } as IGRCRule);
 		}
 		await this._persistConfig();

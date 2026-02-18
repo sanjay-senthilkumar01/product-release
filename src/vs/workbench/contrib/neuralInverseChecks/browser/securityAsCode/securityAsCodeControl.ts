@@ -41,7 +41,8 @@ export class SecurityAsCodeControl extends Disposable {
     private _updateView(): void {
         const results = this.grcEngine.getResultsForDomain('security');
         const rules = this.grcEngine.getRules().filter(r => r.domain === 'security');
-        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'security', results, rules }));
+        const activeFrameworks = this.grcEngine.getActiveFrameworks();
+        this.webviewElement.setHtml(buildCheckViewHtml({ domain: 'security', results, rules, activeFrameworks }));
     }
 
     public layout(width: number, height: number): void {

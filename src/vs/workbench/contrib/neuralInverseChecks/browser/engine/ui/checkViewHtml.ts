@@ -3,10 +3,10 @@
  *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { GRCDomain, IGRCRule, ICheckResult, IDomainSummary } from './grcTypes.js';
+import { GRCDomain, IGRCRule, ICheckResult, IDomainSummary } from '../types/grcTypes.js';
 
 function esc(t: string): string {
-	return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+	return t ? t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : '';
 }
 
 /**
@@ -25,17 +25,18 @@ export interface CheckViewOptions {
 	domain: GRCDomain;
 	results: ICheckResult[];
 	rules: IGRCRule[];
+	activeFrameworks?: { id: string; name: string; version: string }[];
 }
 
 /**
  * Generates the complete interactive HTML for a check view.
  * Includes:
- * - Dashboard with live stats
- * - Issues list
- * - Interactive Rules management (toggle, add, delete)
+ * - Dashboard with live stats and framework summary
+ * - Issues list with references and framework attribution
+ * - Interactive Rules management
  */
 export function buildCheckViewHtml(opts: CheckViewOptions): string {
-	const { domain, results, rules } = opts;
+	const { domain, results, rules, activeFrameworks } = opts;
 	const theme = DOMAIN_THEME[domain];
 
 	const errors = results.filter(r => r.severity === 'error');
@@ -43,15 +44,31 @@ export function buildCheckViewHtml(opts: CheckViewOptions): string {
 	const infos = results.filter(r => r.severity === 'info');
 	const enabledRules = rules.filter(r => r.enabled);
 
+	// ─── Frameworks Summary ──────────────────────────────────
+	const frameworkTags = (activeFrameworks || []).map(fw =>
+		`<span class="fw-tag" title="${esc(fw.name)} v${esc(fw.version)}">${esc(fw.id)}</span>`
+	).join('');
+
 	// ─── Issues rows ─────────────────────────────────────────
 	const issueRows = results.map(r => {
 		const filePath = r.fileUri.path.split('/').pop() || r.fileUri.path;
 		const sevClass = r.severity === 'error' ? 'sev-error' : r.severity === 'warning' ? 'sev-warn' : 'sev-info';
+
+		let meta = '';
+		if (r.frameworkId) meta += `<span class="meta-tag fw">${esc(r.frameworkId)}</span>`;
+		if (r.references?.length) meta += r.references.map(ref => `<span class="meta-tag ref">${esc(ref)}</span>`).join('');
+
 		return `<div class="row">
-			<span class="rule-id">${esc(r.ruleId)}</span>
-			<span class="msg">${esc(r.message)}<br><span class="file-ref">${esc(filePath)}:${r.line}</span></span>
-			<span class="sev ${sevClass}">${r.severity.toUpperCase()}</span>
-		</div>`;
+            <div class="row-main">
+                <span class="rule-id">${esc(r.ruleId)}</span>
+                <span class="msg">${esc(r.message)}</span>
+                <div class="row-meta">
+                    <span class="file-ref">${esc(filePath)}:${r.line}</span>
+                    ${meta}
+                </div>
+            </div>
+            <span class="sev ${sevClass}">${r.severity.toUpperCase()}</span>
+        </div>`;
 	}).join('');
 
 	// ─── Rules rows with toggle + delete ─────────────────────
@@ -62,13 +79,24 @@ export function buildCheckViewHtml(opts: CheckViewOptions): string {
 		const checked = r.enabled ? 'checked' : '';
 		const builtinBadge = r.builtin ? '<span class="builtin-badge">BUILT-IN</span>' : '<button class="del-btn" onclick="delRule(\'' + esc(r.id) + '\')" title="Delete rule">✕</button>';
 
+		let meta = '';
+		if (r.frameworkId) meta += `<span class="meta-tag fw">${esc(r.frameworkId)}</span>`;
+		if (r.references?.length) meta += r.references.map(ref => `<span class="meta-tag ref">${esc(ref)}</span>`).join('');
+
 		return `<div class="row rule-row">
-			<label class="toggle"><input type="checkbox" ${checked} onchange="toggleRule('${esc(r.id)}', this.checked)"><span class="slider"></span></label>
-			<span class="rule-id">${esc(r.id)}</span>
-			<span class="msg">${esc(r.message)}</span>
-			<span class="sev ${statusClass}">${statusText}</span>
-			${builtinBadge}
-		</div>`;
+            <label class="toggle"><input type="checkbox" ${checked} onchange="toggleRule('${esc(r.id)}', this.checked)"><span class="slider"></span></label>
+            <div class="row-main">
+                <div style="display:flex;align-items:center;gap:6px">
+                    <span class="rule-id">${esc(r.id)}</span>
+                    ${meta}
+                </div>
+                <span class="msg">${esc(r.message)}</span>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+                <span class="sev ${statusClass}">${statusText}</span>
+                ${builtinBadge}
+            </div>
+        </div>`;
 	}).join('');
 
 	return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
@@ -76,11 +104,16 @@ export function buildCheckViewHtml(opts: CheckViewOptions): string {
 		* { box-sizing: border-box; }
 		body { font-family: var(--vscode-font-family, -apple-system, sans-serif); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); margin:0; padding:0; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
 
+
 		/* ─── Header ─── */
-		.header { padding:14px 20px; background:linear-gradient(135deg,${theme.accentBg} 0%,#16213e 100%); border-bottom:2px solid ${theme.accent}; display:flex; justify-content:space-between; align-items:center; }
+		.header { padding:14px 20px; background:linear-gradient(135deg,${theme.accentBg} 0%,#16213e 100%); border-bottom:2px solid ${theme.accent}; display:flex; flex-direction:column; gap:10px; }
+		.header-top { display:flex; justify-content:space-between; align-items:center; }
 		.header h2 { margin:0; font-size:15px; color:${theme.accent}; display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:0.5px; }
 		.badge { font-size:10px; font-weight:700; padding:2px 8px; border-radius:3px; }
 		.badge-ok { background:#4caf50; color:#000; } .badge-issues { background:${theme.accent}; color:#fff; }
+		.fw-summary { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+		.fw-tag { font-size:10px; background:rgba(255,255,255,0.1); padding:2px 6px; border-radius:3px; color:#fff; border:1px solid rgba(255,255,255,0.1); }
+		.fw-label { font-size:10px; opacity:0.6; margin-right:4px; text-transform:uppercase; letter-spacing:0.5px; }
 
 		/* ─── Tabs ─── */
 		.tabs { display:flex; background:var(--vscode-sideBar-background); padding:0 20px; border-bottom:1px solid var(--vscode-panel-border); flex-shrink:0; }
@@ -102,17 +135,25 @@ export function buildCheckViewHtml(opts: CheckViewOptions): string {
 		.section h3 { margin:0 0 12px; font-size:13px; border-bottom:1px solid var(--vscode-panel-border); padding-bottom:10px; display:flex; justify-content:space-between; align-items:center; }
 
 		/* ─── Rows ─── */
-		.row { display:flex; padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.05); align-items:center; font-size:12px; gap:10px; }
+		.row { display:flex; padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.05); align-items:flex-start; font-size:12px; gap:10px; }
 		.row:hover { background:rgba(255,255,255,0.03); }
-		.rule-id { width:70px; font-family:monospace; color:#888; font-size:11px; flex-shrink:0; }
-		.msg { flex:1; } .file-ref { font-size:10px; color:#888; font-family:monospace; }
-		.sev { width:80px; text-align:center; font-size:9px; font-weight:700; padding:2px 8px; border-radius:3px; flex-shrink:0; }
+		.row-main { flex:1; display:flex; flex-direction:column; gap:4px; min-width:0; }
+		.row-meta { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+
+		.rule-id { font-family:monospace; color:#888; font-size:11px; flex-shrink:0; background:rgba(255,255,255,0.05); padding:1px 4px; border-radius:3px; }
+		.msg { line-height:1.4; }
+		.file-ref { font-size:10px; color:#aaa; font-family:monospace; }
+		.meta-tag { font-size:9px; padding:1px 5px; border-radius:3px; text-transform:uppercase; font-weight:600; }
+		.meta-tag.fw { background:rgba(255,255,255,0.1); color:#fff; }
+		.meta-tag.ref { background:rgba(100,181,246,0.1); color:#64b5f6; }
+
+		.sev { min-width:60px; text-align:center; font-size:9px; font-weight:700; padding:2px 6px; border-radius:3px; flex-shrink:0; align-self:flex-start; margin-top:2px; }
 		.sev-error { background:rgba(255,82,82,0.15); color:#ff5252; } .sev-warn { background:rgba(255,152,0,0.15); color:#ff9800; }
 		.sev-info { background:rgba(100,181,246,0.15); color:#64b5f6; } .sev-fail { color:#ff5252; } .sev-pass { color:#4caf50; }
 		.empty { text-align:center; padding:40px; opacity:0.5; }
 
 		/* ─── Toggle Switch ─── */
-		.toggle { position:relative; width:32px; height:18px; flex-shrink:0; }
+		.toggle { position:relative; width:32px; height:18px; flex-shrink:0; margin-top:2px; }
 		.toggle input { opacity:0; width:0; height:0; }
 		.slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#555; border-radius:18px; transition:0.3s; }
 		.slider::before { content:''; position:absolute; height:14px; width:14px; left:2px; bottom:2px; background:#fff; border-radius:50%; transition:0.3s; }
@@ -137,7 +178,10 @@ export function buildCheckViewHtml(opts: CheckViewOptions): string {
 		.btn-secondary { background:transparent; border:1px solid var(--vscode-panel-border); color:var(--vscode-editor-foreground); } .btn-secondary:hover { background:rgba(255,255,255,0.05); }
 	</style></head><body>
 		<div class="header">
-			<h2>${theme.label} <span class="badge ${results.length === 0 ? 'badge-ok' : 'badge-issues'}">${results.length === 0 ? 'ALL CLEAR' : results.length + ' ISSUE' + (results.length > 1 ? 'S' : '')}</span></h2>
+			<div class="header-top">
+				<h2>${theme.label} <span class="badge ${results.length === 0 ? 'badge-ok' : 'badge-issues'}">${results.length === 0 ? 'ALL CLEAR' : results.length + ' ISSUE' + (results.length > 1 ? 'S' : '')}</span></h2>
+			</div>
+			${activeFrameworks && activeFrameworks.length > 0 ? `<div class="fw-summary"><span class="fw-label">ACTIVE FRAMEWORKS:</span>${frameworkTags}</div>` : ''}
 		</div>
 		<div class="tabs">
 			<div class="tab active" onclick="sw('dash')">Dashboard</div>
