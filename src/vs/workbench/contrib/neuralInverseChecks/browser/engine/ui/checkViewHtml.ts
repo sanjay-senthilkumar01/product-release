@@ -6,26 +6,26 @@
 import { GRCDomain, IGRCRule, ICheckResult, IDomainSummary } from '../types/grcTypes.js';
 
 function esc(t: string): string {
-	return t ? t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : '';
+    return t ? t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : '';
 }
 
 /**
  * Theme accent colors per domain
  */
 const DOMAIN_THEME: Record<GRCDomain, { accent: string; accentBg: string; label: string }> = {
-	'security': { accent: '#ff5252', accentBg: '#1a1a2e', label: 'SECURITY AS CODE' },
-	'compliance': { accent: '#7c4dff', accentBg: '#1a1a2e', label: 'COMPLIANCE AS CODE' },
-	'data-integrity': { accent: '#00bcd4', accentBg: '#1a2a1a', label: 'DATA INTEGRITY CHECKS' },
-	'fail-safe': { accent: '#ff9800', accentBg: '#1a1a1a', label: 'FAIL-SAFE DEFAULTS' },
-	'architecture': { accent: '#42a5f5', accentBg: '#1a1a2e', label: 'ARCHITECTURE AS CODE' },
-	'policy': { accent: '#66bb6a', accentBg: '#1a1a2e', label: 'CODE AS POLICY' },
+    'security': { accent: '#ff5252', accentBg: '#1a1a2e', label: 'SECURITY AS CODE' },
+    'compliance': { accent: '#7c4dff', accentBg: '#1a1a2e', label: 'COMPLIANCE AS CODE' },
+    'data-integrity': { accent: '#00bcd4', accentBg: '#1a2a1a', label: 'DATA INTEGRITY CHECKS' },
+    'fail-safe': { accent: '#ff9800', accentBg: '#1a1a1a', label: 'FAIL-SAFE DEFAULTS' },
+    'architecture': { accent: '#42a5f5', accentBg: '#1a1a2e', label: 'ARCHITECTURE AS CODE' },
+    'policy': { accent: '#66bb6a', accentBg: '#1a1a2e', label: 'CODE AS POLICY' },
 };
 
 export interface CheckViewOptions {
-	domain: GRCDomain;
-	results: ICheckResult[];
-	rules: IGRCRule[];
-	activeFrameworks?: { id: string; name: string; version: string }[];
+    domain: GRCDomain;
+    results: ICheckResult[];
+    rules: IGRCRule[];
+    activeFrameworks?: { id: string; name: string; version: string }[];
 }
 
 /**
@@ -40,56 +40,56 @@ export interface CheckViewOptions {
  * PRODUCTION-GRADE MINIMAL UI DESIGN (Monochrome, Data-Dense, VS Code Native)
  */
 export function buildCheckViewHtml(opts: CheckViewOptions): string {
-	const { domain, results, rules, activeFrameworks } = opts;
-	const theme = DOMAIN_THEME[domain];
+    const { domain, results, rules } = opts;
+    const theme = DOMAIN_THEME[domain];
 
-	const errors = results.filter(r => r.severity === 'error');
-	const warnings = results.filter(r => r.severity === 'warning');
-	const infos = results.filter(r => r.severity === 'info');
-	const enabledRules = rules.filter(r => r.enabled);
+    const errors = results.filter(r => r.severity === 'error');
+    const enabledRules = rules.filter(r => r.enabled);
+    const warnings = results.filter(r => r.severity === 'warning');
 
-	const totalViolations = results.length;
-	const totalRules = rules.length;
-	const passRate = totalRules > 0 ? Math.round(((totalRules - totalViolations) / totalRules) * 100) : 100;
 
-	// ─── Header Stats ───
-	const passColor = passRate >= 80 ? '#73c991' : passRate >= 50 ? '#cca700' : 'var(--vscode-errorForeground)';
-	const progressBar = `
+    const totalViolations = results.length;
+    const totalRules = rules.length;
+    const passRate = totalRules > 0 ? Math.round(((totalRules - totalViolations) / totalRules) * 100) : 100;
+
+    // ─── Header Stats ───
+    const passColor = passRate >= 80 ? '#73c991' : passRate >= 50 ? '#cca700' : 'var(--vscode-errorForeground)';
+    const progressBar = `
         <div class="progress-bar">
             <div class="progress-fill" style="width:${passRate}%; background:${passColor}"></div>
         </div>`;
 
-	// ─── Issues Table ───
-	const issueRows = results.map(r => {
-		const filePath = r.fileUri.path.split('/').pop() || r.fileUri.path;
-		return `<tr>
+    // ─── Issues Table ───
+    const issueRows = results.map(r => {
+        const filePath = r.fileUri.path.split('/').pop() || r.fileUri.path;
+        return `<tr>
             <td class="mono">${esc(r.ruleId)}</td>
             <td>${esc(r.message)}</td>
             <td class="mono" title="${esc(r.fileUri.path)}">${esc(filePath)}:${r.line}</td>
             <td><span class="sev sev-${r.severity}">${r.severity.toUpperCase()}</span></td>
         </tr>`;
-	}).join('');
+    }).join('');
 
-	// ─── Rules Table ───
-	const ruleRows = rules.map(r => {
-		const violationCount = results.filter(res => res.ruleId === r.id).length;
-		const status = r.enabled ? (violationCount > 0 ? 'fail' : 'pass') : 'disabled';
-		const statusLabel = r.enabled ? (violationCount > 0 ? 'FAIL' : 'PASS') : 'OFF';
-		const statusClass = status === 'fail' ? 'sev-error' : status === 'pass' ? 'sev-pass' : 'sev-muted';
+    // ─── Rules Table ───
+    const ruleRows = rules.map(r => {
+        const violationCount = results.filter(res => res.ruleId === r.id).length;
+        const status = r.enabled ? (violationCount > 0 ? 'fail' : 'pass') : 'disabled';
+        const statusLabel = r.enabled ? (violationCount > 0 ? 'FAIL' : 'PASS') : 'OFF';
+        const statusClass = status === 'fail' ? 'sev-error' : status === 'pass' ? 'sev-pass' : 'sev-muted';
 
-		const checked = r.enabled ? 'checked' : '';
-		const toggle = `<label class="toggle"><input type="checkbox" ${checked} onchange="toggleRule('${esc(r.id)}', this.checked)"><span class="slider"></span></label>`;
+        const checked = r.enabled ? 'checked' : '';
+        const toggle = `<label class="toggle"><input type="checkbox" ${checked} onchange="toggleRule('${esc(r.id)}', this.checked)"><span class="slider"></span></label>`;
 
-		return `<tr>
+        return `<tr>
             <td style="width:40px">${toggle}</td>
             <td class="mono">${esc(r.id)}</td>
             <td>${esc(r.message)}</td>
             <td><span class="sev ${statusClass}">${statusLabel}</span></td>
             <td class="action-cell"><button class="icon-btn" onclick="delRule('${esc(r.id)}')" title="Delete Rule">✕</button></td>
         </tr>`;
-	}).join('');
+    }).join('');
 
-	return `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -184,20 +184,20 @@ export function buildCheckViewHtml(opts: CheckViewOptions): string {
 
     <div id="issues" class="view active">
         ${results.length > 0 ?
-			`<table>
+            `<table>
             <thead><tr><th>Rule</th><th>Message</th><th>File</th><th>Severity</th></tr></thead>
             <tbody>${issueRows}</tbody>
         </table>` :
-			`<div class="empty-state">No violations detected. All systems nominal.</div>`}
+            `<div class="empty-state">No violations detected. All systems nominal.</div>`}
     </div>
 
     <div id="rules" class="view">
         ${rules.length > 0 ?
-			`<table>
+            `<table>
             <thead><tr><th>State</th><th>ID</th><th>Description</th><th>Status</th><th>Action</th></tr></thead>
             <tbody>${ruleRows}</tbody>
         </table>` :
-			`<div class="empty-state">No rules defined for this domain.</div>`}
+            `<div class="empty-state">No rules defined for this domain.</div>`}
     </div>
 
     <script>
@@ -228,31 +228,31 @@ export function buildCheckViewHtml(opts: CheckViewOptions): string {
  * Generates HTML for the Audit & Evidence view (special case - reads from audit trail).
  */
 export function buildAuditViewHtml(
-	entries: { timestamp: number; domain: string; severity: string; message: string; file: string; line: number }[],
-	dates: string[],
-	summary: IDomainSummary[]
+    entries: { timestamp: number; domain: string; severity: string; message: string; file: string; line: number }[],
+    dates: string[],
+    summary: IDomainSummary[]
 ): string {
-	const totalErrors = summary.reduce((a, s) => a + s.errorCount, 0);
-	const totalWarnings = summary.reduce((a, s) => a + s.warningCount, 0);
-	const totalInfos = summary.reduce((a, s) => a + s.infoCount, 0);
+    const totalErrors = summary.reduce((a, s) => a + s.errorCount, 0);
+    const totalWarnings = summary.reduce((a, s) => a + s.warningCount, 0);
+    const totalInfos = summary.reduce((a, s) => a + s.infoCount, 0);
 
-	const recentEntries = entries.slice(-50).reverse();
+    const recentEntries = entries.slice(-50).reverse();
 
-	const entryRows = recentEntries.map(e => {
-		const time = new Date(e.timestamp).toLocaleTimeString();
-		const filePath = e.file.split('/').pop() || e.file;
-		return `<tr>
+    const entryRows = recentEntries.map(e => {
+        const time = new Date(e.timestamp).toLocaleTimeString();
+        const filePath = e.file.split('/').pop() || e.file;
+        return `<tr>
             <td class="mono">${time}</td>
             <td><span class="sev sev-${e.severity}">${e.severity.toUpperCase()}</span></td>
             <td><span class="domain-tag">${esc(e.domain)}</span></td>
             <td>${esc(e.message)}</td>
             <td class="mono">${esc(filePath)}:${e.line}</td>
         </tr>`;
-	}).join('');
+    }).join('');
 
-	const summaryRows = summary.map(s => {
-		const total = s.errorCount + s.warningCount + s.infoCount;
-		return `<tr>
+    const summaryRows = summary.map(s => {
+        const total = s.errorCount + s.warningCount + s.infoCount;
+        return `<tr>
             <td><strong>${esc(s.domain)}</strong></td>
             <td>${s.errorCount}</td>
             <td>${s.warningCount}</td>
@@ -260,9 +260,9 @@ export function buildAuditViewHtml(
             <td>${total}</td>
             <td class="mono">${s.enabledRules}/${s.totalRules}</td>
         </tr>`;
-	}).join('');
+    }).join('');
 
-	return `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -344,19 +344,19 @@ export function buildAuditViewHtml(
 
     <div id="timeline" class="view">
         ${entryRows ?
-			`<table>
+            `<table>
             <thead><tr><th>Time</th><th>Sev</th><th>Domain</th><th>Message</th><th>File</th></tr></thead>
             <tbody>${entryRows}</tbody>
         </table>` :
-			`<div class="empty-state">No audit entries found.</div>`}
+            `<div class="empty-state">No audit entries found.</div>`}
     </div>
 
     <div id="dates" class="view">
         ${dates.length > 0 ?
-			`<table><thead><tr><th>Date</th><th>File Path</th></tr></thead><tbody>
+            `<table><thead><tr><th>Date</th><th>File Path</th></tr></thead><tbody>
         ${dates.map(d => `<tr><td class="mono">${esc(d)}</td><td class="mono">.inverse/audit/${esc(d)}.json</td></tr>`).join('')}
         </tbody></table>` :
-			`<div class="empty-state">No archived audit logs found.</div>`}
+            `<div class="empty-state">No archived audit logs found.</div>`}
     </div>
 
     <script>

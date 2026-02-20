@@ -28,12 +28,17 @@ import './context/autocomplete/policy/policyService.js';
 import './engine/framework/frameworkRegistry.js'; // Must load before grcEngineService
 import './engine/services/grcEngineService.js';
 import './engine/services/auditTrailService.js';
+import './gatekeeper/grcEnvironmentService.js'; // Register GRC Environment Service
 import { GRCDiagnosticsContribution } from './diagnostics/grcDiagnosticsContribution.js';
 import { GRCAnalyzerRegistration } from './engine/analyzers/analyzerRegistration.js';
 
 
 const CHECKS_MANAGER_WINDOW_TYPE = 'checksManager';
 const CHECKS_MANAGER_STORAGE_KEY = 'neuralInverseChecks.state';
+
+// register GRC Gatekeeper
+import { GRCGatekeeper } from './gatekeeper/grcGatekeeper.js';
+Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(GRCGatekeeper, LifecyclePhase.Restored);
 
 export class ChecksManagerContribution extends Disposable implements IWorkbenchContribution {
 
@@ -166,3 +171,7 @@ Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).regi
 
 // Register Core Analyzers (AST, External)
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(GRCAnalyzerRegistration, LifecyclePhase.Restored);
+
+// Register Status Bar Item
+import { GRCStatusContribution } from './ui/grcStatus.contribution.js';
+Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(GRCStatusContribution, LifecyclePhase.Restored);

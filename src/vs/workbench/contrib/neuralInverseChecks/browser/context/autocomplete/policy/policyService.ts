@@ -11,6 +11,8 @@ import { Event, Emitter } from '../../../../../../../base/common/event.js';
 import { registerSingleton, InstantiationType } from '../../../../../../../platform/instantiation/common/extensions.js';
 import { VSBuffer } from '../../../../../../../base/common/buffer.js';
 
+import { IGRCEnvironmentService } from '../../../gatekeeper/grcEnvironmentService.js';
+
 export const IPolicyService = createDecorator<IPolicyService>('neuralInversePolicyService');
 
 export interface IDomainRule {
@@ -34,6 +36,11 @@ export interface IPolicyService {
 
     getPolicy(): IProjectPolicy | undefined;
     getDomainRules(domain: string): IDomainRule | undefined;
+
+    /**
+     * Checks if a function call is allowed in the current environment mode and domain.
+     */
+    isCallAllowed(call: string, domain: string): boolean;
 }
 
 const POLICY_FOLDER = '.inverse';
@@ -71,7 +78,8 @@ export class PolicyService extends Disposable implements IPolicyService {
 
     constructor(
         @IFileService private readonly fileService: IFileService,
-        @IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService
+        @IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+        @IGRCEnvironmentService private readonly grcEnv: IGRCEnvironmentService
     ) {
         super();
         this._initialize();
@@ -161,6 +169,41 @@ export class PolicyService extends Disposable implements IPolicyService {
 
     public getDomainRules(domain: string): IDomainRule | undefined {
         return this._policy?.domains?.[domain];
+    }
+
+    public isCallAllowed(call: string, domain: string): boolean {
+        const mode = this.grcEnv.mode;
+
+        // DRAFT Mode: Everything is allowed (Chaos Mode)
+        if (mode === 'draft') {
+            return true;
+        }
+
+        if (!this._policy) {
+            // Fallback: If no policy loaded, default to safe in Prod?
+            return mode !== 'prod';
+        }
+
+        const domainRules = this._policy.domains[domain] || this._policy.domains['default'];
+        if (!domainRules) {
+            return true; // No rules for domain -> allow
+        }
+
+        // Check forbidden calls
+        if (domainRules.forbiddenCalls.includes(call)) {
+            return false;
+        }
+
+        // PROD Mode: Strict Allowlist?
+        if (mode === 'prod') {
+            if (domainRules.allowedCalls.includes('*')) {
+                return true;
+            }
+            return domainRules.allowedCalls.includes(call);
+        }
+
+        // DEV Mode: Generally allowed unless forbidden
+        return true;
     }
 }
 

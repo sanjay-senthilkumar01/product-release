@@ -790,9 +790,8 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		console.log('starting autocomplete...', predictionType)
 
 		const featureName: FeatureName = 'Autocomplete'
-		const overridesOfModel = this._settingsService.state.overridesOfModel
+
 		const modelSelection = this._settingsService.state.modelSelectionOfFeature[featureName]
-		const modelSelectionOptions = modelSelection ? this._settingsService.state.optionsOfModelSelection[featureName][modelSelection.providerName]?.[modelSelection.modelName] : undefined
 
 		// set parameters of `newAutocompletion` appropriately
 		newAutocompletion.llmPromise = new Promise(async (resolve, reject) => {
@@ -864,7 +863,7 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		@IEditorService private readonly _editorService: IEditorService,
 		@IModelService private readonly _modelService: IModelService,
 		@IVoidSettingsService private readonly _settingsService: IVoidSettingsService,
-		@IConvertToLLMMessageService private readonly _convertToLLMMessageService: IConvertToLLMMessageService,
+
 		@INeuralInverseFIMService private readonly _neuralInverseFIMService: INeuralInverseFIMService
 		// @IContextGatheringService private readonly _contextGatheringService: IContextGatheringService,
 	) {

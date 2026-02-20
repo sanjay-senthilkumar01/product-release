@@ -22,8 +22,8 @@
  *    each rule to the appropriate analyzer.
  */
 
-import { URI } from '../../../../../base/common/uri.js';
-import { ICheckDefinition } from './frameworkSchema.js';
+import { URI } from '../../../../../../base/common/uri.js';
+import { ICheckDefinition } from '../framework/frameworkSchema.js';
 
 
 // ─── Domains ─────────────────────────────────────────────────────────────────
