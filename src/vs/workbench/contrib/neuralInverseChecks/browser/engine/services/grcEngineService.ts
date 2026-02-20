@@ -157,6 +157,12 @@ export interface IGRCEngineService {
 	deleteRule(ruleId: string): Promise<void>;
 
 	/**
+	 * Evaluate rules against raw file content (no ITextModel needed).
+	 * Used by the workspace scanner to check files that aren't open.
+	 */
+	evaluateFileContent(fileUri: URI, content: string): ICheckResult[];
+
+	/**
 	 * Import a framework from a JSON string.
 	 * Delegates to IFrameworkRegistry.importFramework().
 	 */
@@ -240,6 +246,15 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 	 */
 	public evaluateDocument(model: ITextModel): ICheckResult[] {
 		const fileUri = model.uri;
+
+		// ── Guard: never run GRC checks on files inside .inverse/ ──
+		// The .inverse directory contains internal data (encrypted analysis,
+		// frameworks, audit trails). Running checks on it would produce
+		// false violations and waste cycles.
+		if (fileUri.path.includes('/.inverse/') || fileUri.path.endsWith('/.inverse')) {
+			return [];
+		}
+
 		const rules = this._configLoader.getRules().filter(r => r.enabled);
 		const results: ICheckResult[] = [];
 		const lines = model.getLinesContent();
@@ -272,6 +287,51 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 					// will register themselves when they are implemented.
 					break;
 				}
+			}
+		}
+
+		// Cache results
+		this._resultsByFile.set(fileUri.toString(), results);
+
+		// Fire event
+		this._onDidCheckComplete.fire(results);
+
+		return results;
+	}
+
+	/**
+	 * Evaluate rules against raw file content (no ITextModel needed).
+	 *
+	 * Supports regex and file-level checks only (AST/dataflow analyzers
+	 * require an ITextModel and are skipped for background scanning).
+	 * Used by the workspace scanner to check files that aren't open.
+	 */
+	public evaluateFileContent(fileUri: URI, content: string): ICheckResult[] {
+		// Skip .inverse files
+		if (fileUri.path.includes('/.inverse/') || fileUri.path.endsWith('/.inverse')) {
+			return [];
+		}
+
+		const rules = this._configLoader.getRules().filter(r => r.enabled);
+		const results: ICheckResult[] = [];
+		const lines = content.split('\n');
+		const now = Date.now();
+
+		for (const rule of rules) {
+			const ruleType = rule.type ?? 'regex';
+
+			switch (ruleType) {
+				case 'regex':
+					results.push(...this._evaluateRegexRule(rule, lines, fileUri, now));
+					break;
+
+				case 'file-level':
+					results.push(...this._evaluateFileLevelRule(rule, lines, fileUri, now));
+					break;
+
+				// Other analyzers (AST, dataflow) require ITextModel — skip for background
+				default:
+					break;
 			}
 		}
 

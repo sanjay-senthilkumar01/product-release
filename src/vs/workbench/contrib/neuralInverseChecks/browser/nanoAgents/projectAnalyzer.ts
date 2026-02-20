@@ -303,7 +303,7 @@ export class ProjectAnalyzer extends Disposable {
 	}
 
 	private async ensureDirectories(): Promise<void> {
-		const dirs = ['lsp', 'ast', 'call_hierarchy', 'metrics', 'capabilities'];
+		const dirs = ['lsp', 'ast', 'call_hierarchy', 'metrics', 'capabilities', 'frameworks', 'audit'];
 		try {
 			await this.fileService.createFolder(this.inverseDir);
 		} catch (e) { /* ignore if exists */ }

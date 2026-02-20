@@ -7,15 +7,24 @@
  * # GRC Diagnostics Contribution
  *
  * Bridges the GRC engine to the editor's marker system for real-time
- * inline diagnostics (squiggly underlines).
+ * diagnostics across the **entire workspace**, not just the active editor.
  *
  * ## How It Works
  *
+ * ### Workspace-Wide Scanning (background)
+ *
+ * 1. On startup, crawls all workspace files (skipping node_modules, .git, .inverse, etc.)
+ * 2. Reads each file's content via IFileService and evaluates against all GRC rules
+ * 3. Uses a concurrency-limited queue to avoid freezing the UI
+ * 4. Watches for file changes (create/modify/delete) and re-evaluates affected files
+ * 5. When rules change (framework import, config edit), triggers a full workspace re-scan
+ *
+ * ### Active Editor (real-time typing)
+ *
  * 1. Listens for editor changes (active editor switch + content changes)
  * 2. Debounces evaluation to avoid thrashing on rapid typing
- * 3. Calls `grcEngine.evaluateDocument()` which runs all enabled rules
- * 4. Converts `ICheckResult[]` to `IMarkerData[]` for the marker service
- * 5. Markers appear as squiggly underlines in the editor
+ * 3. Calls `grcEngine.evaluateDocument()` on the ITextModel for full rule coverage
+ *    (including AST/dataflow analyzers that require a model)
  *
  * ## Severity Mapping
  *
@@ -24,24 +33,40 @@
  * - error/blocker/critical → red squiggly
  * - warning/major → yellow squiggly
  * - info/minor → blue hint
- *
- * ## Framework Attribution
- *
- * When violations come from an imported framework, the marker source
- * includes the framework name for traceability.
  */
 
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution } from '../../../../common/contributions.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { IMarkerService, IMarkerData, MarkerSeverity } from '../../../../../platform/markers/common/markers.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IGRCEngineService } from '../engine/services/grcEngineService.js';
 import { ITextModel } from '../../../../../editor/common/model.js';
-import { toDisplaySeverity } from '../engine/types/grcTypes.js';
+import { ICheckResult, toDisplaySeverity } from '../engine/types/grcTypes.js';
 import { isCodeEditor } from '../../../../../editor/browser/editorBrowser.js';
+import { URI } from '../../../../../base/common/uri.js';
 
 const GRC_MARKER_OWNER = 'neuralInverse.grc';
 const DEBOUNCE_MS = 800;
+
+/** File extensions to scan */
+const SUPPORTED_EXTENSIONS = new Set([
+	'ts', 'tsx', 'js', 'jsx', 'py', 'java', 'c', 'cpp', 'h', 'cs',
+	'go', 'rs', 'php', 'rb', 'swift', 'kt', 'scala', 'html', 'css',
+	'scss', 'json', 'yaml', 'yml', 'xml', 'sql', 'sh', 'bash',
+	'dockerfile', 'tf', 'hcl'
+]);
+
+/** Directories to skip during workspace crawl */
+const SKIP_DIRS = new Set([
+	'node_modules', '.git', '.inverse', 'dist', 'out', 'build',
+	'.next', '.nuxt', '__pycache__', '.venv', 'venv', 'vendor',
+	'.cache', 'coverage', '.nyc_output'
+]);
+
+/** Max concurrent file evaluations during background scan */
+const SCAN_CONCURRENCY = 5;
 
 export class GRCDiagnosticsContribution extends Disposable implements IWorkbenchContribution {
 
@@ -49,24 +74,42 @@ export class GRCDiagnosticsContribution extends Disposable implements IWorkbench
 
 	private _debounceTimer: any;
 	private _modelListeners = this._register(new DisposableStore());
+	private _isScanning = false;
 
 	constructor(
 		@IEditorService private readonly editorService: IEditorService,
 		@IMarkerService private readonly markerService: IMarkerService,
-		@IGRCEngineService private readonly grcEngine: IGRCEngineService
+		@IGRCEngineService private readonly grcEngine: IGRCEngineService,
+		@IFileService private readonly fileService: IFileService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 
+		// ── Active Editor: real-time typing detection ──────────────────
 		this._register(this.editorService.onDidActiveEditorChange(() => {
 			this._onEditorChange();
 		}));
 
+		// ── Rules changed: full workspace re-scan ─────────────────────
 		this._register(this.grcEngine.onDidRulesChange(() => {
-			this._runCheck();
+			this._runActiveEditorCheck();
+			this._scanWorkspace();
 		}));
 
+		// ── File system watcher: real-time file change detection ──────
+		this._register(this.fileService.onDidFilesChange(e => {
+			this._onFilesChanged(e);
+		}));
+
+		// ── Startup: scan + check active editor ──────────────────────
 		this._onEditorChange();
+		this._scanWorkspace();
 	}
+
+
+	// ═══════════════════════════════════════════════════════════════════
+	// Active Editor — real-time typing (unchanged from original)
+	// ═══════════════════════════════════════════════════════════════════
 
 	private _onEditorChange(): void {
 		this._modelListeners.clear();
@@ -75,27 +118,196 @@ export class GRCDiagnosticsContribution extends Disposable implements IWorkbench
 		if (!model) { return; }
 
 		this._modelListeners.add(model.onDidChangeContent(() => {
-			this._scheduleCheck();
+			this._scheduleActiveEditorCheck();
 		}));
 
-		this._runCheck();
+		this._runActiveEditorCheck();
 	}
 
-	private _scheduleCheck(): void {
+	private _scheduleActiveEditorCheck(): void {
 		if (this._debounceTimer) { clearTimeout(this._debounceTimer); }
-		this._debounceTimer = setTimeout(() => this._runCheck(), DEBOUNCE_MS);
+		this._debounceTimer = setTimeout(() => this._runActiveEditorCheck(), DEBOUNCE_MS);
 	}
 
-	private _runCheck(): void {
+	private _runActiveEditorCheck(): void {
 		const model = this._getActiveModel();
 		if (!model) { return; }
 
-		// Evaluate → caches in engine + fires onDidCheckComplete (for Checks panel)
 		const results = this.grcEngine.evaluateDocument(model);
+		this._setMarkersForFile(model.uri, results);
+	}
 
-		// Convert to markers for inline editor diagnostics
+
+	// ═══════════════════════════════════════════════════════════════════
+	// Workspace-Wide Scanning — background evaluation
+	// ═══════════════════════════════════════════════════════════════════
+
+	/**
+	 * Crawl all workspace files and evaluate them against GRC rules.
+	 * Uses concurrency-limited queue to avoid UI freezing.
+	 */
+	private async _scanWorkspace(): Promise<void> {
+		if (this._isScanning) {
+			return; // Avoid overlapping scans
+		}
+		this._isScanning = true;
+
+		try {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			const allFiles: URI[] = [];
+
+			for (const folder of folders) {
+				const files = await this._crawlDirectory(folder.uri);
+				allFiles.push(...files);
+			}
+
+			console.log(`[GRC Scanner] Found ${allFiles.length} files to scan`);
+			await this._evaluateFilesInBatches(allFiles);
+			console.log('[GRC Scanner] Workspace scan complete');
+		} catch (e) {
+			console.error('[GRC Scanner] Workspace scan failed:', e);
+		} finally {
+			this._isScanning = false;
+		}
+	}
+
+	/**
+	 * Recursively crawl a directory for scannable files.
+	 */
+	private async _crawlDirectory(dir: URI): Promise<URI[]> {
+		const result: URI[] = [];
+
+		try {
+			const stat = await this.fileService.resolve(dir, { resolveMetadata: false });
+			if (!stat.children) { return result; }
+
+			for (const child of stat.children) {
+				if (child.isDirectory) {
+					if (SKIP_DIRS.has(child.name)) {
+						continue;
+					}
+					result.push(...await this._crawlDirectory(child.resource));
+				} else if (child.isFile) {
+					const ext = child.name.split('.').pop()?.toLowerCase();
+					if (ext && SUPPORTED_EXTENSIONS.has(ext)) {
+						result.push(child.resource);
+					}
+				}
+			}
+		} catch (e) {
+			// Directory may not be accessible
+		}
+
+		return result;
+	}
+
+	/**
+	 * Evaluate a list of files with concurrency limiting.
+	 * Processes SCAN_CONCURRENCY files at a time.
+	 */
+	private async _evaluateFilesInBatches(files: URI[]): Promise<void> {
+		let index = 0;
+
+		const processNext = async (): Promise<void> => {
+			while (index < files.length) {
+				const file = files[index++];
+				await this._evaluateSingleFile(file);
+			}
+		};
+
+		// Launch concurrent workers
+		const workers: Promise<void>[] = [];
+		for (let i = 0; i < Math.min(SCAN_CONCURRENCY, files.length); i++) {
+			workers.push(processNext());
+		}
+
+		await Promise.all(workers);
+	}
+
+	/**
+	 * Read a file and evaluate it against GRC rules.
+	 * Uses the engine's evaluateFileContent() for raw-text evaluation.
+	 */
+	private async _evaluateSingleFile(fileUri: URI): Promise<void> {
+		// Skip .inverse files
+		if (fileUri.path.includes('/.inverse/')) {
+			return;
+		}
+
+		try {
+			const content = await this.fileService.readFile(fileUri);
+			const text = content.value.toString();
+			const results = this.grcEngine.evaluateFileContent(fileUri, text);
+			this._setMarkersForFile(fileUri, results);
+		} catch (e) {
+			// File may have been deleted between crawl and read
+		}
+	}
+
+
+	// ═══════════════════════════════════════════════════════════════════
+	// File Change Watcher — real-time reactions to disk changes
+	// ═══════════════════════════════════════════════════════════════════
+
+	/**
+	 * React to file system changes.
+	 * Re-evaluates modified/created files and clears markers for deleted files.
+	 */
+	private _onFilesChanged(e: any): void {
+		// Process creates and updates
+		const relevantChanges: URI[] = [];
+
+		// FileChangeType: UPDATED = 0, ADDED = 1, DELETED = 2
+		// The event has `rawChanges` or we can use `.contains()` / `.getAdded()` etc.
+		// IFileChangesEvent exposes: added, updated, deleted as arrays of IFileChange
+		if (e.rawChanges) {
+			for (const change of e.rawChanges) {
+				const uri = change.resource as URI;
+				if (!uri) { continue; }
+
+				// Skip .inverse files
+				if (uri.path.includes('/.inverse/')) {
+					continue;
+				}
+
+				// Check if it's a supported file type
+				const ext = uri.path.split('.').pop()?.toLowerCase();
+				if (!ext || !SUPPORTED_EXTENSIONS.has(ext)) {
+					continue;
+				}
+
+				if (change.type === 2) {
+					// DELETED — clear markers
+					this.markerService.changeOne(GRC_MARKER_OWNER, uri, []);
+					this.grcEngine.clearResultsForFile(uri);
+				} else {
+					// ADDED or UPDATED — schedule evaluation
+					relevantChanges.push(uri);
+				}
+			}
+		}
+
+		// Debounced: evaluate changed files
+		if (relevantChanges.length > 0) {
+			// Use a small delay to batch rapid saves
+			setTimeout(() => {
+				for (const uri of relevantChanges) {
+					this._evaluateSingleFile(uri);
+				}
+			}, 300);
+		}
+	}
+
+
+	// ═══════════════════════════════════════════════════════════════════
+	// Shared Helpers
+	// ═══════════════════════════════════════════════════════════════════
+
+	/**
+	 * Convert ICheckResult[] to IMarkerData[] and set markers for a file.
+	 */
+	private _setMarkersForFile(fileUri: URI, results: ICheckResult[]): void {
 		const markers: IMarkerData[] = results.map(r => {
-			// Build message with references if available
 			let message = r.message;
 			if (r.fix) {
 				message += `\nFix: ${r.fix}`;
@@ -118,14 +330,11 @@ export class GRCDiagnosticsContribution extends Disposable implements IWorkbench
 			};
 		});
 
-		this.markerService.changeOne(GRC_MARKER_OWNER, model.uri, markers);
+		this.markerService.changeOne(GRC_MARKER_OWNER, fileUri, markers);
 	}
 
 	/**
-	 * Maps a severity string (which may be a custom framework severity)
-	 * to VS Code's MarkerSeverity enum.
-	 *
-	 * Uses `toDisplaySeverity()` to normalize custom severities first.
+	 * Maps a severity string to VS Code's MarkerSeverity enum.
 	 */
 	private _toMarkerSeverity(severity: string): MarkerSeverity {
 		const displaySeverity = toDisplaySeverity(severity);
