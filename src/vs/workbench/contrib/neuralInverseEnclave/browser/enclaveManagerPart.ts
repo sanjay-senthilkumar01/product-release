@@ -11,8 +11,8 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { Part } from '../../../browser/part.js';
 import { IWebviewService, IWebviewElement } from '../../webview/browser/webview.js';
 import { IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
-import { IEnclaveFirewallService } from './services/enclaveFirewallService.js';
-import { IEnclaveSandboxService } from './services/enclaveSandboxService.js';
+import { IEnclaveFirewallService } from '../common/services/enclaveFirewallService.js';
+import { IEnclaveSandboxService } from '../common/services/enclaveSandboxService.js';
 // import { IAgentRegistryService } from '../common/agentRegistryService.js';
 import { mountSidebar } from '../../void/browser/react/out/sidebar-tsx/index.js';
 import { toDisposable } from '../../../../base/common/lifecycle.js';

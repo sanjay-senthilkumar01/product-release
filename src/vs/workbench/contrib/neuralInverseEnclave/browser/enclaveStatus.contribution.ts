@@ -6,7 +6,7 @@
 import { Disposable, MutableDisposable } from '../../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution } from '../../../../common/contributions.js';
 import { IStatusbarService, StatusbarAlignment, IStatusbarEntryAccessor } from '../../../../services/statusbar/browser/statusbar.js';
-import { IEnclaveEnvironmentService, EnclaveMode } from '../services/enclaveEnvironmentService.js';
+import { IEnclaveEnvironmentService, EnclaveMode } from '../../common/environment/enclaveEnvironmentService.js';
 import { ExtensionHostExtensions, IExtensionService } from '../../../../services/extensions/common/extensions.js';
 import { localize2 } from '../../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../../platform/actions/common/actions.js';
