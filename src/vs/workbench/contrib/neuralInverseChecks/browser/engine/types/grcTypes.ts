@@ -318,6 +318,30 @@ export interface ICheckResult {
 		blocksCommit: boolean;
 		blocksDeploy: boolean;
 	};
+
+	// ─── Intelligence-enhanced fields ────────────────────────────────
+
+	/**
+	 * AI-generated explanation of why this violation matters
+	 * in the specific context of this code.
+	 *
+	 * Unlike the static `fix` text from rule definitions, this is
+	 * generated per-violation by the Framework Intelligence Service.
+	 * Shows up in hover tooltips and the Checks panel.
+	 *
+	 * e.g. "This eval() receives data from the `userScript` variable
+	 *       which is assigned from an API response on line 12.
+	 *       An attacker controlling the API could execute arbitrary code."
+	 */
+	aiExplanation?: string;
+
+	/**
+	 * AI confidence that this is a true positive.
+	 * - 'high': Almost certainly a real issue
+	 * - 'medium': Likely an issue, review recommended
+	 * - 'low': Might be a false positive
+	 */
+	aiConfidence?: 'high' | 'medium' | 'low';
 }
 
 

@@ -54,6 +54,7 @@ import { GRCConfigLoader } from '../config/grcConfigLoader.js';
 import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
 import { IRegexCheck, IFileLevelCheck, IFrameworkMetadata, IFrameworkValidationResult } from '../framework/frameworkSchema.js';
 import { IProjectAnalyzerService, INanoAgentContext } from '../../nanoAgents/projectAnalyzerService.js';
+import { IFrameworkIntelligenceService } from './frameworkIntelligenceService.js';
 
 export const IGRCEngineService = createDecorator<IGRCEngineService>('neuralInverseGRCEngineService');
 
@@ -201,6 +202,7 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService,
 		@IFrameworkRegistry private readonly frameworkRegistry: IFrameworkRegistry,
 		@IProjectAnalyzerService private readonly projectAnalyzerService: IProjectAnalyzerService,
+		@IFrameworkIntelligenceService private readonly intelligenceService: IFrameworkIntelligenceService,
 	) {
 		super();
 
@@ -219,6 +221,44 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 		// so diagnostics re-evaluate with updated context
 		this._register(this.projectAnalyzerService.onDidAnalysisComplete(() => {
 			this._onDidRulesChange.fire();
+		}));
+
+		// When intelligence results arrive, enrich existing violations and add new ones
+		this._register(this.intelligenceService.onDidIntelligenceResultsReady((result) => {
+			const fileKey = result.fileUri.toString();
+			const existing = this._resultsByFile.get(fileKey) || [];
+			let changed = false;
+
+			// Apply AI enrichments to existing pattern violations
+			if (result.enrichments.size > 0) {
+				for (const r of existing) {
+					const key = `${r.ruleId}:${r.line}`;
+					const enrichment = result.enrichments.get(key);
+					if (enrichment) {
+						r.aiExplanation = enrichment.aiExplanation;
+						r.aiConfidence = enrichment.aiConfidence;
+						changed = true;
+					}
+				}
+			}
+
+			// Add intelligence-discovered violations (deduplicated)
+			const existingKeys = new Set(existing.map(r => `${r.ruleId}:${r.line}`));
+			const newViolations = result.additionalViolations.filter(
+				v => !existingKeys.has(`${v.ruleId}:${v.line}`)
+			);
+			if (newViolations.length > 0) {
+				existing.push(...newViolations);
+				changed = true;
+			}
+
+			if (changed) {
+				this._resultsByFile.set(fileKey, existing);
+				this._onDidCheckComplete.fire(existing);
+				const enrichCount = result.enrichments.size;
+				const newCount = newViolations.length;
+				console.log(`[GRCEngine] Intelligence: ${enrichCount} enriched, ${newCount} new violations for ${result.fileUri.path.split('/').pop()}`);
+			}
 		}));
 	}
 
@@ -302,8 +342,15 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 		// Cache results
 		this._resultsByFile.set(fileUri.toString(), results);
 
-		// Fire event
+		// Fire event for pattern results immediately
 		this._onDidCheckComplete.fire(results);
+
+		// Trigger async intelligence analysis (results arrive later via event)
+		if (this.intelligenceService.isAvailable) {
+			const content = model.getValue();
+			const allRules = this._configLoader.getRules();
+			this.intelligenceService.analyzeFile(fileUri, content, results, allRules, nanoContext);
+		}
 
 		return results;
 	}

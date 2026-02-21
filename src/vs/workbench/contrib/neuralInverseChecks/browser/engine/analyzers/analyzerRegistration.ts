@@ -27,7 +27,7 @@ export class GRCAnalyzerRegistration implements IWorkbenchContribution {
 		grcEngine.registerAnalyzer(new AstAnalyzer());
 
 		// Register External Check Runner (for type: "external" rules)
-		grcEngine.registerAnalyzer(new ExternalCheckRunner());
+		grcEngine.registerAnalyzer(new ExternalCheckRunner(workspaceContextService));
 
 		// Register Data Flow Analyzer (for type: "dataflow" rules)
 		grcEngine.registerAnalyzer(new DataFlowAnalyzer());

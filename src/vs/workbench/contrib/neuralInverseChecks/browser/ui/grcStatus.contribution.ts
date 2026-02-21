@@ -21,7 +21,7 @@ export class GRCStatusContribution extends Disposable implements IWorkbenchContr
 
 	constructor(
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
-		@IGRCEnvironmentService private readonly grcEnv: IGRCEnvironmentService
+		@IGRCEnvironmentService private readonly grcEnv: IGRCEnvironmentService,
 	) {
 		super();
 		this._updateStatus(this.grcEnv.mode);
@@ -52,7 +52,7 @@ export class GRCStatusContribution extends Disposable implements IWorkbenchContr
 			ariaLabel: tooltip,
 			tooltip: tooltip,
 			command: 'neuralInverse.setGRCMode',
-			kind: 'standard', // 'prominent' removed in current API? 'standard' is safe.
+			kind: 'standard',
 		}, 'neuralInverse.grcStatus', StatusbarAlignment.RIGHT, 100);
 	}
 }

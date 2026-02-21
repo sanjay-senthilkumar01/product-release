@@ -29,6 +29,7 @@ import './engine/framework/frameworkRegistry.js'; // Must load before grcEngineS
 import './nanoAgents/projectAnalyzerService.js'; // Must load before grcEngineService
 import './engine/services/grcEngineService.js';
 import './engine/services/auditTrailService.js';
+import './engine/services/frameworkIntelligenceService.js'; // Register Framework Intelligence Service
 import './gatekeeper/grcEnvironmentService.js'; // Register GRC Environment Service
 import { GRCDiagnosticsContribution } from './diagnostics/grcDiagnosticsContribution.js';
 import { GRCAnalyzerRegistration } from './engine/analyzers/analyzerRegistration.js';

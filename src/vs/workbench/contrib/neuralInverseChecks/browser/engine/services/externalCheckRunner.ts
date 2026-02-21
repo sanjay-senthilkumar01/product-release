@@ -84,7 +84,7 @@ export class ExternalCheckRunner implements IRuleAnalyzer {
 	private _onResultsReady?: (results: ICheckResult[]) => void;
 
 	constructor(
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService
+		private readonly workspaceContextService: IWorkspaceContextService
 	) { }
 
 	public onResultsReady(callback: (results: ICheckResult[]) => void): void {

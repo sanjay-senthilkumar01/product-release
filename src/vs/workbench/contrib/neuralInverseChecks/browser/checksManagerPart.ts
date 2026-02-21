@@ -26,6 +26,7 @@ import { AuditAndEvidenceControl } from './auditAndEvidence/auditAndEvidenceCont
 import { FailSafeDefaultsControl } from './failSafeDefaults/failSafeDefaultsControl.js';
 import { FormalVerificationControl } from './formalVerification/formalVerificationControl.js';
 import { IGRCEngineService } from './engine/services/grcEngineService.js';
+import { IFrameworkIntelligenceService } from './engine/services/frameworkIntelligenceService.js';
 
 export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProvider {
 
@@ -64,6 +65,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         @IWebviewService private readonly webviewService: IWebviewService,
         @ITerminalService private readonly terminalService: ITerminalService,
         @IGRCEngineService private readonly grcEngine: IGRCEngineService,
+        @IFrameworkIntelligenceService private readonly intelligenceService: IFrameworkIntelligenceService,
     ) {
         super(ChecksManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
     }
@@ -568,6 +570,8 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                         this.webviewElement.setHtml(this.getDashboardHtml());
                     }
                 }
+            } else if (msg.type === 'toggleAI') {
+                this.intelligenceService.setEnabled(!this.intelligenceService.isEnabled);
             }
         }));
 
@@ -578,6 +582,12 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
             }
         }));
         this._register(this.grcEngine.onDidRulesChange(() => {
+            if (this.webviewElement) {
+                this.webviewElement.setHtml(this.getDashboardHtml());
+            }
+        }));
+        // Refresh when intelligence state changes
+        this._register(this.intelligenceService.onDidEnabledChange(() => {
             if (this.webviewElement) {
                 this.webviewElement.setHtml(this.getDashboardHtml());
             }
@@ -690,6 +700,10 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         const passRate = totalRules > 0 ? Math.round(((totalRules - totalViolations) / totalRules) * 100) : 100;
         const totalErrors = domainSummary.reduce((s, d) => s + d.errorCount, 0);
         const totalWarnings = domainSummary.reduce((s, d) => s + d.warningCount, 0);
+
+        // Hybrid Intelligence state
+        const aiEnabled = this.intelligenceService.isEnabled;
+        const aiAvailable = this.intelligenceService.isAvailable;
 
         const domainRowsHtml = domainSummary.map(d => {
             const violations = d.errorCount + d.warningCount + d.infoCount;
@@ -893,6 +907,34 @@ tr:last-child td { border-bottom: none; }
 </div>
 
 <div class="section">
+    <div class="section-hdr">
+        <span class="section-title">Hybrid Intelligence</span>
+        <button class="btn${aiEnabled ? ' btn-sec' : ''}" id="aiToggleBtn" onclick="toggleAI()">${aiEnabled ? 'Disable' : 'Enable'}</button>
+    </div>
+    <table>
+        <thead><tr><th>Property</th><th>Value</th></tr></thead>
+        <tbody>
+            <tr>
+                <td>Status</td>
+                <td><span class="status-${aiEnabled ? (aiAvailable ? 'pass' : 'warn') : 'fail'}">${aiEnabled ? (aiAvailable ? 'ACTIVE' : 'PENDING') : 'OFFLINE'}</span></td>
+            </tr>
+            <tr>
+                <td>Mode</td>
+                <td>${aiEnabled ? 'Pattern checks + AI enrichment' : 'Pattern checks only'}</td>
+            </tr>
+            <tr>
+                <td>Capabilities</td>
+                <td>${aiEnabled ? 'Context-aware explanations, concrete fixes, false positive detection, missed violation discovery' : 'Disabled — enable to activate AI-enhanced analysis'}</td>
+            </tr>
+            <tr>
+                <td>LLM Provider</td>
+                <td>${aiEnabled ? 'Uses configured Chat model' : 'N/A'}</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="section">
     <div class="section-hdr"><span class="section-title">Commit Blockers</span></div>
     <table>
         <thead><tr><th>Location</th><th>Message</th><th>Rule</th></tr></thead>
@@ -905,6 +947,9 @@ const vscode = acquireVsCodeApi();
 function toggleImport() {
     document.getElementById('importPanel').classList.toggle('visible');
     document.getElementById('importFeedback').textContent = '';
+}
+function toggleAI() {
+    vscode.postMessage({ type: 'toggleAI' });
 }
 function submitImport() {
     const json = document.getElementById('fwJson').value.trim();

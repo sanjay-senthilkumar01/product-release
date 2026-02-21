@@ -96,6 +96,17 @@ export class GRCDiagnosticsContribution extends Disposable implements IWorkbench
 			this._scanWorkspace();
 		}));
 
+		// ── Intelligence results: re-render markers with AI enrichments ──
+		// When the Framework Intelligence Service enriches violations
+		// asynchronously (AI explanations, fixes, confidence), the engine
+		// fires onDidCheckComplete with updated results. We must re-set
+		// markers so the hover tooltips reflect the AI data.
+		this._register(this.grcEngine.onDidCheckComplete((results) => {
+			if (results.length > 0 && results[0]?.fileUri) {
+				this._setMarkersForFile(results[0].fileUri, results);
+			}
+		}));
+
 		// ── File system watcher: real-time file change detection ──────
 		this._register(this.fileService.onDidFilesChange(e => {
 			this._onFilesChanged(e);
@@ -305,10 +316,22 @@ export class GRCDiagnosticsContribution extends Disposable implements IWorkbench
 
 	/**
 	 * Convert ICheckResult[] to IMarkerData[] and set markers for a file.
+	 *
+	 * When intelligence enrichments are available, the hover tooltip shows:
+	 * - AI confidence level (HIGH / MEDIUM / LOW)
+	 * - AI-generated context-specific explanation
+	 * - AI-generated concrete fix code
 	 */
 	private _setMarkersForFile(fileUri: URI, results: ICheckResult[]): void {
 		const markers: IMarkerData[] = results.map(r => {
 			let message = r.message;
+
+			// AI intelligence section
+			if (r.aiExplanation) {
+				const confidence = (r.aiConfidence || 'medium').toUpperCase();
+				message += `\n\nAI Analysis [${confidence}]: ${r.aiExplanation}`;
+			}
+			// Static fix from rule definition
 			if (r.fix) {
 				message += `\nFix: ${r.fix}`;
 			}
