@@ -191,7 +191,7 @@ ${telemetryText}
 
 ${restartString}
 
-Neural Inverse separately records basic usage like the number of messages people are sending. If you'd like to disable Neural Inverse metrics, you may do so in Neural Inverse's Settings.
+Neural Inverse separately records basic usage like the number of messages people are sending. If you'd like to disable Neural Inverse metrics, you may do so in Neural Inverse LLM Settings.
 `;
 
 	return telemetryDescription;

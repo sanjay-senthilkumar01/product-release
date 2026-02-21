@@ -242,7 +242,7 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: 'void.settingsAction',
-			title: `Neural Inverse's Settings`,
+			title: `Neural Inverse LLM Settings`,
 			icon: { id: 'ellipsis' },
 			menu: [{ id: MenuId.ViewTitle, group: 'navigation', order: 3, when: ContextKeyExpr.equals('view', VOID_VIEW_ID), }]
 		});
