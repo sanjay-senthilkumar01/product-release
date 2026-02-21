@@ -3,19 +3,19 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { getWindow } from '../../../../base/browser/dom.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
-import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { Part } from '../../../browser/part.js';
-import { IWebviewService, IWebviewElement } from '../../webview/browser/webview.js';
-import { IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
-import { IEnclaveFirewallService } from '../common/services/enclaveFirewallService.js';
-import { IEnclaveSandboxService } from '../common/services/enclaveSandboxService.js';
-// import { IAgentRegistryService } from '../common/agentRegistryService.js';
-import { mountSidebar } from '../../void/browser/react/out/sidebar-tsx/index.js';
-import { toDisposable } from '../../../../base/common/lifecycle.js';
+import { getWindow } from '../../../../../base/browser/dom.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IStorageService } from '../../../../../platform/storage/common/storage.js';
+import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
+import { Part } from '../../../../browser/part.js';
+import { IWebviewService, IWebviewElement } from '../../../webview/browser/webview.js';
+import { IWorkbenchLayoutService } from '../../../../services/layout/browser/layoutService.js';
+import { IEnclaveFirewallService } from '../../common/firewall/enclaveFirewallService.js';
+import { IEnclaveSandboxService } from '../../common/sandbox/enclaveSandboxService.js';
+// import { IAgentRegistryService } from '../../common/agentRegistryService.js';
+import { mountSidebar } from '../../../void/browser/react/out/sidebar-tsx/index.js';
+import { toDisposable } from '../../../../../base/common/lifecycle.js';
 
 export class EnclaveManagerPart extends Part {
 
