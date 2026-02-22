@@ -30,7 +30,6 @@ import './nanoAgents/projectAnalyzerService.js'; // Must load before grcEngineSe
 import './engine/services/grcEngineService.js';
 import './engine/services/auditTrailService.js';
 import './engine/services/frameworkIntelligenceService.js'; // Register Framework Intelligence Service
-import './gatekeeper/grcEnvironmentService.js'; // Register GRC Environment Service
 import { GRCDiagnosticsContribution } from './diagnostics/grcDiagnosticsContribution.js';
 import { GRCAnalyzerRegistration } from './engine/analyzers/analyzerRegistration.js';
 
