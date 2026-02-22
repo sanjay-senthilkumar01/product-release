@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Neural Inverse Corporation. All rights reserved.
- *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -10,14 +10,16 @@ import { URI } from '../../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IEnclaveEnvironmentService } from '../environment/enclaveEnvironmentService.js';
 
 export const IEnclaveSandboxService = createDecorator<IEnclaveSandboxService>('enclaveSandboxService');
 
 export interface ISandboxViolationEvent {
 	id: string;
 	timestamp: number;
-	type: 'network' | 'filesystem' | 'command_timeout';
+	type: 'network' | 'filesystem' | 'command_timeout' | 'dangerous_command';
 	details: string;
+	wasBlocked: boolean;
 }
 
 export interface IEnclaveSandboxService {
@@ -35,7 +37,7 @@ export interface IEnclaveSandboxService {
 	 */
 	wrapCommand(command: string, timeoutMs?: number): string;
 
-	/** Emitted when an Sandbox violation occurs */
+	/** Emitted when a Sandbox violation occurs */
 	readonly onDidSandboxViolation: Event<ISandboxViolationEvent>;
 
 	/** Get recent Sandbox violations */
@@ -51,17 +53,50 @@ export class EnclaveSandboxService extends Disposable implements IEnclaveSandbox
 
 	private _isEnforcing = true;
 	private _recentViolations: ISandboxViolationEvent[] = [];
-	private readonly MAX_RECENT_VIOLATIONS = 100;
+	private readonly MAX_RECENT_VIOLATIONS = 200;
 
 	private readonly _onDidSandboxViolation = this._register(new Emitter<ISandboxViolationEvent>());
 	public readonly onDidSandboxViolation = this._onDidSandboxViolation.event;
 
+	// Blocked filesystem paths — system directories and sensitive dotfiles
+	private readonly blockedPathPatterns = [
+		'/etc/', '/var/', '/usr/', '/sbin/', '/bin/',
+		'/.ssh', '/.aws', '/.gnupg', '/.kube', '/.docker',
+		'/.env', '/id_rsa', '/id_ed25519',
+		'.inverse/audit' // Protect Enclave audit logs from AI tampering
+	];
+
+	// Dangerous command fragments that should be blocked or flagged
+	private readonly dangerousCommandPatterns = [
+		{ pattern: /\brm\s+-[rR]f?\b/, reason: 'Recursive delete command' },
+		{ pattern: /\bcurl\b|\bwget\b/, reason: 'Network request' },
+		{ pattern: /\bssh\b|\bscp\b/, reason: 'SSH network access' },
+		{ pattern: /\bchmod\s+[0-7]{3,4}\b/, reason: 'Permission modification' },
+		{ pattern: /\bsudo\b/, reason: 'Privilege escalation' },
+		{ pattern: /\b(nc|ncat|netcat)\b/, reason: 'Network socket command' },
+		{ pattern: />\s*\/dev\//, reason: 'Device file write' },
+	];
+
 	constructor(
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
-		@IFileService private readonly fileService: IFileService
+		@IFileService private readonly fileService: IFileService,
+		@IEnclaveEnvironmentService private readonly enclaveEnv: IEnclaveEnvironmentService
 	) {
 		super();
-		console.log('[Enclave] Sandbox Service initialized.');
+
+		// Auto-adjust enforcement based on Enclave mode
+		this._register(this.enclaveEnv.onDidChangeMode(mode => {
+			if (mode === 'draft') {
+				this._isEnforcing = false;
+			} else {
+				this._isEnforcing = true;
+			}
+			console.log(`[Enclave Sandbox] Mode changed to ${mode}. Enforcing: ${this._isEnforcing}`);
+		}));
+
+		// Initialize based on current mode
+		this._isEnforcing = this.enclaveEnv.mode !== 'draft';
+		console.log(`[Enclave] Sandbox Service initialized. Mode: ${this.enclaveEnv.mode}. Enforcing: ${this._isEnforcing}`);
 	}
 
 	public get isEnforcing(): boolean {
@@ -77,13 +112,16 @@ export class EnclaveSandboxService extends Disposable implements IEnclaveSandbox
 			return true;
 		}
 
-		// Deny access to system paths entirely
-		const blockedPatterns = ['/etc/', '/var/', '/usr/', '~/.ssh', '~/.aws'];
 		const uriPath = uri.path.toLowerCase();
 
-		for (const pattern of blockedPatterns) {
+		// Deny access to system paths and sensitive dotfiles
+		for (const pattern of this.blockedPathPatterns) {
 			if (uriPath.includes(pattern)) {
-				this._recordViolation('filesystem', `Agent attempted to access system path: ${uri.path}`);
+				this._recordViolation(
+					'filesystem',
+					`Agent attempted to ${isWrite ? 'WRITE' : 'READ'} blocked path: ${uri.path}`,
+					true
+				);
 				return false;
 			}
 		}
@@ -91,9 +129,12 @@ export class EnclaveSandboxService extends Disposable implements IEnclaveSandbox
 		// Ensure access is within the current workspace folders
 		const workspaceFolders = this.workspaceContextService.getWorkspace().folders;
 		if (workspaceFolders.length === 0) {
-			// No workspace available, default to denying writes
 			if (isWrite) {
-				this._recordViolation('filesystem', `Agent write attempt blocked (no active workspace): ${uri.path}`);
+				this._recordViolation(
+					'filesystem',
+					`Agent write attempt blocked (no active workspace): ${uri.path}`,
+					true
+				);
 				return false;
 			}
 			return true; // Allow reads outside workspace by default if no workspace
@@ -104,13 +145,11 @@ export class EnclaveSandboxService extends Disposable implements IEnclaveSandbox
 		);
 
 		if (!isWithinWorkspace) {
-			this._recordViolation('filesystem', `Agent attempted ${isWrite ? 'WRITE' : 'READ'} outside workspace: ${uri.path}`);
-			return false;
-		}
-
-		// Prevent modifications to Enclave logs/audit files
-		if (isWrite && uriPath.includes('.inverse/audit')) {
-			this._recordViolation('filesystem', `Agent attempted to modify audit trail: ${uri.path}`);
+			this._recordViolation(
+				'filesystem',
+				`Agent attempted ${isWrite ? 'WRITE' : 'READ'} outside workspace: ${uri.path}`,
+				true
+			);
 			return false;
 		}
 
@@ -122,29 +161,39 @@ export class EnclaveSandboxService extends Disposable implements IEnclaveSandbox
 			return command;
 		}
 
-		// In a real environment, this might wrap the command in `docker run` or a lightweight `sandbox-exec` (macOS).
-		// For now, we enforce a strict timeout utility built into unix (timeout command).
-		// Note: 'timeout' is standard on Linux. On macOS, it needs 'gtimeout' from coreutils, or a perl/ruby script wrap.
-		// For simplicity in this demo, we simulate the wrapper.
+		const mode = this.enclaveEnv.mode;
 
-		// Prevent network exfiltration via curl/wget
-		if (command.includes('curl ') || command.includes('wget ')) {
-			this._recordViolation('network', `Agent attempted to execute network request: ${command}`);
-			// Strip the command or return a dummy echo
-			return `echo "Enclave Sandbox: Network requests blocked for ( ${command} )" >&2 && exit 1`;
+		// Check for dangerous command patterns
+		for (const { pattern, reason } of this.dangerousCommandPatterns) {
+			if (pattern.test(command)) {
+				const shouldBlock = mode === 'prod';
+				this._recordViolation(
+					pattern.source.includes('curl') || pattern.source.includes('wget') || pattern.source.includes('ssh')
+						? 'network' : 'dangerous_command',
+					`Agent attempted: ${reason} — "${command.substring(0, 100)}"`,
+					shouldBlock
+				);
+
+				if (shouldBlock) {
+					return `echo "[Enclave Sandbox] Command blocked in PROD mode: ${reason}" >&2 && exit 1`;
+				}
+				// Dev mode: warn but allow through with timeout
+			}
 		}
 
-		// Unix timeout wrapper
-		// Using generic 'timeout' command.
+		// Wrap with timeout
+		// Note: On macOS, 'timeout' requires 'gtimeout' from GNU coreutils.
+		// Cross-platform: use the available timeout mechanism.
 		return `timeout ${timeoutMs / 1000}s bash -c '${command.replace(/'/g, "'\\''")}'`;
 	}
 
-	private _recordViolation(type: 'network' | 'filesystem' | 'command_timeout', details: string) {
+	private _recordViolation(type: ISandboxViolationEvent['type'], details: string, wasBlocked: boolean) {
 		const event: ISandboxViolationEvent = {
-			id: crypto.randomUUID(),
+			id: this._generateId(),
 			timestamp: Date.now(),
 			type,
-			details
+			details,
+			wasBlocked
 		};
 
 		this._recentViolations.unshift(event);
@@ -153,7 +202,19 @@ export class EnclaveSandboxService extends Disposable implements IEnclaveSandbox
 		}
 
 		this._onDidSandboxViolation.fire(event);
-		console.warn(`[Enclave Sandbox] VIOLATION (${type}): ${details}`);
+		if (wasBlocked) {
+			console.warn(`[Enclave Sandbox] BLOCKED (${type}): ${details}`);
+		} else {
+			console.log(`[Enclave Sandbox] FLAGGED (${type}): ${details}`);
+		}
+	}
+
+	private _generateId(): string {
+		try {
+			return crypto.randomUUID();
+		} catch {
+			return `sb-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+		}
 	}
 
 	public getRecentViolations(): ISandboxViolationEvent[] {
@@ -162,3 +223,4 @@ export class EnclaveSandboxService extends Disposable implements IEnclaveSandbox
 }
 
 registerSingleton(IEnclaveSandboxService, EnclaveSandboxService, InstantiationType.Delayed);
+

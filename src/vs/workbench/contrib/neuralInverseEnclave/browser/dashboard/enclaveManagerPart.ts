@@ -1,6 +1,6 @@
 /*---------------------------------------------------------------------------------------------
- *  Copyright (c) Microsoft Corporation. All rights reserved.
- *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *  Copyright (c) Neural Inverse Corporation. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
 import { getWindow } from '../../../../../base/browser/dom.js';
@@ -13,7 +13,8 @@ import { IWebviewService, IWebviewElement } from '../../../webview/browser/webvi
 import { IWorkbenchLayoutService } from '../../../../services/layout/browser/layoutService.js';
 import { IEnclaveFirewallService } from '../../common/firewall/enclaveFirewallService.js';
 import { IEnclaveSandboxService } from '../../common/sandbox/enclaveSandboxService.js';
-// import { IAgentRegistryService } from '../../common/agentRegistryService.js';
+import { IEnclaveAuditTrailService } from '../../common/audit/enclaveAuditTrailService.js';
+import { IEnclaveEnvironmentService } from '../../common/environment/enclaveEnvironmentService.js';
 import { mountSidebar } from '../../../void/browser/react/out/sidebar-tsx/index.js';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 
@@ -28,6 +29,7 @@ export class EnclaveManagerPart extends Part {
 
 	private webviewElement: IWebviewElement | undefined;
 	private readonly disposables = new DisposableStore();
+	private _currentView: 'manager' | 'audit' | 'chat' = 'manager';
 
 	constructor(
 		@IThemeService themeService: IThemeService,
@@ -36,7 +38,9 @@ export class EnclaveManagerPart extends Part {
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IWebviewService private readonly webviewService: IWebviewService,
 		@IEnclaveFirewallService private readonly firewallService: IEnclaveFirewallService,
-		@IEnclaveSandboxService private readonly sandboxService: IEnclaveSandboxService
+		@IEnclaveSandboxService private readonly sandboxService: IEnclaveSandboxService,
+		@IEnclaveAuditTrailService private readonly auditTrailService: IEnclaveAuditTrailService,
+		@IEnclaveEnvironmentService private readonly enclaveEnv: IEnclaveEnvironmentService
 	) {
 		super(EnclaveManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
 	}
@@ -67,6 +71,7 @@ export class EnclaveManagerPart extends Part {
 		const tabsContainer = document.createElement('div');
 		tabsContainer.style.display = 'flex';
 		tabsContainer.style.height = '100%';
+		tabsContainer.style.flex = '1';
 		header.appendChild(tabsContainer);
 
 		const createTab = (text: string, onClick: () => void) => {
@@ -94,13 +99,19 @@ export class EnclaveManagerPart extends Part {
 		body.style.overflow = 'hidden';
 		container.appendChild(body);
 
-		// VIEW 1: Enclave Webview
+		// VIEW 1: Enclave Webview (Firewall + Sandbox)
 		const enclaveContainer = document.createElement('div');
 		enclaveContainer.style.width = '100%';
 		enclaveContainer.style.height = '100%';
 		body.appendChild(enclaveContainer);
 
-		// VIEW 2: Void Sidebar (Shared Chat)
+		// VIEW 2: Audit Trail Webview
+		const auditContainer = document.createElement('div');
+		auditContainer.style.width = '100%';
+		auditContainer.style.height = '100%';
+		body.appendChild(auditContainer);
+
+		// VIEW 3: Void Sidebar (Shared Chat)
 		const voidContainer = document.createElement('div');
 		voidContainer.style.width = '100%';
 		voidContainer.style.height = '100%';
@@ -109,20 +120,21 @@ export class EnclaveManagerPart extends Part {
 
 		// State Management
 
-		const updateView = (view: 'manager' | 'chat') => {
-			if (view === 'manager') {
-				enclaveContainer.style.display = 'block';
-				voidContainer.style.display = 'none';
+		const updateView = (view: 'manager' | 'audit' | 'chat') => {
+			this._currentView = view;
+			enclaveContainer.style.display = view === 'manager' ? 'block' : 'none';
+			auditContainer.style.display = view === 'audit' ? 'block' : 'none';
+			voidContainer.style.display = view === 'chat' ? 'block' : 'none';
 
-				styleActive(tabEnclave);
-				styleInactive(tabChat);
-			} else {
-				enclaveContainer.style.display = 'none';
-				voidContainer.style.display = 'block';
+			styleInactive(tabEnclave);
+			styleInactive(tabAudit);
+			styleInactive(tabChat);
 
-				styleInactive(tabEnclave);
-				styleActive(tabChat);
-			}
+			if (view === 'manager') { styleActive(tabEnclave); }
+			else if (view === 'audit') { styleActive(tabAudit); }
+			else { styleActive(tabChat); }
+
+			this.updateWebviewContent();
 		};
 
 		const styleActive = (el: HTMLElement) => {
@@ -137,15 +149,18 @@ export class EnclaveManagerPart extends Part {
 			el.style.fontWeight = 'normal';
 		};
 
-		const tabChat = createTab('Chat', () => updateView('chat'));
 		const tabEnclave = createTab('Enclave', () => updateView('manager'));
+		const tabAudit = createTab('Audit Trail', () => updateView('audit'));
+		const tabChat = createTab('Chat', () => updateView('chat'));
 
 		tabsContainer.appendChild(tabEnclave);
+		tabsContainer.appendChild(tabAudit);
 		tabsContainer.appendChild(tabChat);
 
 		// Initialize view
 		updateView('manager');
 
+		// Create Enclave webview
 		this.webviewElement = this.webviewService.createWebviewElement({
 			title: 'Enclave Manager',
 			options: {
@@ -160,6 +175,25 @@ export class EnclaveManagerPart extends Part {
 		});
 
 		this.webviewElement.mountTo(enclaveContainer, getWindow(enclaveContainer));
+
+		// Create Audit Trail webview (separate)
+		const auditWebview = this.webviewService.createWebviewElement({
+			title: 'Audit Trail',
+			options: {
+				enableFindWidget: true,
+				tryRestoreScrollPosition: true,
+				retainContextWhenHidden: true,
+			},
+			contentOptions: {
+				allowScripts: true,
+			},
+			extension: undefined
+		});
+		auditWebview.mountTo(auditContainer, getWindow(auditContainer));
+		this.disposables.add(auditWebview);
+
+		// Store audit webview for updates
+		(this as any)._auditWebview = auditWebview;
 
 		// Mount Void Sidebar
 		// HACK: Override createElement to bypass "Not allowed to create elements in child window" error
@@ -257,153 +291,351 @@ export class EnclaveManagerPart extends Part {
 		// Listen to Enclave Services
 		this._register(this.firewallService.onDidBlockRequest(() => this.updateWebviewContent()));
 		this._register(this.sandboxService.onDidSandboxViolation(() => this.updateWebviewContent()));
-
-		// this.registerWebviewListeners();
-		// this.registerConfigurationListeners();
+		this._register(this.auditTrailService.onDidAddEntry(() => this.updateWebviewContent()));
+		this._register(this.enclaveEnv.onDidChangeMode(() => this.updateWebviewContent()));
 
 		return parent;
 	}
 
 	private updateWebviewContent(): void {
 		if (this.webviewElement) {
-			this.webviewElement.setHtml(this.getDashboardHtml());
+			if (this._currentView === 'manager') {
+				this.webviewElement.setHtml(this.getDashboardHtml());
+			}
+		}
+		const auditWebview = (this as any)._auditWebview as IWebviewElement | undefined;
+		if (auditWebview && this._currentView === 'audit') {
+			auditWebview.setHtml(this.getAuditTrailHtml());
 		}
 	}
 
 	private getDashboardHtml(): string {
+		const mode = this.enclaveEnv.mode;
 		const scannedCalls = this.firewallService.getScannedCount();
 		const blockedCalls = this.firewallService.getBlockedCount();
+		const flaggedCalls = this.firewallService.getFlaggedCount();
 		const recentBlocks = this.firewallService.getRecentBlocks();
 		const sandboxViolations = this.sandboxService.getRecentViolations();
 		const sandboxActive = this.sandboxService.isEnforcing;
+		const auditCount = this.auditTrailService.getEntryCount();
 
-		let blocksHtml = '<p style="color: var(--vscode-descriptionForeground);">No blocks recorded yet.</p>';
+		// Mode badge color
+		const modeColors: Record<string, string> = {
+			draft: '#4fc1ff',
+			dev: '#ffa500',
+			prod: '#f14c4c'
+		};
+		const modeColor = modeColors[mode] || '#4fc1ff';
+		const modeLabel = mode.toUpperCase();
+
+		// Firewall table rows
+		let firewallTableRows = '';
 		if (recentBlocks.length > 0) {
-			blocksHtml = '<ul style="padding-left: 20px; margin: 0;">';
-			for (const b of recentBlocks.slice(0, 5)) {
+			for (const b of recentBlocks.slice(0, 8)) {
 				const timeStr = new Date(b.timestamp).toLocaleTimeString();
-				blocksHtml += `
-					<li style="margin-bottom: 8px;">
-						<span style="color: var(--vscode-errorForeground); font-weight: bold;">[${timeStr}]</span> ${b.reason}<br/>
-						<code style="font-size: 0.9em; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; display: inline-block; margin-top: 4px;">${b.snippet}</code>
-					</li>`;
+				const statusBadge = b.wasBlocked
+					? '<span style="color: var(--vscode-errorForeground); font-weight: 600;">BLOCKED</span>'
+					: '<span style="color: var(--vscode-charts-orange);">FLAGGED</span>';
+				firewallTableRows += `
+					<tr>
+						<td style="padding: 4px 8px; font-family: monospace; font-size: 11px; color: var(--vscode-descriptionForeground);">${timeStr}</td>
+						<td style="padding: 4px 8px;">${statusBadge}</td>
+						<td style="padding: 4px 8px;">${b.reason}</td>
+						<td style="padding: 4px 8px; font-family: monospace; font-size: 11px; opacity: 0.7;">${b.snippet}</td>
+					</tr>`;
 			}
-			blocksHtml += '</ul>';
+		} else {
+			firewallTableRows = `<tr><td colspan="4" style="padding: 12px 8px; color: var(--vscode-descriptionForeground); text-align: center;">No firewall events recorded yet.</td></tr>`;
 		}
 
-		let sandboxHtml = '<p style="color: var(--vscode-descriptionForeground);">No sandbox violations recorded yet.</p>';
+		// Sandbox table rows
+		let sandboxTableRows = '';
 		if (sandboxViolations.length > 0) {
-			sandboxHtml = '<ul style="padding-left: 20px; margin: 0;">';
-			for (const v of sandboxViolations.slice(0, 5)) {
+			for (const v of sandboxViolations.slice(0, 8)) {
 				const timeStr = new Date(v.timestamp).toLocaleTimeString();
-				sandboxHtml += `
-					<li style="margin-bottom: 4px;">
-						<span style="color: var(--vscode-charts-orange); font-weight: bold;">[${timeStr}]</span> [${v.type.toUpperCase()}] ${v.details}
-					</li>`;
+				const typeBadge = `<span style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">${v.type}</span>`;
+				const statusBadge = v.wasBlocked
+					? '<span style="color: var(--vscode-errorForeground); font-weight: 600;">BLOCKED</span>'
+					: '<span style="color: var(--vscode-charts-orange);">FLAGGED</span>';
+				sandboxTableRows += `
+					<tr>
+						<td style="padding: 4px 8px; font-family: monospace; font-size: 11px; color: var(--vscode-descriptionForeground);">${timeStr}</td>
+						<td style="padding: 4px 8px;">${typeBadge}</td>
+						<td style="padding: 4px 8px;">${statusBadge}</td>
+						<td style="padding: 4px 8px; font-size: 12px;">${v.details.substring(0, 120)}</td>
+					</tr>`;
 			}
-			sandboxHtml += '</ul>';
+		} else {
+			sandboxTableRows = `<tr><td colspan="4" style="padding: 12px 8px; color: var(--vscode-descriptionForeground); text-align: center;">No sandbox violations recorded yet.</td></tr>`;
 		}
 
 		return `<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Enclave Control Center</title>
-            <style>
-                body {
-                    font-family: var(--vscode-font-family);
-                    font-size: var(--vscode-font-size);
-                    padding: 20px;
-                    background-color: var(--vscode-editor-background);
-                    color: var(--vscode-editor-foreground);
-                    margin: 0;
-                }
-                h1 {
-                    font-size: 1.4em;
-                    font-weight: 500;
-                    margin: 0 0 20px 0;
-                    color: var(--vscode-foreground);
-					padding-bottom: 10px;
-					border-bottom: 1px solid var(--vscode-panel-border);
-                }
-				h2 {
-					font-size: 1.1em;
-					font-weight: normal;
-					margin: 20px 0 10px 0;
-					color: var(--vscode-editorInput-foreground);
-					text-transform: uppercase;
-					letter-spacing: 0.5px;
+		<html lang="en">
+		<head>
+			<meta charset="UTF-8">
+			<meta name="viewport" content="width=device-width, initial-scale=1.0">
+			<title>Enclave Control Center</title>
+			<style>
+				body {
+					font-family: var(--vscode-font-family);
+					font-size: var(--vscode-font-size);
+					padding: 16px 20px;
+					background-color: var(--vscode-editor-background);
+					color: var(--vscode-editor-foreground);
+					margin: 0;
 				}
-				.card {
-					background: var(--vscode-editorWidget-background);
-					border: 1px solid var(--vscode-widget-border);
-					padding: 15px;
-					border-radius: 4px;
+				.header-row {
+					display: flex;
+					align-items: center;
+					gap: 16px;
 					margin-bottom: 20px;
+					padding-bottom: 12px;
+					border-bottom: 1px solid var(--vscode-panel-border);
+				}
+				.header-title {
+					font-size: 1.3em;
+					font-weight: 500;
+					flex: 1;
+				}
+				.mode-badge {
+					display: inline-flex;
+					align-items: center;
+					gap: 6px;
+					padding: 4px 12px;
+					border-radius: 4px;
+					font-size: 11px;
+					font-weight: 700;
+					letter-spacing: 1px;
+					text-transform: uppercase;
 				}
 				.stat-row {
 					display: flex;
-					gap: 20px;
-					margin-bottom: 15px;
+					gap: 12px;
+					margin-bottom: 20px;
 				}
 				.stat-box {
-					background: var(--vscode-badge-background);
-					color: var(--vscode-badge-foreground);
-					padding: 10px 15px;
-					border-radius: 3px;
-					min-width: 120px;
+					background: rgba(255,255,255,0.03);
+					border: 1px solid var(--vscode-widget-border);
+					padding: 10px 14px;
+					border-radius: 4px;
+					min-width: 100px;
+					flex: 1;
 				}
 				.stat-value {
-					font-size: 1.5em;
-					font-weight: bold;
-					margin-bottom: 5px;
+					font-size: 1.6em;
+					font-weight: 700;
+					font-family: monospace;
 				}
 				.stat-label {
-					font-size: 0.9em;
-					opacity: 0.8;
+					font-size: 10px;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+					opacity: 0.6;
+					margin-top: 4px;
 				}
-				.status-indicator {
-					display: inline-block;
-					width: 8px;
-					height: 8px;
-					border-radius: 50%;
-					margin-right: 6px;
+				.section {
+					margin-bottom: 20px;
 				}
-				.status-active { background-color: var(--vscode-testing-iconPassed); }
-				.status-inactive { background-color: var(--vscode-testing-iconFailed); }
-            </style>
-        </head>
-        <body>
-            <h1><span class="status-indicator status-active"></span>Enclave Control Center</h1>
+				.section-header {
+					font-size: 11px;
+					text-transform: uppercase;
+					letter-spacing: 1px;
+					color: var(--vscode-descriptionForeground);
+					margin-bottom: 8px;
+					padding-bottom: 4px;
+					border-bottom: 1px solid var(--vscode-panel-border);
+				}
+				table {
+					width: 100%;
+					border-collapse: collapse;
+					font-size: 12px;
+				}
+				th {
+					text-align: left;
+					padding: 6px 8px;
+					font-size: 10px;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+					color: var(--vscode-descriptionForeground);
+					border-bottom: 1px solid var(--vscode-panel-border);
+				}
+				tr:hover {
+					background: rgba(255,255,255,0.02);
+				}
+			</style>
+		</head>
+		<body>
+			<div class="header-row">
+				<div class="header-title">Enclave Control Center</div>
+				<div class="mode-badge" style="background: ${modeColor}22; color: ${modeColor}; border: 1px solid ${modeColor}44;">
+					● ${modeLabel}
+				</div>
+			</div>
 
 			<div class="stat-row">
-				<div class="stat-box" style="background: var(--vscode-list-activeSelectionBackground);">
+				<div class="stat-box">
 					<div class="stat-value">${scannedCalls}</div>
 					<div class="stat-label">Prompts Scanned</div>
 				</div>
-				<div class="stat-box" style="background: var(--vscode-errorForeground); color: white;">
-					<div class="stat-value">${blockedCalls}</div>
-					<div class="stat-label">Firewall Blocks</div>
+				<div class="stat-box">
+					<div class="stat-value" style="color: var(--vscode-errorForeground);">${blockedCalls}</div>
+					<div class="stat-label">Blocked</div>
 				</div>
-				<div class="stat-box" style="background: ${sandboxActive ? 'var(--vscode-testing-iconPassed)' : 'var(--vscode-testing-iconFailed)'}; color: white;">
-					<div class="stat-value">${sandboxActive ? 'ACTIVE' : 'INACTIVE'}</div>
-					<div class="stat-label">Agent Sandbox</div>
+				<div class="stat-box">
+					<div class="stat-value" style="color: var(--vscode-charts-orange);">${flaggedCalls}</div>
+					<div class="stat-label">Flagged</div>
+				</div>
+				<div class="stat-box">
+					<div class="stat-value" style="color: ${sandboxActive ? 'var(--vscode-testing-iconPassed)' : 'var(--vscode-testing-iconFailed)'};">${sandboxActive ? 'ON' : 'OFF'}</div>
+					<div class="stat-label">Sandbox</div>
+				</div>
+				<div class="stat-box">
+					<div class="stat-value">${auditCount}</div>
+					<div class="stat-label">Audit Entries</div>
 				</div>
 			</div>
 
-			<div class="card">
-				<h2>Context Firewall - Recent Blocks</h2>
-				${blocksHtml}
+			<div class="section">
+				<div class="section-header">Context Firewall</div>
+				<table>
+					<thead><tr><th>Time</th><th>Status</th><th>Rule</th><th>Snippet</th></tr></thead>
+					<tbody>${firewallTableRows}</tbody>
+				</table>
 			</div>
 
-			<div class="card">
-				<h2>Execution Sandbox - Activity</h2>
-				${sandboxHtml}
+			<div class="section">
+				<div class="section-header">Execution Sandbox</div>
+				<table>
+					<thead><tr><th>Time</th><th>Type</th><th>Status</th><th>Details</th></tr></thead>
+					<tbody>${sandboxTableRows}</tbody>
+				</table>
 			</div>
+		</body>
+		</html>`;
+	}
 
-        </body>
-        </html>`;
+	private getAuditTrailHtml(): string {
+		const mode = this.enclaveEnv.mode;
+		const entries = this.auditTrailService.getRecentEntries(50);
+		const chainResult = this.auditTrailService.verifyChain();
+
+		const modeColors: Record<string, string> = {
+			draft: '#4fc1ff',
+			dev: '#ffa500',
+			prod: '#f14c4c'
+		};
+		const modeColor = modeColors[mode] || '#4fc1ff';
+
+		// Audit trail table rows
+		let auditRows = '';
+		if (entries.length > 0) {
+			for (const e of entries.reverse().slice(0, 30)) {
+				const timeStr = new Date(e.timestamp).toLocaleTimeString();
+				const outcomeColor = e.outcome === 'allowed' ? 'var(--vscode-testing-iconPassed)' :
+					e.outcome === 'blocked' ? 'var(--vscode-errorForeground)' : 'var(--vscode-charts-orange)';
+				const hashShort = e.hash.substring(0, 8) + '…';
+				auditRows += `
+					<tr>
+						<td style="padding: 4px 8px; font-family: monospace; font-size: 11px; color: var(--vscode-descriptionForeground);">${timeStr}</td>
+						<td style="padding: 4px 8px;"><span style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase;">${e.action}</span></td>
+						<td style="padding: 4px 8px; font-size: 11px;">${e.actor}</td>
+						<td style="padding: 4px 8px; font-weight: 600; color: ${outcomeColor};">${e.outcome.toUpperCase()}</td>
+						<td style="padding: 4px 8px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;">${e.target}</td>
+						<td style="padding: 4px 8px; font-family: monospace; font-size: 10px; opacity: 0.5;">${hashShort}</td>
+					</tr>`;
+			}
+		} else {
+			auditRows = `<tr><td colspan="6" style="padding: 20px 8px; color: var(--vscode-descriptionForeground); text-align: center;">No audit entries recorded yet. Entries will appear here as AI actions occur.</td></tr>`;
+		}
+
+		const chainBadge = chainResult.valid
+			? '<span style="color: var(--vscode-testing-iconPassed); font-weight: 600;">✓ Hash Chain Valid</span>'
+			: `<span style="color: var(--vscode-errorForeground); font-weight: 600;">✗ Chain Broken at Entry ${chainResult.brokenAt}</span>`;
+
+		return `<!DOCTYPE html>
+		<html lang="en">
+		<head>
+			<meta charset="UTF-8">
+			<meta name="viewport" content="width=device-width, initial-scale=1.0">
+			<title>Audit Trail</title>
+			<style>
+				body {
+					font-family: var(--vscode-font-family);
+					font-size: var(--vscode-font-size);
+					padding: 16px 20px;
+					background-color: var(--vscode-editor-background);
+					color: var(--vscode-editor-foreground);
+					margin: 0;
+				}
+				.header-row {
+					display: flex;
+					align-items: center;
+					gap: 16px;
+					margin-bottom: 16px;
+					padding-bottom: 12px;
+					border-bottom: 1px solid var(--vscode-panel-border);
+				}
+				.header-title {
+					font-size: 1.3em;
+					font-weight: 500;
+					flex: 1;
+				}
+				.chain-badge {
+					font-size: 12px;
+				}
+				.mode-badge {
+					display: inline-flex;
+					align-items: center;
+					gap: 6px;
+					padding: 4px 12px;
+					border-radius: 4px;
+					font-size: 11px;
+					font-weight: 700;
+					letter-spacing: 1px;
+					text-transform: uppercase;
+				}
+				table {
+					width: 100%;
+					border-collapse: collapse;
+					font-size: 12px;
+				}
+				th {
+					text-align: left;
+					padding: 6px 8px;
+					font-size: 10px;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+					color: var(--vscode-descriptionForeground);
+					border-bottom: 1px solid var(--vscode-panel-border);
+					position: sticky;
+					top: 0;
+					background: var(--vscode-editor-background);
+				}
+				tr:hover {
+					background: rgba(255,255,255,0.02);
+				}
+				.entries-count {
+					font-size: 12px;
+					color: var(--vscode-descriptionForeground);
+					margin-bottom: 12px;
+				}
+			</style>
+		</head>
+		<body>
+			<div class="header-row">
+				<div class="header-title">Cryptographic Audit Trail</div>
+				<div class="chain-badge">${chainBadge}</div>
+				<div class="mode-badge" style="background: ${modeColor}22; color: ${modeColor}; border: 1px solid ${modeColor}44;">
+					● ${mode.toUpperCase()}
+				</div>
+			</div>
+			<div class="entries-count">${entries.length} entries in session</div>
+			<table>
+				<thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Outcome</th><th>Target</th><th>Hash</th></tr></thead>
+				<tbody>${auditRows}</tbody>
+			</table>
+		</body>
+		</html>`;
 	}
 
 	override layout(width: number, height: number, top: number, left: number): void {
@@ -421,3 +653,4 @@ export class EnclaveManagerPart extends Part {
 		super.dispose();
 	}
 }
+

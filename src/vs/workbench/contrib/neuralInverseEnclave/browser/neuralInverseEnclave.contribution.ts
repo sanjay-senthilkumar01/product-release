@@ -129,3 +129,12 @@ Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).regi
 // Register Status Bar Item
 import { EnclaveStatusContribution } from './ui/enclaveStatus.contribution.js';
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(EnclaveStatusContribution, LifecyclePhase.Restored);
+
+// Register Enclave Services (singleton side-effect imports)
+import '../../neuralInverseEnclave/common/audit/enclaveAuditTrailService.js';
+import '../../neuralInverseEnclave/common/audit/enclaveProvenanceService.js';
+import '../../neuralInverseEnclave/common/enclaveGatekeeperService.js';
+import '../../neuralInverseEnclave/common/firewall/enclaveFirewallService.js';
+import '../../neuralInverseEnclave/common/sandbox/enclaveSandboxService.js';
+import '../../neuralInverseEnclave/common/environment/enclaveEnvironmentService.js';
+
