@@ -325,7 +325,12 @@ export class AgentManagerPart extends Part {
 	private getMappedTools(agentTools: string[] | undefined): string[] {
 		const TOOLS_MAP: { [key: string]: string[] } = {
 			'Terminal': ['run_command', 'run_persistent_command', 'open_persistent_terminal', 'kill_persistent_terminal'],
-			'FileSystem': ['read_file', 'ls_dir', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_in_file', 'create_file_or_folder', 'delete_file_or_folder', 'edit_file', 'rewrite_file', 'read_lint_errors']
+			'FileSystem': ['read_file', 'ls_dir', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_in_file', 'create_file_or_folder', 'delete_file_or_folder', 'edit_file', 'rewrite_file', 'read_lint_errors'],
+			'Browser': ['read_browser_page', 'open_browser_url', 'browser_search'],
+			'GitHub': [], // Placeholder for internal tools replacement
+			'Jira': [], // Placeholder for internal tools replacement
+			'Linear': [], // Placeholder for internal tools replacement
+			'Database': [] // Placeholder for internal tools replacement
 		};
 
 		if (!agentTools || agentTools.length === 0) return []; // No tools
@@ -402,281 +407,599 @@ export class AgentManagerPart extends Part {
 
 	private getDashboardHtml(): string {
 		return `<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Agent</title>
-            <style>
-                body {
-                    font-family: var(--vscode-font-family);
-                    font-size: var(--vscode-font-size);
-                    padding: 20px;
-                    background-color: var(--vscode-editor-background);
-                    color: var(--vscode-editor-foreground);
-                    margin: 0;
-                }
-                .header-row {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 20px;
-                }
-                h1 {
-                    font-size: 1.2em;
-                    font-weight: 500;
-                    margin: 0;
-                    color: var(--vscode-foreground);
-                }
-                .section {
-                    margin-bottom: 20px;
-                }
-                .label {
-                    display: block;
-                    font-size: 0.9em;
-                    font-weight: 600;
-                    margin-bottom: 6px;
-                    color: var(--vscode-descriptionForeground);
-                    text-transform: uppercase;
-                }
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent</title>
+    <style>
+        :root {
+            --sidebar-width: 250px;
+        }
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        /* Sidebar */
+        .sidebar {
+            width: var(--sidebar-width);
+            background-color: var(--vscode-sideBar-background);
+            border-right: 1px solid var(--vscode-sideBar-border, var(--vscode-widget-border));
+            display: flex;
+            flex-direction: column;
+        }
+        .sidebar-header {
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+        }
+        .sidebar-header h2 {
+            font-size: 11px;
+            text-transform: uppercase;
+            margin: 0;
+            font-weight: 600;
+            color: var(--vscode-sideBarTitle-foreground);
+            letter-spacing: 0.5px;
+        }
+        .new-agent-btn {
+            background: transparent;
+            color: var(--vscode-icon-foreground);
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            border-radius: 3px;
+        }
+        .new-agent-btn:hover {
+            background: var(--vscode-toolbar-hoverBackground);
+        }
+        .agent-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 0;
+        }
+        .agent-item {
+            padding: 6px 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--vscode-sideBar-foreground);
+            font-size: 13px;
+            user-select: none;
+        }
+        .agent-item:hover {
+            background-color: var(--vscode-list-hoverBackground);
+            color: var(--vscode-list-hoverForeground);
+        }
+        .agent-item.selected {
+            background-color: var(--vscode-list-activeSelectionBackground);
+            color: var(--vscode-list-activeSelectionForeground);
+        }
+        .agent-icon {
+            width: 16px;
+            height: 16px;
+            background-color: var(--vscode-symbolIcon-classForeground);
+            border-radius: 50%;
+            display: inline-block;
+        }
 
-                input, select, textarea {
-                    width: 100%;
-                    padding: 6px 8px;
-                    background: var(--vscode-input-background);
-                    color: var(--vscode-input-foreground);
-                    border: 1px solid var(--vscode-input-border);
-                    box-sizing: border-box;
-                    margin-bottom: 10px;
-                    border-radius: 2px;
-                    font-family: inherit;
-                    font-size: inherit;
-                }
-                input:focus, select:focus, textarea:focus {
-                    outline: 1px solid var(--vscode-focusBorder);
-                    border-color: var(--vscode-focusBorder);
-                }
+        /* Main Workspace */
+        .workspace {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--vscode-editor-background);
+            position: relative;
+        }
+        .view {
+            display: none;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
+        }
+        .view.active {
+            display: flex;
+        }
 
-                textarea { resize: vertical; min-height: 80px; }
+        /* Empty State */
+        .empty-state {
+            align-items: center;
+            justify-content: center;
+            color: var(--vscode-descriptionForeground);
+            text-align: center;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        .empty-state h3 { margin-bottom: 8px; font-weight: 500; font-size: 16px; color: var(--vscode-foreground); }
+        .empty-state p { font-size: 13px; max-width: 300px; line-height: 1.5; }
 
-                button {
-                    background: var(--vscode-button-background);
-                    color: var(--vscode-button-foreground);
-                    border: none;
-                    padding: 6px 14px;
-                    cursor: pointer;
-                    border-radius: 2px;
-                    font-family: inherit;
-                }
-                button:hover { background: var(--vscode-button-hoverBackground); }
-                .secondary-btn { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
-                .secondary-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+        /* Form (Create Agent) */
+        .form-container {
+            padding: 32px;
+            max-width: 600px;
+            margin: 0 auto;
+            width: 100%;
+            box-sizing: border-box;
+            overflow-y: auto;
+        }
+        .form-header { margin-bottom: 24px; }
+        .form-header h2 { font-size: 18px; font-weight: 500; margin: 0; color: var(--vscode-foreground); }
+        .form-group { margin-bottom: 20px; }
+        .form-group label {
+            display: block;
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 600;
+            color: var(--vscode-descriptionForeground);
+            margin-bottom: 6px;
+        }
+        input, select, textarea {
+            width: 100%;
+            background: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            padding: 8px;
+            border-radius: 3px;
+            font-family: inherit;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            border-color: var(--vscode-focusBorder);
+        }
+        textarea { resize: vertical; min-height: 100px; }
+        .tools-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            background: var(--vscode-editor-inactiveSelectionBackground);
+            padding: 16px;
+            border-radius: 4px;
+            border: 1px solid var(--vscode-widget-border);
+        }
+        .tool-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .tool-checkbox input { width: auto; margin: 0; cursor: pointer; }
+        .form-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid var(--vscode-widget-border);
+        }
+        button {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 6px 16px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        button:hover { background: var(--vscode-button-hoverBackground); }
+        button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-button-border, transparent); }
+        button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
 
-                #output {
-                    white-space: pre-wrap;
-                    font-family: var(--vscode-editor-font-family, 'Courier New', monospace);
-                    padding: 10px;
-                    background: var(--vscode-editor-inactiveSelectionBackground);
-                    border: 1px solid var(--vscode-widget-border);
-                    min-height: 150px;
-                    border-radius: 3px;
-                    overflow-x: auto;
-                }
+        /* Agent Details Tabs */
+        .agent-tabs {
+            display: flex;
+            gap: 16px;
+            padding: 0 20px;
+            border-bottom: 1px solid var(--vscode-widget-border);
+            margin-top: 12px;
+        }
+        .agent-tab {
+            padding: 8px 4px;
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 500;
+            color: var(--vscode-descriptionForeground);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            user-select: none;
+        }
+        .agent-tab:hover {
+            color: var(--vscode-foreground);
+        }
+        .agent-tab.active {
+            color: var(--vscode-foreground);
+            border-bottom-color: var(--vscode-button-background);
+        }
+        .agent-tab-content {
+            display: none;
+            flex: 1;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .agent-tab-content.active {
+            display: flex;
+        }
 
-                /* Modal */
-                .modal {
-                    display: none;
-                    position: fixed;
-                    z-index: 10;
-                    left: 0;
-                    top: 0;
-                    width: 100%;
-                    height: 100%;
-                    overflow: hidden; /* Parent scroll */
-                    background-color: rgba(0,0,0,0.5);
-                    backdrop-filter: blur(2px);
-                }
-                .modal-content {
-                    background-color: var(--vscode-editor-background);
-                    margin: 5% auto;
-                    padding: 20px;
-                    border: 1px solid var(--vscode-widget-border);
-                    width: 80%;
-                    max-width: 600px;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-                    border-radius: 4px;
-                }
-                .modal-header {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 20px;
-                    font-size: 1.1em;
-                    font-weight: bold;
-                }
-                .close {
-                    color: var(--vscode-descriptionForeground);
-                    font-size: 24px;
-                    font-weight: bold;
-                    cursor: pointer;
-                    line-height: 1;
-                }
-                .close:hover { color: var(--vscode-foreground); }
+        /* Chat View / Agent Detail */
+        .chat-header {
+            padding: 16px 20px 0 20px;
+            display: flex;
+            flex-direction: column;
+            background: var(--vscode-editor-background);
+        }
+        .chat-header-top {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .chat-header h3 { margin: 0; font-size: 14px; font-weight: 500; color: var(--vscode-foreground); }
+        .chat-header .model-badge {
+            font-size: 11px;
+            background: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            padding: 2px 6px;
+            border-radius: 10px;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .message { display: flex; flex-direction: column; max-width: 85%; }
+        .message.user { align-self: flex-end; }
+        .message.agent { align-self: flex-start; }
+        .message-bubble {
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .message.user .message-bubble {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border-bottom-right-radius: 2px;
+        }
+        .message.agent .message-bubble {
+            background-color: var(--vscode-editor-inactiveSelectionBackground);
+            color: var(--vscode-editor-foreground);
+            border-bottom-left-radius: 2px;
+            font-family: var(--vscode-editor-font-family, monospace);
+        }
 
-                .checkbox-group { margin-top: 10px; margin-bottom: 20px; border: 1px solid var(--vscode-widget-border); padding: 10px; border-radius: 3px; }
-                .checkbox-group label { display: flex; align-items: center; margin-bottom: 5px; cursor: pointer; }
-                .checkbox-group input { width: auto; margin-right: 8px; margin-bottom: 0; }
+        .chat-input-area {
+            padding: 16px 20px;
+            border-top: 1px solid var(--vscode-widget-border);
+            background: var(--vscode-editor-background);
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        .input-container input {
+            flex: 1;
+            margin: 0;
+            padding: 10px 14px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h2>Agents</h2>
+            <button class="new-agent-btn" onclick="showView('create')" title="New Agent">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/>
+                </svg>
+            </button>
+        </div>
+        <div class="agent-list" id="agent-list">
+            <!-- Dynamically populated -->
+        </div>
+    </div>
 
-                .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-            </style>
-        </head>
-        <body>
-            <div class="header-row">
-                <h1>Agents</h1>
-                <button onclick="openModal()">+ New Agent</button>
+    <div class="workspace">
+        <!-- Empty State -->
+        <div class="view active" id="view-empty">
+            <div class="empty-state">
+                <h3>Agent Manager</h3>
+                <p>Select an agent from the sidebar to start a conversation, or create a new agent to replace internal tools.</p>
+                <button onclick="showView('create')" style="margin-top: 16px;">Create New Agent</button>
             </div>
+        </div>
 
-            <div class="section">
-                <span class="label">Select Agent</span>
-                <select id="agent-selector">
-                    <option value="" disabled selected>Loading agents...</option>
-                </select>
-            </div>
-
-            <div class="section">
-                <span class="label">Input</span>
-                <input type="text" id="user-input" placeholder="Ask the agent to do something..." />
-                <button onclick="sendMessage()">Send</button>
-            </div>
-
-            <div class="section">
-                <span class="label">Output</span>
-                <div id="output">ready.</div>
-            </div>
-
-            <!-- Create Agent Modal -->
-            <div id="createModal" class="modal">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <span>Create New Agent</span>
-                        <span class="close" onclick="closeModal()">&times;</span>
-                    </div>
-
-                    <span class="label">Name</span>
-                    <input type="text" id="new-agent-name" placeholder="e.g. CodeReviewer">
-
-                    <span class="label">Model</span>
+        <!-- Create Agent -->
+        <div class="view" id="view-create">
+            <div class="form-container">
+                <div class="form-header">
+                    <h2>Create New Agent</h2>
+                </div>
+                <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" id="new-agent-name" placeholder="e.g. JiraManager, DB_Assistant...">
+                </div>
+                <div class="form-group">
+                    <label>Model</label>
                     <select id="new-agent-model">
                         <option value="gpt-4o">GPT-4o</option>
                         <option value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</option>
                     </select>
-
-                    <span class="label">System Instructions</span>
+                </div>
+                <div class="form-group">
+                    <label>System Instructions</label>
                     <textarea id="new-agent-instructions" placeholder="You are a helpful assistant specialized in..."></textarea>
-
-                    <span class="label">Tools</span>
-                    <div class="checkbox-group">
-                        <label><input type="checkbox" value="FileSystem" class="tool-check"> FileSystem (Read/Write)</label>
-                        <label><input type="checkbox" value="Terminal" class="tool-check"> Terminal (Run commands)</label>
+                </div>
+                <div class="form-group">
+                    <label>Internal Tools</label>
+                    <div class="tools-grid">
+                        <label class="tool-checkbox"><input type="checkbox" value="FileSystem" class="tool-check"> FileSystem</label>
+                        <label class="tool-checkbox"><input type="checkbox" value="Terminal" class="tool-check"> Terminal</label>
+                        <label class="tool-checkbox"><input type="checkbox" value="Browser" class="tool-check"> Browser</label>
+                        <label class="tool-checkbox"><input type="checkbox" value="GitHub" class="tool-check"> GitHub</label>
+                        <label class="tool-checkbox"><input type="checkbox" value="Jira" class="tool-check"> Jira</label>
+                        <label class="tool-checkbox"><input type="checkbox" value="Linear" class="tool-check"> Linear</label>
+                        <label class="tool-checkbox"><input type="checkbox" value="Database" class="tool-check"> Database connection</label>
                     </div>
+                </div>
+                <div class="form-actions">
+                    <button class="secondary" onclick="showView('empty')">Cancel</button>
+                    <button onclick="createAgent()">Create Agent</button>
+                </div>
+            </div>
+        </div>
 
-                    <div class="actions">
-                        <button class="secondary-btn" onclick="closeModal()">Cancel</button>
-                        <button onclick="createAgent()">Create</button>
+        <!-- Agent Detail View -->
+        <div class="view" id="view-agent-detail">
+            <div class="chat-header">
+                <div class="chat-header-top">
+                    <div class="agent-icon" style="background-color: var(--vscode-symbolIcon-eventForeground)"></div>
+                    <h3 id="chat-header-name">Agent Name</h3>
+                    <span class="model-badge" id="chat-header-model">gpt-4o</span>
+                </div>
+                <!-- Agentic Tabs -->
+                <div class="agent-tabs">
+                    <div class="agent-tab active" onclick="switchAgentTab('chat')" id="tab-nav-chat">Chat</div>
+                    <div class="agent-tab" onclick="switchAgentTab('workflow')" id="tab-nav-workflow">Agentic Workflow</div>
+                    <div class="agent-tab" onclick="switchAgentTab('knowledge')" id="tab-nav-knowledge">Knowledge Base</div>
+                    <div class="agent-tab" onclick="switchAgentTab('tools')" id="tab-nav-tools">Tools Config</div>
+                    <div class="agent-tab" onclick="switchAgentTab('integrations')" id="tab-nav-integrations">Integrations</div>
+                    <div class="agent-tab" onclick="switchAgentTab('security')" id="tab-nav-security">Security & Access</div>
+                    <div class="agent-tab" onclick="switchAgentTab('audit')" id="tab-nav-audit">Audit Logs</div>
+                    <div class="agent-tab" onclick="switchAgentTab('analytics')" id="tab-nav-analytics">Analytics</div>
+                </div>
+            </div>
+
+            <!-- Tab: Chat -->
+            <div class="agent-tab-content active" id="tab-content-chat">
+                <div class="chat-messages" id="chat-messages">
+                    <!-- Messages go here -->
+                </div>
+                <div class="chat-input-area">
+                    <div class="input-container">
+                        <input type="text" id="user-input" placeholder="Ask the agent to do something..." onkeydown="if(event.key === 'Enter') sendMessage()" />
+                        <button onclick="sendMessage()">Send</button>
                     </div>
                 </div>
             </div>
 
-            <script>
-                const vscode = acquireVsCodeApi();
-                const agentSelector = document.getElementById('agent-selector');
-                const outputDiv = document.getElementById('output');
-                const userInput = document.getElementById('user-input');
-                const modal = document.getElementById('createModal');
+            <!-- Placeholder Tabs -->
+            <div class="agent-tab-content" id="tab-content-workflow">
+                <div class="empty-state">
+                    <h3>Agentic Workflow</h3>
+                    <p>Define multi-step autonomous workflows and triggers (Coming Soon)</p>
+                </div>
+            </div>
+            <div class="agent-tab-content" id="tab-content-knowledge">
+                <div class="empty-state">
+                    <h3>Knowledge Base</h3>
+                    <p>Upload documents, API specs, and connect Vector Databases to ground the agent (Coming Soon)</p>
+                </div>
+            </div>
+            <div class="agent-tab-content" id="tab-content-tools">
+                <div class="empty-state">
+                    <h3>Tools Config</h3>
+                    <p>Configure advanced parameters for attached tools (Coming Soon)</p>
+                </div>
+            </div>
+            <div class="agent-tab-content" id="tab-content-integrations">
+                <div class="empty-state">
+                    <h3>Integrations</h3>
+                    <p>Connect and authenticate with external services (Coming Soon)</p>
+                </div>
+            </div>
+            <div class="agent-tab-content" id="tab-content-security">
+                <div class="empty-state">
+                    <h3>Security & Access</h3>
+                    <p>Configure role-based access control, sandboxing limits, and review human-in-the-loop policies (Coming Soon)</p>
+                </div>
+            </div>
+            <div class="agent-tab-content" id="tab-content-audit">
+                <div class="empty-state">
+                    <h3>Audit Logs</h3>
+                    <p>Review all actions and tool calls made by this agent (Coming Soon)</p>
+                </div>
+            </div>
+            <div class="agent-tab-content" id="tab-content-analytics">
+                <div class="empty-state">
+                    <h3>Performance Analytics</h3>
+                    <p>Monitor token usage, cost projections, latency, and success rates for this agent (Coming Soon)</p>
+                </div>
+            </div>
+        </div>
+    </div>
 
-                window.addEventListener('message', event => {
-                    const message = event.data;
-                    switch (message.command) {
-                        case 'updateAgents':
-                            const current = agentSelector.value;
-                            agentSelector.innerHTML = '<option value="" disabled selected>Select an agent...</option>';
-                            if (message.data && message.data.length > 0) {
-                                message.data.forEach(agent => {
-                                    const option = document.createElement('option');
-                                    option.value = agent.name;
-                                    option.textContent = agent.name;
-                                    agentSelector.appendChild(option);
-                                });
-                            } else {
-                                const option = document.createElement('option');
-                                option.textContent = "No agents found...";
-                                option.disabled = true;
-                                agentSelector.appendChild(option);
-                            }
+    <script>
+        const vscode = acquireVsCodeApi();
+        let currentAgents = [];
+        let activeAgentName = null;
+        let activeMessageBubble = null;
 
-                            if (current && Array.from(agentSelector.options).some(o => o.value === current)) {
-                                agentSelector.value = current;
-                            }
-                            break;
-                        case 'agentResponseStart':
-                            outputDiv.textContent = 'Thinking...';
-                            break;
-                        case 'agentResponseText':
-                            outputDiv.textContent = message.data;
-                            break;
-                         case 'agentResponseError':
-                            outputDiv.textContent = 'Error: ' + message.data;
-                            break;
-                        case 'agentCreated':
-                            closeModal();
-                            // Ideally, verify selection
-                            break;
+        const agentListEl = document.getElementById('agent-list');
+        const chatMessagesEl = document.getElementById('chat-messages');
+
+        function showView(viewName) {
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            // Map "chat" back to the new "agent-detail" view
+            const actualView = viewName === 'chat' ? 'agent-detail' : viewName;
+            document.getElementById('view-' + actualView).classList.add('active');
+
+            if (actualView !== 'agent-detail') {
+                activeAgentName = null;
+                renderAgentList(); // clear selection
+            } else if (viewName === 'chat') {
+                switchAgentTab('chat');
+            }
+        }
+
+        function switchAgentTab(tabName) {
+            document.querySelectorAll('.agent-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.agent-tab-content').forEach(c => c.classList.remove('active'));
+
+            document.getElementById('tab-nav-' + tabName).classList.add('active');
+            document.getElementById('tab-content-' + tabName).classList.add('active');
+        }
+
+        function selectAgent(name) {
+            activeAgentName = name;
+            const agent = currentAgents.find(a => a.name === name);
+            if (agent) {
+                document.getElementById('chat-header-name').textContent = agent.name;
+                document.getElementById('chat-header-model').textContent = agent.model;
+                chatMessagesEl.innerHTML = ''; // clear chat on select
+                showView('chat');
+                renderAgentList(); // update selection visual
+            }
+        }
+
+        function renderAgentList() {
+            agentListEl.innerHTML = '';
+            if (currentAgents.length === 0) {
+                const emptyEl = document.createElement('div');
+                emptyEl.style.padding = '12px 16px';
+                emptyEl.style.color = 'var(--vscode-descriptionForeground)';
+                emptyEl.style.fontSize = '12px';
+                emptyEl.textContent = 'No agents configured.';
+                agentListEl.appendChild(emptyEl);
+                return;
+            }
+
+            currentAgents.forEach(agent => {
+                const el = document.createElement('div');
+                el.className = 'agent-item' + (activeAgentName === agent.name ? ' selected' : '');
+
+                // Color based on name hash (simple)
+                const hue = agent.name.split('').reduce((a,b)=>a+b.charCodeAt(0),0) % 360;
+
+                el.innerHTML = '<div class="agent-icon" style="background-color: hsl(' + hue + ', 70%, 60%)"></div><span>' + agent.name + '</span>';
+                el.onclick = () => selectAgent(agent.name);
+                agentListEl.appendChild(el);
+            });
+        }
+
+        window.addEventListener('message', event => {
+            const message = event.data;
+            switch (message.command) {
+                case 'updateAgents':
+                    currentAgents = message.data || [];
+                    renderAgentList();
+                    if (activeAgentName && !currentAgents.find(a => a.name === activeAgentName)) {
+                        showView('empty');
+                    } else if (activeAgentName) {
+                        // refresh data
+                        const agent = currentAgents.find(a => a.name === activeAgentName);
+                        document.getElementById('chat-header-model').textContent = agent.model;
                     }
-                });
-
-                // Request initial agents
-                vscode.postMessage({ command: 'refreshAgents' });
-
-                function sendMessage() {
-                    const input = userInput.value;
-                    const agentName = agentSelector.value;
-                    if (!agentName) {
-                        outputDiv.textContent = "Please select an agent.";
-                        return;
+                    break;
+                case 'agentResponseStart':
+                    activeMessageBubble = addMessage('', 'agent');
+                    break;
+                case 'agentResponseText':
+                    if (activeMessageBubble) {
+                        activeMessageBubble.textContent = message.data;
+                        chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
                     }
-                    if (!input) { return; }
+                    break;
+                 case 'agentResponseError':
+                    addMessage('Error: ' + message.data, 'agent');
+                    activeMessageBubble = null;
+                    break;
+                case 'agentResponseEnd':
+                    activeMessageBubble = null;
+                    break;
+                case 'agentCreated':
+                    currentAgents.push({name: message.data, model: 'Unknown'}); // Will get replaced by updateAgents soon
+                    selectAgent(message.data);
+                    // clear form
+                    document.getElementById('new-agent-name').value = '';
+                    document.getElementById('new-agent-instructions').value = '';
+                    document.querySelectorAll('.tool-check').forEach(cb => cb.checked = false);
+                    break;
+            }
+        });
 
-                    vscode.postMessage({ command: 'sendMessage', data: { agentName, input } });
-                    userInput.value = '';
-                }
+        function addMessage(text, sender) {
+            const msgEl = document.createElement('div');
+            msgEl.className = 'message ' + sender;
+            const bubbleEl = document.createElement('div');
+            bubbleEl.className = 'message-bubble';
+            bubbleEl.textContent = text;
+            msgEl.appendChild(bubbleEl);
+            chatMessagesEl.appendChild(msgEl);
+            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+            return bubbleEl;
+        }
 
-                // Modal functions
-                function openModal() { modal.style.display = "block"; }
-                function closeModal() { modal.style.display = "none"; }
-                window.onclick = function(event) { if (event.target == modal) { closeModal(); } }
+        function sendMessage() {
+            const inputEl = document.getElementById('user-input');
+            const input = inputEl.value.trim();
+            if (!activeAgentName) return;
+            if (!input) return;
 
-                function createAgent() {
-                    const name = document.getElementById('new-agent-name').value;
-                    const model = document.getElementById('new-agent-model').value;
-                    const instructions = document.getElementById('new-agent-instructions').value;
+            addMessage(input, 'user');
+            vscode.postMessage({ command: 'sendMessage', data: { agentName: activeAgentName, input } });
+            inputEl.value = '';
+        }
 
-                    const tools = [];
-                    document.querySelectorAll('.tool-check:checked').forEach(cb => tools.push(cb.value));
+        function createAgent() {
+            const name = document.getElementById('new-agent-name').value.trim();
+            const model = document.getElementById('new-agent-model').value;
+            const instructions = document.getElementById('new-agent-instructions').value.trim();
 
-                    if (!name || !instructions) {
-                        // Using native alert for simplicity, though could be nicer
-                        // In VS Code webviews, alert() works but looks basic.
-                        return;
-                    }
+            const tools = [];
+            document.querySelectorAll('.tool-check:checked').forEach(cb => tools.push(cb.value));
 
-                    vscode.postMessage({
-                        command: 'createAgent',
-                        data: { name, model, instructions, tools }
-                    });
-                }
-            </script>
-        </body>
-        </html>`;
+            if (!name || !instructions) return;
+
+            vscode.postMessage({
+                command: 'createAgent',
+                data: { name, model, instructions, tools }
+            });
+        }
+
+        // Request initial agents
+        vscode.postMessage({ command: 'refreshAgents' });
+    </script>
+</body>
+</html>`;
 	}
 
 	override layout(width: number, height: number, top: number, left: number): void {
