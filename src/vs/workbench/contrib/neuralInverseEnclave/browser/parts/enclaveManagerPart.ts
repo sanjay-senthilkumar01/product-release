@@ -475,7 +475,7 @@ export class EnclaveManagerPart extends Part {
 			<div class="stat-row">
 				<div class="stat-box">
 					<div class="stat-value">${scannedCalls}</div>
-					<div class="stat-label">Prompts Scanned</div>
+					<div class="stat-label">Requests Scanned</div>
 				</div>
 				<div class="stat-box">
 					<div class="stat-value" style="color: var(--vscode-errorForeground);">${blockedCalls}</div>
