@@ -415,7 +415,7 @@ const prepareOpenAIOrAnthropicMessages = ({
 
 		// if content is a string, replace string with empty msg
 		if (typeof currMsg.content === 'string') {
-			currMsg.content = currMsg.content || EMPTY_MESSAGE
+			// Do not inject (empty message). Keep it empty.
 		}
 		else {
 			// allowed to be empty if has a tool in it or following it
@@ -425,11 +425,11 @@ const prepareOpenAIOrAnthropicMessages = ({
 			}
 			if (nextMsg?.role === 'tool') continue
 
-			// replace any empty text entries with empty msg, and make sure there's at least 1 entry
+			// remove any empty text entries without injecting (empty message)
 			for (const c of currMsg.content) {
-				if (c.type === 'text') c.text = c.text || EMPTY_MESSAGE
+				if (c.type === 'text' && !c.text) c.text = ''
 			}
-			if (currMsg.content.length === 0) currMsg.content = [{ type: 'text', text: EMPTY_MESSAGE }]
+			if (currMsg.content.length === 0) currMsg.content = [{ type: 'text', text: '' }]
 		}
 	}
 

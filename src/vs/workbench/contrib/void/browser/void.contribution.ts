@@ -25,6 +25,9 @@ import './autocompleteService.js'
 // settings pane
 import './voidSettingsPane.js'
 
+// custom artifact pane
+import './neuralInverseArtifactPane.js'
+
 // register css
 // import './react/src/styles.css'
 

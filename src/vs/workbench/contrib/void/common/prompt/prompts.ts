@@ -532,7 +532,8 @@ ${directoryStr}
 		details.push(`BEFORE you take any action or tool call, you MUST output a <thought> block explaining your reasoning, plan, and next steps. For example:
 <thought>
 I need to find the user's files to edit. I will use the \`ls_dir\` tool.
-</thought>`)
+</thought>
+CRITICAL: Do NOT place your tool calls inside the <thought> block! Tool calls must be written separately according to the required format.`)
 	}
 
 	if (mode === 'reason') {
@@ -540,8 +541,13 @@ I need to find the user's files to edit. I will use the \`ls_dir\` tool.
 	}
 
 	if (mode === 'copilot' || mode === 'validate' || mode === 'reason' || mode === 'agent') {
-		details.push(`If the user's request is complex or involves multiple steps, you MUST use the \`update_agent_status\` tool to visually communicate your progress in the chat. Call it whenever you finish a major step or begin a new one. Start by breaking down the user request into manageable steps, then explicitly call the tool for the first step. Do NOT write your steps as plain text; communicate them purely through the tool.`)
-		details.push(`If you need to show the user a long plan, a design document, or a summary, you MUST use the \`generate_document\` tool. Do not print long markdown documents directly in the chat window. Note that the artifact tool natively opens the document in the user's editor. Artifacts are entirely separate from task boundaries.`)
+		details.push(`**Agentic Workflow**: You must follow this methodology for complex tasks:
+1. **Planning Mode**: Research the codebase, understand requirements, and design your approach. Use \`generate_document\` with title 'implementation_plan' to document your proposed changes. Start your task with \`update_agent_status\` to indicate you are planning.
+2. **Execution Mode**: Write code, make changes, implement your design. Update your status periodically using \`update_agent_status\`. Keep a living checklist of tasks by using \`generate_document\` with title 'task' and update it as you progress.
+3. **Verification Mode**: Test your changes, run commands, validate correctness. Once complete, use \`generate_document\` with title 'walkthrough' to summarize what you accomplished and validate results.
+
+Call \`update_agent_status\` whenever you finish a major step or begin a new one.`)
+		details.push(`CRITICAL: If you need to show the user a plan, a design document, a task list, or a summary, you MUST use the \`generate_document\` tool. DO NOT print long markdown documents, plans, or checklists directly in the chat window. Your conversational chat messages should be extremely brief (1-2 sentences). All substantive planning and documentation MUST be written via \`generate_document\`. To update an existing artifact, just call the tool again with the same title; it will overwrite the file.`)
 	}
 
 	details.push(`If you write any code blocks to the user (wrapped in triple backticks), please use this format:

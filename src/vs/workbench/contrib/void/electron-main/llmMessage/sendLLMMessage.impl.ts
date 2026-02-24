@@ -225,7 +225,7 @@ const toOpenAICompatibleTool = (toolInfo: InternalToolInfo) => {
 			parameters: {
 				type: 'object',
 				properties: paramsWithType,
-				// required: Object.keys(params), // in strict mode, all params are required and additionalProperties is false
+				required: Object.keys(params),
 				// additionalProperties: false,
 			},
 		}
@@ -444,7 +444,7 @@ const toAnthropicTool = (toolInfo: InternalToolInfo) => {
 		input_schema: {
 			type: 'object',
 			properties: paramsWithType,
-			// required: Object.keys(params),
+			required: Object.keys(params),
 		},
 	} satisfies Anthropic.Messages.Tool
 }
