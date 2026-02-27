@@ -5,5 +5,6 @@
 
 import { mountFnGenerator } from '../util/mountFnGenerator.js'
 import { ArtifactView } from './ArtifactView.js'
+import '../styles.css'
 
 export const mountNeuralInverseArtifact = mountFnGenerator(ArtifactView)

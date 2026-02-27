@@ -782,6 +782,7 @@ type ToolHeaderParams = {
 	bottomChildren?: React.ReactNode;
 	onClick?: () => void;
 	desc2OnClick?: () => void;
+	actionButton?: React.ReactNode;
 	isOpen?: boolean;
 	className?: string;
 }
@@ -801,6 +802,7 @@ const ToolHeaderWrapper = ({
 	isError,
 	onClick,
 	desc2OnClick,
+	actionButton,
 	isOpen,
 	isRejected,
 	className, // applies to the main content
@@ -884,6 +886,7 @@ const ToolHeaderWrapper = ({
 							data-tooltip-content={'Canceled'}
 							data-tooltip-place='top'
 						/>}
+						{actionButton}
 						{desc2 && <span className="text-void-fg-4 text-xs" onClick={desc2OnClick}>
 							{desc2}
 						</span>}
@@ -2649,6 +2652,18 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 						{result.result}
 					</div>
 				</ToolChildrenWrapper>
+				if (result.fileUri) {
+					const uri = URI.revive(result.fileUri)
+					componentParams.actionButton = <button
+						className="px-2 py-0.5 text-xs font-medium rounded border border-void-border-2 hover:bg-void-bg-2 transition-colors text-void-fg-2 cursor-pointer z-10 relative"
+						onClick={(e) => {
+							e.stopPropagation();
+							voidOpenFileFn(uri, accessor)
+						}}
+					>
+						Open
+					</button>
+				}
 			}
 
 			return <ToolHeaderWrapper {...componentParams} />

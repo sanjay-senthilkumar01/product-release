@@ -48,6 +48,9 @@ export class NeuralInverseArtifactInput extends EditorInput {
 export class NeuralInverseArtifactPane extends EditorPane {
 	static readonly ID = 'workbench.editor.neuralinverse.artifactPane';
 
+	private artifactContainer: HTMLElement | undefined;
+	private reactDisposeFn: (() => void) | undefined;
+
 	constructor(
 		group: IEditorGroup,
 		@ITelemetryService telemetryService: ITelemetryService,
@@ -62,18 +65,39 @@ export class NeuralInverseArtifactPane extends EditorPane {
 		parent.style.height = '100%';
 		parent.style.width = '100%';
 
-		const artifactElt = document.createElement('div');
-		artifactElt.style.height = '100%';
-		artifactElt.style.width = '100%';
+		this.artifactContainer = document.createElement('div');
+		this.artifactContainer.style.height = '100%';
+		this.artifactContainer.style.width = '100%';
 
-		parent.appendChild(artifactElt);
+		parent.appendChild(this.artifactContainer);
+	}
 
-		// Mount React into the content
-		this.instantiationService.invokeFunction(accessor => {
-			const uri = (this.input as NeuralInverseArtifactInput)?.resource;
-			const disposeFn = mountNeuralInverseArtifact(artifactElt, accessor, { uri })?.dispose;
-			this._register(toDisposable(() => disposeFn?.()))
-		});
+	override async setInput(input: NeuralInverseArtifactInput, options: import('../../../../platform/editor/common/editor.js').IEditorOptions | undefined, context: import('../../../common/editor.js').IEditorOpenContext, token: import('../../../../base/common/cancellation.js').CancellationToken): Promise<void> {
+		await super.setInput(input, options, context, token);
+
+		// Clean up existing mount if it exists
+		if (this.reactDisposeFn) {
+			this.reactDisposeFn();
+			this.reactDisposeFn = undefined;
+		}
+
+		if (this.artifactContainer) {
+			// Mount React into the content using the newly assigned input
+			this.instantiationService.invokeFunction(accessor => {
+				const uri = input.resource;
+				console.log("[NeuralInverse] setInput received URI:", uri?.toString(), "Full Input:", input);
+				this.reactDisposeFn = mountNeuralInverseArtifact(this.artifactContainer!, accessor, { uri })?.dispose;
+			});
+		}
+	}
+
+	override clearInput(): void {
+		super.clearInput();
+
+		if (this.reactDisposeFn) {
+			this.reactDisposeFn();
+			this.reactDisposeFn = undefined;
+		}
 	}
 
 	layout(dimension: Dimension): void {
@@ -97,16 +121,16 @@ class NeuralInverseArtifactEditorContribution implements IWorkbenchContribution 
 		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		editorResolverService.registerEditor(
-			'**/.neural-inverse/artifacts/*.md',
+			'**/.neural-inverse*/artifacts/**/*.md',
 			{
 				id: NeuralInverseArtifactInput.ID,
 				label: nls.localize('neuralInverseArtifact.displayName', "NeuralInverse Artifact Viewer"),
 				detail: DEFAULT_EDITOR_ASSOCIATION.providerDisplayName,
-				priority: RegisteredEditorPriority.default,
+				priority: RegisteredEditorPriority.exclusive,
 			},
 			{
 				singlePerResource: true,
-				canSupportResource: resource => resource.path.includes('.neural-inverse/artifacts/') && resource.path.endsWith('.md')
+				canSupportResource: resource => resource.path.match(/\.neural-inverse(?:-dev)?\/artifacts\/.*\.md$/) !== null
 			},
 			{
 				createEditorInput: ({ resource }) => {

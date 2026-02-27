@@ -561,9 +561,17 @@ export class ToolsService implements IToolsService {
 
 			generate_document: async ({ title, content }) => {
 				const folderName = this.productService.dataFolderName || '.neural-inverse';
-				// fallback to userHome, but prefer getting it out of the user's global state dir to ensure it is the global datafolder
-				const baseDir = this.environmentService.userRoamingDataHome ? URI.joinPath(this.environmentService.userRoamingDataHome, '..', '..') : await this.pathService.userHome();
-				const artifactsDir = URI.joinPath(baseDir, folderName, 'artifacts');
+
+				// Identify the active project to create a subfolder within the global artifacts directory
+				const workspaceFolders = workspaceContextService.getWorkspace().folders;
+				const projectName = workspaceFolders.length > 0 ? workspaceFolders[0].name : 'unknown_project';
+
+				// Use the global roaming data folder
+				const baseDir = this.environmentService.userRoamingDataHome
+					? URI.joinPath(this.environmentService.userRoamingDataHome, '..', '..')
+					: await this.pathService.userHome();
+
+				const artifactsDir = URI.joinPath(baseDir, folderName, 'artifacts', projectName);
 
 				// Ensure folder exists
 				try {
@@ -586,7 +594,7 @@ export class ToolsService implements IToolsService {
 					console.error('Error opening artifact in editor:', e);
 				}
 
-				return { result: { result: `Artifact created and opened natively at ${fileUri.fsPath}` } };
+				return { result: { result: `Artifact created and opened natively at ${fileUri.fsPath}`, fileUri } };
 			},
 		}
 

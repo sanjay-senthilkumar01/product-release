@@ -93,7 +93,7 @@ export type BuiltinToolResultType = {
 	'send_command_input': { result: string },
 	'kill_persistent_terminal': {},
 	'update_agent_status': { result: string },
-	'generate_document': { result: string },
+	'generate_document': { result: string, fileUri?: import('../../../../base/common/uri.js').UriComponents },
 }
 
 
