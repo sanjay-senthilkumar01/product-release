@@ -12,6 +12,7 @@ import { ToolRegistry } from '../tools/toolRegistry.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
+import { IGRCEngineService } from '../../engine/services/grcEngineService.js';
 
 export class NanoAgentService extends Disposable {
 	private conversationHistory: LLMChatMessage[] = [];
@@ -20,6 +21,7 @@ export class NanoAgentService extends Disposable {
 
 	constructor(
 		private readonly projectAnalyzer: ProjectAnalyzer,
+		private readonly grcEngine: IGRCEngineService | undefined,
 		@ILLMMessageService private readonly llmMessageService: ILLMMessageService,
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -31,7 +33,7 @@ export class NanoAgentService extends Disposable {
 
 		const folder = this.workspaceContextService.getWorkspace().folders[0];
 		if (folder) {
-			this.toolRegistry.registerDefaultTools(folder.uri);
+			this.toolRegistry.registerDefaultTools(folder.uri, this.grcEngine);
 		}
 
 		this.loadState();
@@ -76,6 +78,41 @@ export class NanoAgentService extends Disposable {
 
 		// 3. Build Messages
 		if (this.conversationHistory.length === 0) {
+			// Build GRC context if available
+			let grcContextStr = '';
+			if (this.grcEngine) {
+				try {
+					const domainSummary = this.grcEngine.getDomainSummary();
+					const blockingViolations = this.grcEngine.getBlockingViolations();
+					const allResults = this.grcEngine.getAllResults();
+					const breakingChanges = allResults.filter(r => r.isBreakingChange);
+					const activeFrameworks = this.grcEngine.getActiveFrameworks();
+
+					const grcContext = {
+						totalViolations: allResults.length,
+						domainSummary: domainSummary.map(d => ({
+							domain: d.domain,
+							errors: d.errorCount,
+							warnings: d.warningCount,
+							info: d.infoCount
+						})),
+						blockingCount: blockingViolations.length,
+						topBlocking: blockingViolations.slice(0, 5).map(v => ({
+							rule: v.ruleId,
+							file: v.fileUri.path.split('/').pop(),
+							line: v.line,
+							message: v.message
+						})),
+						breakingChangesCount: breakingChanges.length,
+						activeFrameworks: activeFrameworks.map(f => f.name)
+					};
+
+					grcContextStr = `\n\nGRC Compliance Context:\n${JSON.stringify(grcContext, null, 2)}\n\nYou have access to GRC tools (get_violations, get_domain_summary, get_blocking_violations, get_impact_chain) to query real-time compliance data.`;
+				} catch {
+					// GRC engine may not be ready yet
+				}
+			}
+
 			const systemPrompt = `You are a Nano Agent, an advanced AI integrated into the IDE.
 Your goal is to help the user understand and maintain their codebase securely.
 You have access to a deep static analysis of the project.
@@ -95,7 +132,7 @@ Rules:
 - Be concise and technical.
 - Reference specific file stats or capabilities if relevant.
 - You are strictly helpful and safe.
-- Do NOT hallucinate file contents; use 'read_file' to check.`;
+- Do NOT hallucinate file contents; use 'read_file' to check.${grcContextStr}`;
 
 			this.conversationHistory.push({ role: 'system', content: systemPrompt });
 		}

@@ -55,6 +55,10 @@ import { IExtensionManagementService } from '../../../../../../../platform/exten
 import { IMCPService } from '../../../../common/mcpService.js';
 import { IStorageService, StorageScope } from '../../../../../../../platform/storage/common/storage.js'
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js'
+import { INeuralInverseAgentService } from '../../../neuralInverseAgentService.js'
+import { INeuralInverseSubAgentService } from '../../../neuralInverseSubAgentService.js'
+import { AgentTask } from '../../../../common/neuralInverseAgentTypes.js'
+import { SubAgentTask } from '../../../../common/subAgentTypes.js'
 
 
 // normally to do this you'd use a useEffect that calls .onDidChangeState(), but useEffect mounts too late and misses initial state changes
@@ -84,6 +88,12 @@ const activeURIListeners: Set<(uri: URI | null) => void> = new Set();
 
 const mcpListeners: Set<() => void> = new Set()
 
+let agentTask: AgentTask | null = null
+const agentTaskListeners: Set<(t: AgentTask | null) => void> = new Set()
+
+let agentSubAgents: ReadonlyMap<string, SubAgentTask> = new Map()
+const agentSubAgentListeners: Set<(s: ReadonlyMap<string, SubAgentTask>) => void> = new Set()
+
 
 // must call this before you can use any of the hooks below
 // this should only be called ONCE! this is the only place you don't need to dispose onDidChange. If you use state.onDidChange anywhere else, make sure to dispose it!
@@ -102,9 +112,11 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		voidCommandBarService: accessor.get(IVoidCommandBarService),
 		modelService: accessor.get(IModelService),
 		mcpService: accessor.get(IMCPService),
+		agentService: accessor.get(INeuralInverseAgentService),
+		subAgentService: accessor.get(INeuralInverseSubAgentService),
 	}
 
-	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, editCodeService, voidCommandBarService, modelService, mcpService } = stateServices
+	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, editCodeService, voidCommandBarService, modelService, mcpService, agentService, subAgentService } = stateServices
 
 
 
@@ -177,6 +189,24 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		})
 	)
 
+	// Agent state
+	agentTask = agentService.activeTask
+	disposables.push(
+		agentService.onDidChangeAgentState(() => {
+			agentTask = agentService.activeTask
+			agentTaskListeners.forEach(l => l(agentTask))
+		})
+	)
+
+	// Sub-agent state
+	agentSubAgents = subAgentService.subAgents
+	disposables.push(
+		subAgentService.onDidChangeSubAgent(() => {
+			agentSubAgents = subAgentService.subAgents
+			agentSubAgentListeners.forEach(l => l(agentSubAgents))
+		})
+	)
+
 
 	return disposables
 }
@@ -231,6 +261,9 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IMCPService: accessor.get(IMCPService),
 		IStorageService: accessor.get(IStorageService),
 		ILabelService: accessor.get(ILabelService),
+
+		INeuralInverseAgentService: accessor.get(INeuralInverseAgentService),
+		INeuralInverseSubAgentService: accessor.get(INeuralInverseSubAgentService),
 
 	} as const
 	return reactAccessor
@@ -405,6 +438,30 @@ export const useMCPServiceState = () => {
 	return s
 }
 
+
+
+// ---- Agent State Hooks ----
+
+export const useAgentTask = () => {
+	const [s, ss] = useState<AgentTask | null>(agentTask)
+	useEffect(() => {
+		ss(agentTask)
+		agentTaskListeners.add(ss)
+		return () => { agentTaskListeners.delete(ss) }
+	}, [ss])
+	return s
+}
+
+export const useSubAgents = () => {
+	const [s, ss] = useState<ReadonlyMap<string, SubAgentTask>>(agentSubAgents)
+	useEffect(() => {
+		ss(agentSubAgents)
+		const listener = (map: ReadonlyMap<string, SubAgentTask>) => ss(new Map(map))
+		agentSubAgentListeners.add(listener)
+		return () => { agentSubAgentListeners.delete(listener) }
+	}, [ss])
+	return s
+}
 
 
 export const useIsOptedOut = () => {

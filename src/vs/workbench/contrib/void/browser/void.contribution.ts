@@ -52,6 +52,14 @@ import './terminalToolService.js'
 // register Thread History
 import './chatThreadService.js'
 
+// neural inverse agent (agentic execution engine — depends on chatThreadService)
+import './neuralInverseAgentConfigService.js'
+import './neuralInverseAgentService.js'
+import './neuralInverseSubAgentService.js'
+
+// agent dashboard panel
+import './neuralInverseAgentPane.js'
+
 // ping
 import './metricsPollService.js'
 

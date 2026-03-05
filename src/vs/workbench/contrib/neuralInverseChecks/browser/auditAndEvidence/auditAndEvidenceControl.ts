@@ -8,6 +8,7 @@ import { IWebviewElement, IWebviewService } from '../../../webview/browser/webvi
 import { getWindow } from '../../../../../base/browser/dom.js';
 import { IGRCEngineService } from '../engine/services/grcEngineService.js';
 import { IAuditTrailService } from '../engine/services/auditTrailService.js';
+import { IComplianceReportService } from '../engine/services/complianceReportService.js';
 import { buildAuditViewHtml } from '../engine/ui/checkViewHtml.js';
 
 export class AuditAndEvidenceControl extends Disposable {
@@ -18,7 +19,8 @@ export class AuditAndEvidenceControl extends Disposable {
         private readonly container: HTMLElement,
         @IWebviewService private readonly webviewService: IWebviewService,
         @IGRCEngineService private readonly grcEngine: IGRCEngineService,
-        @IAuditTrailService private readonly auditTrail: IAuditTrailService
+        @IAuditTrailService private readonly auditTrail: IAuditTrailService,
+        @IComplianceReportService private readonly complianceReportService: IComplianceReportService
     ) {
         super();
         this.webviewElement = this.webviewService.createWebviewElement({
@@ -31,6 +33,17 @@ export class AuditAndEvidenceControl extends Disposable {
         this._updateView();
         this._register(this.grcEngine.onDidCheckComplete(() => this._updateView()));
         this._register(this.grcEngine.onDidRulesChange(() => this._updateView()));
+        this._register(this.webviewElement.onMessage(async (event) => {
+            const msg = event.message as { type: string };
+            if (msg.type === 'exportReport') {
+                const uri = await this.complianceReportService.exportReport();
+                this.webviewElement.postMessage({
+                    type: 'exportResult',
+                    success: !!uri,
+                    path: uri?.path
+                });
+            }
+        }));
     }
 
     private async _updateView(): Promise<void> {

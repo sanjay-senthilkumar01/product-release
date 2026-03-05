@@ -29,7 +29,8 @@ import './engine/framework/frameworkRegistry.js'; // Must load before grcEngineS
 import './nanoAgents/projectAnalyzerService.js'; // Must load before grcEngineService
 import './engine/services/grcEngineService.js';
 import './engine/services/auditTrailService.js';
-import './engine/services/frameworkIntelligenceService.js'; // Register Framework Intelligence Service
+import './engine/services/contractReasonService.js'; // Register Contract Reason Service
+import './engine/services/complianceReportService.js'; // Register Compliance Report Service
 import { GRCDiagnosticsContribution } from './diagnostics/grcDiagnosticsContribution.js';
 import { GRCAnalyzerRegistration } from './engine/analyzers/analyzerRegistration.js';
 import { BreakingChangeDetector } from './engine/services/breakingChangeDetector.js';

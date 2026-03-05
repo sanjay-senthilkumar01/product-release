@@ -36,6 +36,9 @@ import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IGRCConfig, IGRCRule, DEFAULT_GRC_CONFIG } from '../types/grcTypes.js';
 import { BUILTIN_RULES } from './builtinRules.js';
 import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
+import { InvariantConfigLoader } from './invariantConfigLoader.js';
+import { IPolicyService } from '../../context/autocomplete/policy/policyService.js';
+import { PolicyRuleGenerator } from '../services/policyRuleGenerator.js';
 
 const GRC_FOLDER = '.inverse';
 const GRC_CONFIG_FILE = 'grc-rules.json';
@@ -52,6 +55,8 @@ export class GRCConfigLoader extends Disposable {
 
 	private _config: IGRCConfig = DEFAULT_GRC_CONFIG;
 	private _mergedRules: IGRCRule[] = [];
+	private readonly _invariantLoader: InvariantConfigLoader;
+	private readonly _policyRuleGenerator = new PolicyRuleGenerator();
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	public readonly onDidChange: Event<void> = this._onDidChange.event;
@@ -60,8 +65,10 @@ export class GRCConfigLoader extends Disposable {
 		@IFileService private readonly fileService: IFileService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFrameworkRegistry private readonly frameworkRegistry: IFrameworkRegistry,
+		@IPolicyService private readonly policyService: IPolicyService,
 	) {
 		super();
+		this._invariantLoader = this._register(new InvariantConfigLoader(fileService, workspaceContextService));
 		this._initialize();
 	}
 
@@ -96,6 +103,18 @@ export class GRCConfigLoader extends Disposable {
 	private _registerFrameworkWatcher(): void {
 		this._register(this.frameworkRegistry.onDidFrameworksChange(() => {
 			console.log('[GRCConfigLoader] Frameworks changed, re-merging rules...');
+			this._mergedRules = this._mergeRules();
+			this._onDidChange.fire();
+		}));
+
+		this._register(this._invariantLoader.onDidChange(() => {
+			console.log('[GRCConfigLoader] Invariants changed, re-merging rules...');
+			this._mergedRules = this._mergeRules();
+			this._onDidChange.fire();
+		}));
+
+		this._register(this.policyService.onDidChangePolicy(() => {
+			console.log('[GRCConfigLoader] Policy changed, re-merging rules...');
 			this._mergedRules = this._mergeRules();
 			this._onDidChange.fire();
 		}));
@@ -252,6 +271,30 @@ export class GRCConfigLoader extends Disposable {
 				});
 			} else {
 				merged.push({ ...fwRule });
+			}
+		}
+
+		// ── Layer 2.5: Invariant rules ──────────────────────────────────
+		const invariantRules = this._invariantLoader.toGRCRules();
+		for (const invRule of invariantRules) {
+			if (!merged.some(r => r.id === invRule.id)) {
+				merged.push(invRule);
+			}
+		}
+
+		// ── Layer 2.75: Policy rules ────────────────────────────────────
+		const policy = this.policyService.getPolicy();
+		if (policy) {
+			const policyRules = this._policyRuleGenerator.generateRules(policy);
+			for (const pRule of policyRules) {
+				// User rules can override policy rules by ID
+				const userOverride = userRulesById.get(pRule.id);
+				if (userOverride) {
+					merged.push({ ...pRule, ...userOverride });
+					userRulesById.delete(pRule.id);
+				} else if (!merged.some(r => r.id === pRule.id)) {
+					merged.push(pRule);
+				}
 			}
 		}
 

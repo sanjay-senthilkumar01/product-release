@@ -49,14 +49,16 @@ import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ITextModel } from '../../../../../../editor/common/model.js';
 import { URI } from '../../../../../../base/common/uri.js';
-import { GRCDomain, IGRCRule, ICheckResult, IDomainSummary, GRC_BUILTIN_DOMAIN_LIST, toDisplaySeverity } from '../types/grcTypes.js';
+import { GRCDomain, IGRCRule, ICheckResult, IDomainSummary, GRC_BUILTIN_DOMAIN_LIST, toDisplaySeverity, IIgnoreSuggestion, IImpactNode } from '../types/grcTypes.js';
 import { GRCConfigLoader } from '../config/grcConfigLoader.js';
 import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
 import { IRegexCheck, IFileLevelCheck, IFrameworkMetadata, IFrameworkValidationResult } from '../framework/frameworkSchema.js';
 import { IProjectAnalyzerService, INanoAgentContext } from '../../nanoAgents/projectAnalyzerService.js';
-import { IFrameworkIntelligenceService } from './frameworkIntelligenceService.js';
+import { IContractReasonService } from './contractReasonService.js';
 import { ITextFileService } from '../../../../../services/textfile/common/textfiles.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
+import { IPolicyService } from '../../context/autocomplete/policy/policyService.js';
+import { detectDomainFromPath } from './policyRuleGenerator.js';
 
 export const IGRCEngineService = createDecorator<IGRCEngineService>('neuralInverseGRCEngineService');
 
@@ -224,11 +226,41 @@ export interface IGRCEngineService {
 	/** Remove a glob pattern from the ignore list */
 	removeIgnorePattern(pattern: string): void;
 
+	/** Get the current list of context-only patterns (excluded from scanning, kept as AI context) */
+	getContextOnlyPatterns(): string[];
+
+	/** Add a context-only pattern (file excluded from violations but used as AI context) */
+	addContextOnlyPattern(pattern: string): void;
+
+	/** Remove a context-only pattern */
+	removeContextOnlyPattern(pattern: string): void;
+
+	/** Get contents of context-only files collected during workspace scan */
+	getContextFileContents(): Map<string, string>;
+
+	/** Use AI to suggest ignore/context-only patterns based on project structure */
+	generateIgnoreSuggestions(): Promise<IIgnoreSuggestion[]>;
+
+	/** Get the reverse import map (normalized path → importer URIs) */
+	getImportedByMap(): ReadonlyMap<string, readonly string[]>;
+
+	/** Build a cross-file impact tree starting from a file */
+	getImpactChain(fileUri: URI, maxDepth?: number): IImpactNode | undefined;
+
 	/**
 	 * Scan all workspace files with static rules and cache results.
-	 * Triggers onDidCheckComplete when done.
+	 * Triggers onDidCheckComplete when done. Also schedules AI scan.
 	 */
 	scanWorkspace(): Promise<void>;
+
+	/**
+	 * Run AI analysis across all workspace files.
+	 * The intelligence service's content-hash cache prevents redundant LLM calls
+	 * — files whose content has not changed since the last analysis are skipped.
+	 * Cross-file import relationships are tracked so dependents can be re-analysed
+	 * when a dependency changes.
+	 */
+	scanWorkspaceWithAI(): Promise<void>;
 }
 
 
@@ -252,6 +284,24 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 	private _ignorePatterns: string[] = [];
 	private static readonly _IGNORE_KEY = 'grc.ignorePatterns.v1';
 
+	/** Glob patterns for files excluded from scanning but kept as AI context */
+	private _contextOnlyPatterns: string[] = [];
+	private static readonly _CONTEXT_ONLY_KEY = 'grc.contextOnlyPatterns.v1';
+
+	/** Content of context-only files (uri string → content). Capped at 20 files, 10KB each */
+	private _contextFiles = new Map<string, string>();
+	private static readonly _MAX_CONTEXT_FILES = 20;
+	private static readonly _MAX_CONTEXT_FILE_SIZE = 10_240; // 10KB
+
+	/**
+	 * Reverse import map: resolved file path → URIs of files that import it.
+	 * Used for cross-file AI re-analysis when a dependency changes.
+	 */
+	private readonly _importedBy = new Map<string, Set<string>>();
+
+	/** Guards against scheduling the initial AI scan more than once */
+	private _initialAIScanScheduled = false;
+
 	private readonly _onDidCheckComplete = this._register(new Emitter<ICheckResult[]>());
 	public readonly onDidCheckComplete: Event<ICheckResult[]> = this._onDidCheckComplete.event;
 
@@ -263,9 +313,10 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IFrameworkRegistry private readonly frameworkRegistry: IFrameworkRegistry,
 		@IProjectAnalyzerService private readonly projectAnalyzerService: IProjectAnalyzerService,
-		@IFrameworkIntelligenceService private readonly intelligenceService: IFrameworkIntelligenceService,
+		@IContractReasonService private readonly contractReasonService: IContractReasonService,
 		@ITextFileService private readonly textFileService: ITextFileService,
 		@IStorageService private readonly _storageService: IStorageService,
+		@IPolicyService private readonly policyService: IPolicyService,
 	) {
 		super();
 
@@ -275,8 +326,14 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 			try { this._ignorePatterns = JSON.parse(stored); } catch { /* ignore */ }
 		}
 
+		// Load persisted context-only patterns
+		const ctxStored = this._storageService.get(GRCEngineService._CONTEXT_ONLY_KEY, StorageScope.WORKSPACE);
+		if (ctxStored) {
+			try { this._contextOnlyPatterns = JSON.parse(ctxStored); } catch { /* ignore */ }
+		}
+
 		this._configLoader = this._register(
-			new GRCConfigLoader(this._fileService, this._workspaceContextService, frameworkRegistry)
+			new GRCConfigLoader(this._fileService, this._workspaceContextService, frameworkRegistry, this.policyService)
 		);
 
 		// When config/framework changes, clear caches and fire event
@@ -292,31 +349,49 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 			this._onDidRulesChange.fire();
 		}));
 
-		// AI analysis triggers on file SAVE — not on every keystroke.
-		// The intelligence service deduplicates via content hash, so saving
-		// an unchanged file costs zero LLM calls.
+		// AI analysis on file save. Intelligence service handles content-hash dedup
+		// (unchanged files cost zero LLM calls). After the primary file is queued,
+		// we update the import map and trigger cross-file re-analysis for dependents.
 		this._register(this.textFileService.files.onDidSave(e => {
 			const model = e.model.textEditorModel;
 			if (!model) return;
 			const fileUri = e.model.resource;
 			if (fileUri.path.includes('/.inverse/')) return;
-			if (!this.intelligenceService.isAvailable) return;
+
+			const content = model.getValue();
+			const allRules = this._configLoader.getRules();
+
+			// Always update import map on save (even if AI is off) so the graph stays current
+			this._updateImportMap(fileUri, content);
+
+			if (!this.contractReasonService.isAvailable) return;
 
 			const cachedResults = this._resultsByFile.get(fileUri.toString()) || [];
-			const allRules = this._configLoader.getRules();
 			const nanoContext = this.projectAnalyzerService.getContextForFile(fileUri);
 
-			this.intelligenceService.analyzeFile(
-				fileUri,
-				model.getValue(),
-				cachedResults,
-				allRules,
-				nanoContext
-			);
+			// Primary: analyze the saved file (pass context-only files for AI reference)
+			const ctxFiles = this._contextFiles.size > 0 ? new Map(this._contextFiles) : undefined;
+			this.contractReasonService.analyzeFile(fileUri, content, cachedResults, allRules, nanoContext, ctxFiles);
+
+			// Cross-file: re-analyze files that directly import this file
+			this._triggerCrossFileAnalysis(fileUri, allRules);
+		}));
+
+		// Schedule initial full workspace AI scan once rules are loaded and AI is ready.
+		// Delay gives the editor time to fully initialise before we start reading files.
+		this._register(this._configLoader.onDidChange(() => {
+			if (this._initialAIScanScheduled) return;
+			if (this._configLoader.getRules().length === 0) return;
+			this._initialAIScanScheduled = true;
+			setTimeout(() => {
+				this.scanWorkspaceWithAI().catch(e =>
+					console.error('[GRCEngine] Initial AI workspace scan failed:', e)
+				);
+			}, 10_000); // 10s after first rule load
 		}));
 
 		// When intelligence results arrive, enrich existing violations and add new ones
-		this._register(this.intelligenceService.onDidIntelligenceResultsReady((result) => {
+		this._register(this.contractReasonService.onDidContractReasonResultsReady((result) => {
 			const fileKey = result.fileUri.toString();
 			const existing = this._resultsByFile.get(fileKey) || [];
 			let changed = false;
@@ -398,10 +473,22 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 		// ── Get nano agent context for this file ──
 		const nanoContext = this.projectAnalyzerService.getContextForFile(fileUri);
 
-		const rules = this._configLoader.getRules().filter(r => r.enabled);
+		const allRules = this._configLoader.getRules().filter(r => r.enabled);
 		const results: ICheckResult[] = [];
 		const lines = model.getLinesContent();
 		const now = Date.now();
+
+		// Detect file's policy domain for policy-tagged rule filtering
+		const policy = this.policyService.getPolicy();
+		const fileDomain = policy ? detectDomainFromPath(fileUri.path, policy) : 'default';
+
+		// Filter: policy-tagged rules only apply to their target domain (or 'default' applies everywhere)
+		const rules = allRules.filter(r => {
+			if (!r.tags?.includes('policy')) return true; // Non-policy rules always apply
+			const ruleDomain = r.tags.find(t => t !== 'policy' && t !== 'security');
+			if (!ruleDomain || ruleDomain === 'default') return true; // 'default' domain rules apply everywhere
+			return ruleDomain === fileDomain;
+		});
 
 		for (const rule of rules) {
 			const ruleType = rule.type ?? 'regex';
@@ -474,10 +561,21 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 			return [];
 		}
 
-		const rules = this._configLoader.getRules().filter(r => r.enabled);
+		const allRules = this._configLoader.getRules().filter(r => r.enabled);
 		const results: ICheckResult[] = [];
 		const lines = content.split('\n');
 		const now = Date.now();
+
+		// Detect file's policy domain for policy-tagged rule filtering
+		const policy = this.policyService.getPolicy();
+		const fileDomain = policy ? detectDomainFromPath(fileUri.path, policy) : 'default';
+
+		const rules = allRules.filter(r => {
+			if (!r.tags?.includes('policy')) return true;
+			const ruleDomain = r.tags.find(t => t !== 'policy' && t !== 'security');
+			if (!ruleDomain || ruleDomain === 'default') return true;
+			return ruleDomain === fileDomain;
+		});
 
 		for (const rule of rules) {
 			const ruleType = rule.type ?? 'regex';
@@ -1133,6 +1231,251 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 	}
 
 
+	// ─── Context-Only Patterns ──────────────────────────────────────
+
+	public getContextOnlyPatterns(): string[] {
+		return [...this._contextOnlyPatterns];
+	}
+
+	public addContextOnlyPattern(pattern: string): void {
+		const p = pattern.trim();
+		if (!p || this._contextOnlyPatterns.includes(p)) return;
+		this._contextOnlyPatterns.push(p);
+		this._saveContextOnlyPatterns();
+		this._onDidRulesChange.fire();
+	}
+
+	public removeContextOnlyPattern(pattern: string): void {
+		const idx = this._contextOnlyPatterns.indexOf(pattern);
+		if (idx < 0) return;
+		this._contextOnlyPatterns.splice(idx, 1);
+		this._saveContextOnlyPatterns();
+		this._onDidRulesChange.fire();
+	}
+
+	public getContextFileContents(): Map<string, string> {
+		return new Map(this._contextFiles);
+	}
+
+	private _saveContextOnlyPatterns(): void {
+		this._storageService.store(
+			GRCEngineService._CONTEXT_ONLY_KEY,
+			JSON.stringify(this._contextOnlyPatterns),
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE
+		);
+	}
+
+	/** Returns true if fileUri matches a context-only pattern */
+	private _matchesContextOnly(fileUri: URI): boolean {
+		if (this._contextOnlyPatterns.length === 0) return false;
+		const fsPath = fileUri.path.replace(/\\/g, '/');
+		return this._contextOnlyPatterns.some(p => _globMatches(p, fsPath));
+	}
+
+	/** Store a file's content for context-only use, respecting size caps */
+	private _addContextFile(uriStr: string, content: string): void {
+		if (content.length > GRCEngineService._MAX_CONTEXT_FILE_SIZE) return;
+		if (this._contextFiles.size >= GRCEngineService._MAX_CONTEXT_FILES && !this._contextFiles.has(uriStr)) {
+			// Evict oldest entry
+			const firstKey = this._contextFiles.keys().next().value;
+			if (firstKey) this._contextFiles.delete(firstKey);
+		}
+		this._contextFiles.set(uriStr, content);
+	}
+
+
+	// ─── AI Ignore Suggestions ──────────────────────────────────────
+
+	public async generateIgnoreSuggestions(): Promise<IIgnoreSuggestion[]> {
+		// Gather project metadata (shallow scan, depth 2)
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		if (folders.length === 0) return [];
+
+		const rootUri = folders[0].uri;
+		const fileTree: string[] = [];
+		const configFiles: string[] = [];
+		let packageJsonDeps = '';
+		let gitignorePatterns = '';
+		let tsconfigInfo = '';
+
+		await this._gatherProjectMetadata(rootUri, 0, fileTree, configFiles);
+
+		// Try reading key config files
+		try {
+			const pkg = await this._fileService.readFile(URI.joinPath(rootUri, 'package.json'));
+			const pkgJson = JSON.parse(pkg.value.toString());
+			const devDeps = Object.keys(pkgJson.devDependencies || {}).join(', ');
+			const deps = Object.keys(pkgJson.dependencies || {}).join(', ');
+			packageJsonDeps = `devDependencies: ${devDeps || 'none'}\ndependencies: ${deps || 'none'}`;
+		} catch { /* no package.json */ }
+
+		try {
+			const gi = await this._fileService.readFile(URI.joinPath(rootUri, '.gitignore'));
+			gitignorePatterns = gi.value.toString().split('\n').filter(l => l.trim() && !l.startsWith('#')).join(', ');
+		} catch { /* no .gitignore */ }
+
+		try {
+			const tsconfig = await this._fileService.readFile(URI.joinPath(rootUri, 'tsconfig.json'));
+			const tsJson = JSON.parse(tsconfig.value.toString());
+			tsconfigInfo = `outDir: ${tsJson.compilerOptions?.outDir || 'N/A'}, rootDir: ${tsJson.compilerOptions?.rootDir || 'N/A'}`;
+		} catch { /* no tsconfig */ }
+
+		const prompt = `You are an AI assistant for a GRC (Governance, Risk, Compliance) IDE that scans code for security and compliance violations.
+
+Analyze this project structure and suggest which files/patterns should be:
+- "ignore": Fully excluded from compliance scanning (build artifacts, vendor, generated code, binary assets)
+- "context-only": Excluded from scanning but kept as AI context so the AI understands tests, mocks, and configs
+
+PROJECT FILE TREE (top 2 levels):
+${fileTree.slice(0, 100).join('\n')}
+
+CONFIG FILES FOUND: ${configFiles.join(', ') || 'none'}
+
+${packageJsonDeps ? `PACKAGE.JSON:\n${packageJsonDeps}\n` : ''}
+${gitignorePatterns ? `GITIGNORE PATTERNS: ${gitignorePatterns}\n` : ''}
+${tsconfigInfo ? `TSCONFIG: ${tsconfigInfo}\n` : ''}
+ALREADY FULLY IGNORED: ${this._ignorePatterns.join(', ') || 'none'}
+ALREADY CONTEXT-ONLY: ${this._contextOnlyPatterns.join(', ') || 'none'}
+
+Return ONLY valid JSON — an array of suggestions. Do NOT suggest patterns already in the ignore or context-only lists:
+[
+  {
+    "pattern": "glob pattern",
+    "reason": "brief explanation",
+    "mode": "ignore" or "context-only",
+    "confidence": "high" or "medium" or "low",
+    "category": "build-output" or "test-files" or "config" or "generated" or "vendor" or "other"
+  }
+]
+
+Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.`;
+
+		const response = await this.contractReasonService.sendOneShotQuery(prompt);
+		if (!response) return [];
+
+		try {
+			let jsonStr = response.trim();
+			const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+			if (jsonMatch) jsonStr = jsonMatch[1].trim();
+			const suggestions: IIgnoreSuggestion[] = JSON.parse(jsonStr);
+			return suggestions.filter(s => s.pattern && s.reason && s.mode);
+		} catch (e) {
+			console.error('[GRCEngine] Failed to parse ignore suggestions:', e);
+			return [];
+		}
+	}
+
+	private async _gatherProjectMetadata(
+		dirUri: URI, depth: number,
+		fileTree: string[], configFiles: string[]
+	): Promise<void> {
+		if (depth > 2) return;
+		try {
+			const stat = await this._fileService.resolve(dirUri);
+			if (!stat.children) return;
+			const indent = '  '.repeat(depth);
+			for (const child of stat.children) {
+				if (child.name.startsWith('.') && child.name !== '.gitignore') continue;
+				if (GRCEngineService._SKIP_DIRS.has(child.name)) {
+					fileTree.push(`${indent}${child.name}/ (skipped)`);
+					continue;
+				}
+				if (child.isDirectory) {
+					fileTree.push(`${indent}${child.name}/`);
+					await this._gatherProjectMetadata(child.resource, depth + 1, fileTree, configFiles);
+				} else {
+					fileTree.push(`${indent}${child.name}`);
+					const name = child.name.toLowerCase();
+					if (name.includes('config') || name.includes('.rc') || name === 'jest.config.ts'
+						|| name === 'vite.config.ts' || name === 'webpack.config.js'
+						|| name === '.eslintrc.js' || name === 'babel.config.js'
+						|| name.endsWith('.config.js') || name.endsWith('.config.ts')) {
+						configFiles.push(child.name);
+					}
+				}
+			}
+		} catch { /* unreadable */ }
+	}
+
+
+	// ─── Cross-File Impact ──────────────────────────────────────────
+
+	public getImportedByMap(): ReadonlyMap<string, readonly string[]> {
+		const result = new Map<string, readonly string[]>();
+		for (const [key, set] of this._importedBy) {
+			result.set(key, Array.from(set));
+		}
+		return result;
+	}
+
+	public getImpactChain(fileUri: URI, maxDepth: number = 3): IImpactNode | undefined {
+		const basePath = fileUri.path.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
+		const visited = new Set<string>();
+
+		// Collect direct dependents
+		const dependentUris = new Set<string>();
+		for (const [key, importers] of this._importedBy) {
+			if (key === basePath || key.startsWith(basePath + '/')) {
+				for (const imp of importers) dependentUris.add(imp);
+			}
+		}
+
+		if (dependentUris.size === 0) return undefined;
+
+		const fileKey = fileUri.toString();
+		const results = this._resultsByFile.get(fileKey) || [];
+		const hasBreaking = results.some(r => r.isBreakingChange);
+
+		const rootNode: IImpactNode = {
+			fileUri: fileKey,
+			fileName: fileUri.path.split('/').pop() || 'unknown',
+			filePath: fileUri.path,
+			violations: results.length,
+			hasBreakingChanges: hasBreaking,
+			dependents: [],
+		};
+
+		visited.add(fileKey);
+		this._buildImpactTree(rootNode, visited, maxDepth, 1);
+		return rootNode;
+	}
+
+	private _buildImpactTree(node: IImpactNode, visited: Set<string>, maxDepth: number, currentDepth: number): void {
+		if (currentDepth >= maxDepth) return;
+
+		// Find dependents by checking import map
+		const nodePath = node.filePath.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
+		const dependentUris = new Set<string>();
+		for (const [key, importers] of this._importedBy) {
+			if (key === nodePath || key.startsWith(nodePath + '/')) {
+				for (const imp of importers) {
+					if (!visited.has(imp)) dependentUris.add(imp);
+				}
+			}
+		}
+
+		for (const depUriStr of dependentUris) {
+			if (node.dependents.length >= 10) break; // cap per node
+			visited.add(depUriStr);
+
+			const depUri = URI.parse(depUriStr);
+			const depResults = this._resultsByFile.get(depUriStr) || [];
+			const depNode: IImpactNode = {
+				fileUri: depUriStr,
+				fileName: depUri.path.split('/').pop() || 'unknown',
+				filePath: depUri.path,
+				violations: depResults.length,
+				hasBreakingChanges: depResults.some(r => r.isBreakingChange),
+				dependents: [],
+			};
+
+			this._buildImpactTree(depNode, visited, maxDepth, currentDepth + 1);
+			node.dependents.push(depNode);
+		}
+	}
+
+
 	// ─── Workspace Scan ──────────────────────────────────────────────
 
 	private static readonly _SCANNABLE_EXT = new Set([
@@ -1155,8 +1498,186 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 			await this._scanDir(folder.uri, 0);
 		}
 		this._onDidCheckComplete.fire(this.getAllResults());
-		console.log(`[GRCEngine] Workspace scan complete: ${this.getAllResults().length} violations across ${this._resultsByFile.size} files`);
+		console.log(`[GRCEngine] Static scan complete: ${this.getAllResults().length} violations across ${this._resultsByFile.size} files`);
+
+		// Chain the AI scan — it will skip files whose content hash hasn't changed
+		this.scanWorkspaceWithAI().catch(e => console.error('[GRCEngine] AI scan after workspace scan failed:', e));
 	}
+
+	// ─── AI Workspace Scan ───────────────────────────────────────────
+
+	public async scanWorkspaceWithAI(): Promise<void> {
+		if (!this.contractReasonService.isAvailable) {
+			console.log('[GRCEngine] AI scan skipped — contract reason service unavailable');
+			return;
+		}
+		console.log('[GRCEngine] Starting periodic workspace AI scan...');
+
+		// Phase 1: Collect all scannable files (fast, no AI calls)
+		const filesToScan: { uri: URI; content: string }[] = [];
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		for (const folder of folders) {
+			await this._collectFilesForAI(folder.uri, 0, filesToScan);
+		}
+		console.log(`[GRCEngine] Collected ${filesToScan.length} file(s) for periodic AI scan`);
+
+		// Phase 2: Process files in periodic batches to avoid rate limits
+		const BATCH_SIZE = 5;
+		const BATCH_INTERVAL_MS = 4_000; // 4s cooldown between batches
+		let processed = 0;
+		const contextFiles = this._contextFiles.size > 0 ? new Map(this._contextFiles) : undefined;
+
+		for (let i = 0; i < filesToScan.length; i += BATCH_SIZE) {
+			const batch = filesToScan.slice(i, i + BATCH_SIZE);
+
+			// Process batch — each file goes through the rate limiter in contractReasonService
+			await Promise.all(batch.map(({ uri, content }) => {
+				const uriStr = uri.toString();
+				const cachedResults = this._resultsByFile.get(uriStr) || [];
+				const allRules = this._configLoader.getRules();
+				const nanoContext = this.projectAnalyzerService.getContextForFile(uri);
+				return this.contractReasonService.analyzeFile(uri, content, cachedResults, allRules, nanoContext, contextFiles);
+			}));
+
+			processed += batch.length;
+			console.log(`[GRCEngine] AI scan progress: ${processed}/${filesToScan.length} files processed`);
+
+			// Wait between batches (unless this was the last batch)
+			if (i + BATCH_SIZE < filesToScan.length) {
+				await new Promise<void>(r => setTimeout(r, BATCH_INTERVAL_MS));
+			}
+		}
+
+		console.log(`[GRCEngine] Periodic AI scan complete: ${processed} file(s) processed`);
+	}
+
+	/**
+	 * Recursively collect all scannable files and their content for AI analysis.
+	 * Does NOT trigger any AI calls — just builds the file list.
+	 */
+	private async _collectFilesForAI(
+		dirUri: URI,
+		depth: number,
+		out: { uri: URI; content: string }[]
+	): Promise<void> {
+		if (depth > 12) return;
+		try {
+			const stat = await this._fileService.resolve(dirUri);
+			if (!stat.children) return;
+			for (const child of stat.children) {
+				if (this._matchesIgnore(child.resource)) continue;
+				if (child.isDirectory) {
+					if (GRCEngineService._SKIP_DIRS.has(child.name)) continue;
+					await this._collectFilesForAI(child.resource, depth + 1, out);
+				} else {
+					const ext = child.name.split('.').pop()?.toLowerCase() ?? '';
+					if (!GRCEngineService._SCANNABLE_EXT.has(ext)) continue;
+					try {
+						const file = await this._fileService.readFile(child.resource);
+						const content = file.value.toString();
+						const uriStr = child.resource.toString();
+
+						// Build reverse import map during collection
+						this._updateImportMap(child.resource, content);
+
+						// Context-only files: store for AI context but don't queue for scanning
+						if (this._matchesContextOnly(child.resource)) {
+							this._addContextFile(uriStr, content);
+							continue;
+						}
+
+						// Run static analysis if we haven't seen this file yet
+						if (!this._resultsByFile.has(uriStr)) {
+							this.evaluateFileContent(child.resource, content);
+						}
+
+						out.push({ uri: child.resource, content });
+					} catch { /* unreadable — skip */ }
+				}
+			}
+		} catch { /* unreadable dir — skip */ }
+	}
+
+
+	// ─── Import Graph & Cross-File Triggers ──────────────────────────
+
+	/** Regex that captures relative import/export paths from any JS/TS file */
+	private static readonly _IMPORT_RE =
+		/(?:^|\n)[ \t]*(?:import\s+(?:type\s+)?(?:[^'"\n]*?from\s+)?|export\s+(?:type\s+)?(?:[^'"\n]*?from\s+)|(?:const|let|var)\s+[^=]+=\s*(?:await\s+)?(?:require|import)\s*\()['"](\.[^'"]+)['"]/g;
+
+	/**
+	 * Parse the relative imports of `fileUri` from `content` and update
+	 * `_importedBy` so we know which files depend on which.
+	 */
+	private _updateImportMap(fileUri: URI, content: string): void {
+		const importerStr = fileUri.toString();
+		const dirPath = fileUri.path.replace(/\/[^/]+$/, '');
+
+		// Remove stale entries for this importer
+		for (const [, importers] of this._importedBy) {
+			importers.delete(importerStr);
+		}
+
+		// Parse new import paths
+		GRCEngineService._IMPORT_RE.lastIndex = 0;
+		let match: RegExpExecArray | null;
+		while ((match = GRCEngineService._IMPORT_RE.exec(content)) !== null) {
+			const importPath = match[1];
+			if (!importPath?.startsWith('.')) continue;
+			const resolved = this._resolveRelativePath(dirPath, importPath);
+			if (!resolved) continue;
+			if (!this._importedBy.has(resolved)) this._importedBy.set(resolved, new Set());
+			this._importedBy.get(resolved)!.add(importerStr);
+		}
+	}
+
+	/** Resolve a relative import path to a normalised absolute path (no extension). */
+	private _resolveRelativePath(dirPath: string, importPath: string): string | null {
+		let resolved = dirPath;
+		for (const part of importPath.split('/')) {
+			if (part === '.' || part === '') continue;
+			if (part === '..') { resolved = resolved.replace(/\/[^/]+$/, ''); }
+			else resolved = `${resolved}/${part}`;
+		}
+		// Strip extension so lookup works regardless of .ts/.js etc.
+		return resolved.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
+	}
+
+	/**
+	 * After `changedFileUri` is saved, find all files that import it and
+	 * trigger AI re-analysis for them (limited to 10 to prevent flooding).
+	 */
+	private _triggerCrossFileAnalysis(changedFileUri: URI, rules: IGRCRule[]): void {
+		const basePath = changedFileUri.path.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
+		const dependents = new Set<string>();
+
+		// Match both the bare path and with any extension
+		for (const [key, importers] of this._importedBy) {
+			if (key === basePath || key.startsWith(basePath + '/')) {
+				for (const imp of importers) dependents.add(imp);
+			}
+		}
+
+		if (dependents.size === 0) return;
+
+		const changedName = changedFileUri.path.split('/').pop() ?? '';
+		console.log(`[GRCEngine] Cross-file: ${changedName} changed → re-analysing ${dependents.size} dependent(s)`);
+
+		let count = 0;
+		for (const depUriStr of dependents) {
+			if (++count > 10) break;
+			const depUri = URI.parse(depUriStr);
+			this._fileService.readFile(depUri).then(file => {
+				const content = file.value.toString();
+				const cachedResults = this._resultsByFile.get(depUriStr) || [];
+				const nanoContext = this.projectAnalyzerService.getContextForFile(depUri);
+				this.contractReasonService.analyzeFile(depUri, content, cachedResults, rules, nanoContext);
+			}).catch(() => { /* dependent file unreadable — skip */ });
+		}
+	}
+
+
+	// ─── Static Workspace Scan ───────────────────────────────────────
 
 	private async _scanDir(dirUri: URI, depth: number): Promise<void> {
 		if (depth > 12) return;
@@ -1173,7 +1694,16 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 					if (!GRCEngineService._SCANNABLE_EXT.has(ext)) continue;
 					try {
 						const file = await this._fileService.readFile(child.resource);
-						this.evaluateFileContent(child.resource, file.value.toString());
+						const content = file.value.toString();
+
+						// Context-only files: read content for AI context but skip violation scanning
+						if (this._matchesContextOnly(child.resource)) {
+							this._addContextFile(child.resource.toString(), content);
+							this._updateImportMap(child.resource, content);
+							continue;
+						}
+
+						this.evaluateFileContent(child.resource, content);
 					} catch { /* unreadable file — skip */ }
 				}
 			}

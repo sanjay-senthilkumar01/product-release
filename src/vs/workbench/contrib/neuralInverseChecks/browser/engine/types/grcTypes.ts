@@ -116,7 +116,7 @@ export function toDisplaySeverity(severity: string): GRCSeverity {
  * - 'import-graph' — architecture-level import analysis
  * - 'external'     — delegate to any CLI tool
  */
-export type GRCRuleType = 'regex' | 'file-level' | 'ast' | 'dataflow' | 'import-graph' | 'external' | 'universal';
+export type GRCRuleType = 'regex' | 'file-level' | 'ast' | 'dataflow' | 'import-graph' | 'external' | 'universal' | 'invariant';
 
 
 // ─── Rule Definition ─────────────────────────────────────────────────────────
@@ -358,6 +358,48 @@ export interface ICheckResult {
 	 * AI violations, and are cleared when the breaking change is resolved.
 	 */
 	isBreakingChange?: boolean;
+}
+
+
+// ─── Ignore Suggestions ──────────────────────────────────────────────────────
+
+/**
+ * AI-generated suggestion for an ignore or context-only pattern.
+ * Produced by analyzing the project structure.
+ */
+export interface IIgnoreSuggestion {
+	/** Glob pattern to add */
+	pattern: string;
+	/** Human-readable reason for the suggestion */
+	reason: string;
+	/** Whether to fully ignore or keep as context */
+	mode: 'ignore' | 'context-only';
+	/** AI confidence in this suggestion */
+	confidence: 'high' | 'medium' | 'low';
+	/** Category of the suggestion */
+	category: 'build-output' | 'test-files' | 'config' | 'generated' | 'vendor' | 'other';
+}
+
+
+// ─── Impact Node ─────────────────────────────────────────────────────────────
+
+/**
+ * Node in a cross-file impact tree.
+ * Shows how violations in one file affect its dependents.
+ */
+export interface IImpactNode {
+	/** URI string of the file */
+	fileUri: string;
+	/** Basename of the file */
+	fileName: string;
+	/** Relative path for display */
+	filePath: string;
+	/** Count of violations in this file */
+	violations: number;
+	/** Whether this file has breaking change violations */
+	hasBreakingChanges: boolean;
+	/** Files that import this file */
+	dependents: IImpactNode[];
 }
 
 

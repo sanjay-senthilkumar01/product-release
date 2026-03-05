@@ -11,6 +11,7 @@ import { NanoAgentService } from './ai/nanoAgentService.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IVoidSettingsService } from '../../../void/common/voidSettingsService.js';
 import { NeuralInverseChat } from '../../../neuralInverseChat/browser/neuralInverseChat.js';
+import { IGRCEngineService } from '../engine/services/grcEngineService.js';
 
 export class NanoAgentsControl extends Disposable {
 	private readonly container: HTMLElement;
@@ -32,6 +33,10 @@ export class NanoAgentsControl extends Disposable {
 		this.container.style.display = 'none';
 	}
 
+	public askWithPrefill(question: string): void {
+		this.webviewElement?.postMessage({ command: 'prefillQuestion', question });
+	}
+
 	constructor(
 		parent: HTMLElement,
 		@IWebviewService private readonly webviewService: IWebviewService,
@@ -40,7 +45,8 @@ export class NanoAgentsControl extends Disposable {
 		@IModelService private readonly modelService: IModelService,
 		@IFileService private readonly fileService: IFileService,
 		@ICommandService private readonly commandService: ICommandService,
-		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService
+		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
+		@IGRCEngineService private readonly grcEngine: IGRCEngineService
 	) {
 		super();
 		this.container = document.createElement('div');
@@ -50,7 +56,7 @@ export class NanoAgentsControl extends Disposable {
 		parent.appendChild(this.container);
 
 		this.projectAnalyzer = this.instantiationService.createInstance(ProjectAnalyzer);
-		this.nanoAgentService = this.instantiationService.createInstance(NanoAgentService, this.projectAnalyzer);
+		this.nanoAgentService = this.instantiationService.createInstance(NanoAgentService, this.projectAnalyzer, this.grcEngine);
 		this.chatUI = new NeuralInverseChat();
 
 		this.initWebview();
@@ -508,6 +514,20 @@ export class NanoAgentsControl extends Disposable {
 					}
 					else if (message.command === 'analysisComplete') { refreshDashboard(); }
 					else if (message.command === 'init') { refreshDashboard(); }
+					else if (message.command === 'prefillQuestion') {
+						// Switch to chat tab and fill the input
+						showTab('chat');
+						const chatInput = document.querySelector('#chat-input, .chat-input, textarea');
+						if (chatInput) {
+							chatInput.value = message.question;
+							chatInput.focus();
+							// Auto-submit after a short delay
+							setTimeout(() => {
+								const sendBtn = document.querySelector('#chat-send, .chat-send, button[onclick*="send"]');
+								if (sendBtn) sendBtn.click();
+							}, 100);
+						}
+					}
 					else if (message.command === 'deepAnalysis') {
 						document.getElementById('inspect-loading').style.display = 'none';
 						document.getElementById('inspect-result').style.display = 'block';

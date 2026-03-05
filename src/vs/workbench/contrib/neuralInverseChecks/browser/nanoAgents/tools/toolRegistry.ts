@@ -3,6 +3,7 @@ import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { ISearchService, QueryType, ITextQuery } from '../../../../../services/search/common/search.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
+import { IGRCEngineService } from '../../engine/services/grcEngineService.js';
 
 export enum ToolPermission {
     READ_ONLY = 'read_only',
@@ -190,6 +191,120 @@ export class SearchTool implements INanoTool {
     }
 }
 
+// ─── GRC Integration Tools ────────────────────────────────────────────────────
+
+export class GetViolationsTool implements INanoTool {
+    name = 'get_violations';
+    description = 'Get current GRC compliance violations, optionally filtered by domain (e.g. "security", "compliance", "policy").';
+    permission = ToolPermission.READ_ONLY;
+    schema = {
+        type: 'object',
+        properties: {
+            domain: { type: 'string', description: 'Optional domain filter' }
+        }
+    };
+
+    constructor(private readonly grcEngine: IGRCEngineService) { }
+
+    async execute(args: any): Promise<string> {
+        const results = args.domain
+            ? this.grcEngine.getResultsForDomain(args.domain)
+            : this.grcEngine.getAllResults();
+
+        if (results.length === 0) {
+            return 'No violations found.';
+        }
+
+        const formatted = results.slice(0, 30).map(r => ({
+            ruleId: r.ruleId,
+            domain: r.domain,
+            severity: r.severity,
+            message: r.message,
+            file: r.fileUri.path.split('/').pop(),
+            line: r.line,
+            isBreaking: r.isBreakingChange || false
+        }));
+
+        return JSON.stringify(formatted, null, 2);
+    }
+}
+
+export class GetDomainSummaryTool implements INanoTool {
+    name = 'get_domain_summary';
+    description = 'Get a summary of GRC violations grouped by domain (security, compliance, etc.) with error/warning/info counts.';
+    permission = ToolPermission.READ_ONLY;
+    schema = { type: 'object', properties: {} };
+
+    constructor(private readonly grcEngine: IGRCEngineService) { }
+
+    async execute(): Promise<string> {
+        const summary = this.grcEngine.getDomainSummary();
+        return JSON.stringify(summary, null, 2);
+    }
+}
+
+export class GetBlockingViolationsTool implements INanoTool {
+    name = 'get_blocking_violations';
+    description = 'Get violations that are blocking commits or deploys (critical/blocker severity or explicit blocking behavior).';
+    permission = ToolPermission.READ_ONLY;
+    schema = { type: 'object', properties: {} };
+
+    constructor(private readonly grcEngine: IGRCEngineService) { }
+
+    async execute(): Promise<string> {
+        const violations = this.grcEngine.getBlockingViolations();
+        if (violations.length === 0) {
+            return 'No blocking violations.';
+        }
+
+        const formatted = violations.slice(0, 20).map(v => ({
+            ruleId: v.ruleId,
+            severity: v.severity,
+            message: v.message,
+            file: v.fileUri.path.split('/').pop(),
+            line: v.line
+        }));
+
+        return JSON.stringify(formatted, null, 2);
+    }
+}
+
+export class GetImpactChainTool implements INanoTool {
+    name = 'get_impact_chain';
+    description = 'Get the cross-file impact chain for a file, showing which dependent files are affected by violations in the given file.';
+    permission = ToolPermission.READ_ONLY;
+    schema = {
+        type: 'object',
+        properties: {
+            file: { type: 'string', description: 'File name or path to check impact for' }
+        },
+        required: ['file']
+    };
+
+    constructor(private readonly grcEngine: IGRCEngineService) { }
+
+    async execute(args: any): Promise<string> {
+        if (!args.file) {
+            return 'Error: file parameter is required';
+        }
+
+        // Find matching file URI from results
+        const allResults = this.grcEngine.getAllResults();
+        const matchingResult = allResults.find(r => r.fileUri.path.includes(args.file));
+
+        if (!matchingResult) {
+            return `No violations found for file matching "${args.file}"`;
+        }
+
+        const impact = this.grcEngine.getImpactChain(matchingResult.fileUri);
+        if (!impact) {
+            return 'No cross-file impact detected for this file.';
+        }
+
+        return JSON.stringify(impact, null, 2);
+    }
+}
+
 export class ToolRegistry extends Disposable {
     private tools: Map<string, INanoTool> = new Map();
 
@@ -200,11 +315,18 @@ export class ToolRegistry extends Disposable {
         super();
     }
 
-    // Call this with the workspace root
-    public registerDefaultTools(rootUri: URI) {
+    // Call this with the workspace root and optional GRC engine
+    public registerDefaultTools(rootUri: URI, grcEngine?: IGRCEngineService) {
         this.registerTool(new FileReadTool(rootUri, this.fileService));
         this.registerTool(new ListDirTool(rootUri, this.fileService));
         this.registerTool(new SearchTool(rootUri, this.searchService));
+
+        if (grcEngine) {
+            this.registerTool(new GetViolationsTool(grcEngine));
+            this.registerTool(new GetDomainSummaryTool(grcEngine));
+            this.registerTool(new GetBlockingViolationsTool(grcEngine));
+            this.registerTool(new GetImpactChainTool(grcEngine));
+        }
     }
 
     public registerTool(tool: INanoTool): void {

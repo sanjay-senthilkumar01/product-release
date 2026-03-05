@@ -8,6 +8,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { IVoidModelService } from '../common/voidModelService.js';
+import { AGENT_CONFIG_FILENAME } from '../common/neuralInverseAgentConfigTypes.js';
 
 class ConvertContribWorkbenchContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.void.convertcontrib'
@@ -23,6 +24,10 @@ class ConvertContribWorkbenchContribution extends Disposable implements IWorkben
 			this.workspaceContext.getWorkspace()
 			const voidRulesURI = URI.joinPath(uri, '.voidrules')
 			this.voidModelService.initializeModel(voidRulesURI)
+
+			// Pre-load .neuralinverseagent config so it's available for agent mode
+			const agentConfigURI = URI.joinPath(uri, AGENT_CONFIG_FILENAME)
+			this.voidModelService.initializeModel(agentConfigURI)
 		}
 
 		// call

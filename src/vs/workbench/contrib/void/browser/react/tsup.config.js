@@ -15,6 +15,7 @@ export default defineConfig({
 		'./src2/void-onboarding/index.tsx',
 		'./src2/quick-edit-tsx/index.tsx',
 		'./src2/diff/index.tsx',
+		'./src2/agent-manager-tsx/index.tsx',
 	],
 	outDir: './out',
 	format: ['esm'],

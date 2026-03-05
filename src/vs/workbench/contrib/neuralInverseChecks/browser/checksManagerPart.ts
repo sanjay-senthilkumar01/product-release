@@ -26,7 +26,8 @@ import { AuditAndEvidenceControl } from './auditAndEvidence/auditAndEvidenceCont
 import { FailSafeDefaultsControl } from './failSafeDefaults/failSafeDefaultsControl.js';
 import { FormalVerificationControl } from './formalVerification/formalVerificationControl.js';
 import { IGRCEngineService } from './engine/services/grcEngineService.js';
-import { IFrameworkIntelligenceService } from './engine/services/frameworkIntelligenceService.js';
+import { IContractReasonService } from './engine/services/contractReasonService.js';
+import { ICheckResult, IImpactNode } from './engine/types/grcTypes.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { URI } from '../../../../base/common/uri.js';
 
@@ -69,7 +70,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         @IWebviewService private readonly webviewService: IWebviewService,
         @ITerminalService private readonly terminalService: ITerminalService,
         @IGRCEngineService private readonly grcEngine: IGRCEngineService,
-        @IFrameworkIntelligenceService private readonly intelligenceService: IFrameworkIntelligenceService,
+        @IContractReasonService private readonly contractReasonService: IContractReasonService,
         @IEditorService private readonly editorService: IEditorService,
     ) {
         super(ChecksManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
@@ -372,7 +373,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
 
         // ── Sidebar Navigation ────────────────────────────────────────
-        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'ignore' | 'nano' | 'chat';
+        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'ignore' | 'nano' | 'chat';
         const DOMAIN_MAP: Partial<Record<ViewId, string>> = {
             security: 'security', compliance: 'compliance', policy: 'policy',
             architecture: 'architecture', 'data-integrity': 'data-integrity',
@@ -422,6 +423,11 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
             } else if (view === 'chat') {
                 voidContainer.style.display = 'block';
                 this._currentViewMode = 'chat';
+            } else if (view === 'formal-verification') {
+                fvContainer.style.display = 'block';
+                this.formalVerificationControl?.show();
+                this.formalVerificationControl?.layout(body.clientWidth, body.clientHeight);
+                this._currentViewMode = 'dashboard';
             } else if (view === 'ignore') {
                 checksContainer.style.display = 'block';
                 this._currentViewMode = 'ignore';
@@ -503,6 +509,9 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         createSidebarItem('Confidentiality', 'confidentiality', '⊛');
         createSidebarItem('Processing Integrity', 'processing-integrity', '⊞');
 
+        addSidebarLabel('Verification');
+        createSidebarItem('Formal Verification', 'formal-verification', '⊢');
+
         addSidebarLabel('Settings');
         createSidebarItem('Ignore Rules', 'ignore', '⊖');
 
@@ -544,7 +553,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                     if (result.valid) refreshWebview();
                 }
             } else if (msg.type === 'toggleAI') {
-                this.intelligenceService.setEnabled(!this.intelligenceService.isEnabled);
+                this.contractReasonService.setEnabled(!this.contractReasonService.isEnabled);
             } else if (msg.type === 'navigateToFile') {
                 try {
                     const nav = msg as { type: string; uri: string; line: number; col: number };
@@ -563,19 +572,39 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                     console.error('[ChecksManagerPart] navigateToFile failed:', e);
                 }
             } else if (msg.type === 'scanWorkspace') {
+                // Run static scan first, then AI — results fire onDidCheckComplete which refreshes the webview
                 this.grcEngine.scanWorkspace().catch(e => console.error('[ChecksManagerPart] scanWorkspace failed:', e));
             } else if (msg.type === 'addIgnorePattern' && msg.pattern) {
                 this.grcEngine.addIgnorePattern(msg.pattern);
                 // ignore view will auto-refresh via onDidRulesChange
             } else if (msg.type === 'removeIgnorePattern' && msg.pattern) {
                 this.grcEngine.removeIgnorePattern(msg.pattern);
+            } else if (msg.type === 'addContextOnlyPattern' && msg.pattern) {
+                this.grcEngine.addContextOnlyPattern(msg.pattern);
+            } else if (msg.type === 'removeContextOnlyPattern' && msg.pattern) {
+                this.grcEngine.removeContextOnlyPattern(msg.pattern);
+            } else if (msg.type === 'askAgentAboutViolation') {
+                const v = msg as any;
+                const question = `Explain this GRC violation and suggest a fix:\n- Rule: ${v.ruleId}\n- File: ${v.file}\n- Line: ${v.line}\n- Message: ${v.message}`;
+                // Switch to nano agents view and prefill the question
+                updateView('nano');
+                setTimeout(() => {
+                    this.nanoAgentsControl?.askWithPrefill(question);
+                }, 300);
+            } else if (msg.type === 'generateIgnoreSuggestions') {
+                this.grcEngine.generateIgnoreSuggestions().then(suggestions => {
+                    this.webviewElement?.postMessage({ type: 'ignoreSuggestions', suggestions });
+                }).catch(e => {
+                    console.error('[ChecksManagerPart] generateIgnoreSuggestions failed:', e);
+                    this.webviewElement?.postMessage({ type: 'ignoreSuggestions', suggestions: [] });
+                });
             }
         }));
 
         // Subscribe to engine events
         this._register(this.grcEngine.onDidCheckComplete(() => refreshWebview()));
         this._register(this.grcEngine.onDidRulesChange(() => refreshWebview()));
-        this._register(this.intelligenceService.onDidEnabledChange(() => refreshWebview()));
+        this._register(this.contractReasonService.onDidEnabledChange(() => refreshWebview()));
 
         // Mount Void Sidebar
         // HACK: Override createElement to bypass "Not allowed to create elements in child window" error
@@ -697,8 +726,8 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         const totalWarnings = allResults.filter(r => r.severity === 'warning').length;
 
         // Hybrid Intelligence state
-        const aiEnabled = this.intelligenceService.isEnabled;
-        const aiAvailable = this.intelligenceService.isAvailable;
+        const aiEnabled = this.contractReasonService.isEnabled;
+        const aiAvailable = this.contractReasonService.isAvailable;
 
         // ── Language & source coverage ────────────────────────────────
         const langSet = new Set<string>();
@@ -800,13 +829,16 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                     ? '<span class="src-badge src-ai">AI</span>'
                     : '<span class="src-badge src-static">STATIC</span>';
                 const shortMsg = r.message.split('\n')[0].replace(/^\[[\w-]+\]\s*/, '').substring(0, 120);
-                return `<div class="viol ${sevCls}" onclick="navigate('${this._jsesc(r.fileUri.toString())}',${r.line},${r.column})">
-                    <div class="viol-top">
+                return `<div class="viol ${sevCls}">
+                    <div class="viol-top" onclick="navigate('${this._jsesc(r.fileUri.toString())}',${r.line},${r.column})" style="cursor:pointer">
                         <span class="rule-id">${this._esc(r.ruleId)}</span>
                         ${srcBadge}
                         <span class="viol-msg">${this._esc(shortMsg)}</span>
                     </div>
-                    <div class="viol-loc">${this._esc(fileName)}:${r.line}</div>
+                    <div class="viol-bottom">
+                        <span class="viol-loc" onclick="navigate('${this._jsesc(r.fileUri.toString())}',${r.line},${r.column})" style="cursor:pointer">${this._esc(fileName)}:${r.line}</span>
+                        <button class="ask-agent-btn" onclick="event.stopPropagation();askAgent('${this._jsesc(r.ruleId)}','${this._jsesc(fileName)}',${r.line},'${this._jsesc(shortMsg)}')">Ask Agent</button>
+                    </div>
                 </div>`;
             }).join('');
 
@@ -972,7 +1004,11 @@ body {
     font-size: 9px; font-family: var(--vscode-editor-font-family, monospace);
     color: var(--info); opacity: .65; padding-left: 1px;
 }
+.viol-bottom { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .viol:hover .viol-loc { opacity: 1; text-decoration: underline; }
+.ask-agent-btn { font-size: 9px; padding: 1px 6px; background: var(--info); color: #fff; border: none; border-radius: 2px; cursor: pointer; opacity: 0; transition: opacity .15s; }
+.viol:hover .ask-agent-btn { opacity: 1; }
+.ask-agent-btn:hover { filter: brightness(1.2); }
 
 /* ── Tables ── */
 table { width: 100%; border-collapse: collapse; }
@@ -1105,6 +1141,8 @@ ${totalViolations > 0 ? `
     </table>
 </div>
 
+${this._buildImpactHtml(allResults)}
+
 <script>
 const vscode = acquireVsCodeApi();
 
@@ -1133,6 +1171,10 @@ function toggleImport() {
 
 function toggleAI() {
     vscode.postMessage({ type: 'toggleAI' });
+}
+
+function askAgent(ruleId, file, line, message) {
+    vscode.postMessage({ type: 'askAgentAboutViolation', ruleId, file, line, message });
 }
 
 function submitImport() {
@@ -1167,8 +1209,114 @@ window.addEventListener('message', function(ev) {
 </html>`;
     }
 
+    private _buildImpactHtml(allResults: ICheckResult[]): string {
+        // Get files with violations
+        const filesWithViolations = new Map<string, URI>();
+        for (const r of allResults) {
+            filesWithViolations.set(r.fileUri.toString(), r.fileUri);
+        }
+
+        if (filesWithViolations.size === 0) return '';
+
+        // Build impact trees for files that have dependents
+        const impactTrees: string[] = [];
+        let filesProcessed = 0;
+
+        for (const [, fileUri] of filesWithViolations) {
+            if (filesProcessed >= 5) break;
+            const chain = this.grcEngine.getImpactChain(fileUri, 3);
+            if (!chain || chain.dependents.length === 0) continue;
+
+            filesProcessed++;
+            const breakingAlert = chain.hasBreakingChanges
+                ? `<div class="impact-alert">Breaking changes in <strong>${this._esc(chain.fileName)}</strong> affect <strong>${chain.dependents.length} dependent file${chain.dependents.length === 1 ? '' : 's'}</strong></div>`
+                : '';
+
+            impactTrees.push(`
+                ${breakingAlert}
+                <div class="impact-tree">
+                    ${this._renderImpactNode(chain, true)}
+                </div>
+            `);
+        }
+
+        if (impactTrees.length === 0) {
+            const importMap = this.grcEngine.getImportedByMap();
+            if (importMap.size === 0) {
+                return `<div class="section">
+                    <div class="sec-hdr"><span class="sec-title">Cross-File Impact</span></div>
+                    <div style="font-size:11px;color:var(--fg-muted);font-style:italic;padding:8px 0">Run a workspace scan to discover import relationships.</div>
+                </div>`;
+            }
+            return '';
+        }
+
+        return `<div class="section">
+    <div class="sec-hdr"><span class="sec-title">Cross-File Impact</span></div>
+    ${impactTrees.join('')}
+</div>
+<style>
+.impact-tree { margin-bottom: 12px; }
+.impact-node {
+    padding: 4px 0 4px 12px;
+    border-left: 2px solid var(--border);
+    margin-left: 4px;
+}
+.impact-node.root { border-left: 2px solid var(--err); padding-left: 12px; }
+.impact-node.root.no-breaking { border-left-color: var(--warn); }
+.impact-file {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px; font-weight: 600;
+}
+.impact-file.nav-link { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
+.impact-file.nav-link:hover { color: var(--info); }
+.impact-badge {
+    font-size: 9px; padding: 1px 5px; border-radius: 2px;
+    margin-left: 6px; vertical-align: middle;
+}
+.impact-badge.breaking { background: rgba(244,135,113,.15); color: var(--err); }
+.impact-badge.affected { background: rgba(204,167,0,.15); color: var(--warn); }
+.impact-badge.ok { background: rgba(115,201,145,.15); color: var(--ok); }
+.impact-arrow {
+    font-size: 9px; color: var(--fg-muted); margin: 2px 0 2px 16px;
+}
+.impact-alert {
+    font-size: 11px; padding: 6px 10px; margin-bottom: 8px;
+    background: rgba(244,135,113,.08); border: 1px solid rgba(244,135,113,.3);
+    border-radius: 3px; color: var(--err);
+}
+</style>`;
+    }
+
+    private _renderImpactNode(node: IImpactNode, isRoot: boolean): string {
+        const badge = node.hasBreakingChanges
+            ? '<span class="impact-badge breaking">breaking</span>'
+            : node.violations > 0
+                ? `<span class="impact-badge affected">${node.violations} violation${node.violations === 1 ? '' : 's'}</span>`
+                : '<span class="impact-badge ok">ok</span>';
+
+        const rootClass = isRoot ? (node.hasBreakingChanges ? 'root' : 'root no-breaking') : '';
+        const fileClass = isRoot ? 'impact-file' : 'impact-file nav-link';
+        const onclick = isRoot ? '' : ` onclick="navigate('${this._jsesc(node.fileUri)}', 1, 1)"`;
+
+        let html = `<div class="impact-node ${rootClass}">
+            <span class="${fileClass}"${onclick}>${this._esc(node.fileName)}</span>${badge}`;
+
+        if (node.dependents.length > 0) {
+            html += '<div class="impact-arrow">imports ↓</div>';
+            for (const dep of node.dependents) {
+                html += this._renderImpactNode(dep, false);
+            }
+        }
+
+        html += '</div>';
+        return html;
+    }
+
     private getIgnoreHtml(): string {
         const patterns = this.grcEngine.getIgnorePatterns();
+        const contextOnlyPatterns = this.grcEngine.getContextOnlyPatterns();
+
         const rowsHtml = patterns.length > 0
             ? patterns.map(p => `
                 <div class="ignore-row">
@@ -1176,6 +1324,14 @@ window.addEventListener('message', function(ev) {
                     <button class="btn-remove" onclick="removePattern('${this._jsesc(p)}')" title="Remove">✕</button>
                 </div>`).join('')
             : '<div class="empty-state">No patterns configured — all files are scanned.</div>';
+
+        const ctxRowsHtml = contextOnlyPatterns.length > 0
+            ? contextOnlyPatterns.map(p => `
+                <div class="ignore-row ctx-row">
+                    <span class="ignore-pattern">${this._esc(p)}</span>
+                    <button class="btn-remove" onclick="removeCtxPattern('${this._jsesc(p)}')" title="Remove">✕</button>
+                </div>`).join('')
+            : '<div class="empty-state">No context-only patterns — all scanned files generate violations.</div>';
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -1193,7 +1349,7 @@ window.addEventListener('message', function(ev) {
     --input-fg: var(--vscode-input-foreground, #ccc);
     --btn-bg: var(--vscode-button-background, #0e639c);
     --btn-fg: var(--vscode-button-foreground, #fff);
-    --err: #f48771; --info: #4fc1ff; --ok: #73c991;
+    --err: #f48771; --info: #4fc1ff; --ok: #73c991; --warn: #cca700;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -1211,7 +1367,7 @@ body {
     letter-spacing: .6px; color: var(--fg-muted);
     padding-bottom: 6px; border-bottom: 1px solid var(--border); margin-bottom: 10px;
 }
-.add-row { display: flex; gap: 8px; margin-bottom: 16px; }
+.add-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .add-row input {
     flex: 1; background: var(--input-bg); color: var(--input-fg);
     border: 1px solid var(--input-bd); border-radius: 3px;
@@ -1219,17 +1375,24 @@ body {
     font-size: 11px;
 }
 .add-row input:focus { outline: 1px solid var(--info); }
-.btn-add {
+.mode-row { display: flex; gap: 16px; margin-bottom: 12px; font-size: 11px; }
+.mode-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--fg-muted); }
+.mode-row input[type=radio] { accent-color: var(--info); }
+.btn-add, .btn-suggest {
     font-size: 11px; padding: 5px 12px; border: none; border-radius: 3px;
     cursor: pointer; font-family: inherit;
     background: var(--btn-bg); color: var(--btn-fg);
 }
-.btn-add:hover { opacity: 0.9; }
+.btn-suggest {
+    background: rgba(79,193,255,.15); color: var(--info); margin-left: auto;
+}
+.btn-add:hover, .btn-suggest:hover { opacity: 0.9; }
 .ignore-row {
     display: flex; align-items: center; justify-content: space-between;
     padding: 7px 10px; border: 1px solid var(--border); border-radius: 3px;
     margin-bottom: 4px; background: var(--bg-alt);
 }
+.ctx-row { border-left: 2px solid var(--info); }
 .ignore-pattern {
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 11px; color: var(--fg);
@@ -1256,14 +1419,48 @@ body {
 }
 .hint-add:hover { background: rgba(79,193,255,.25); }
 .feedback { font-size: 11px; margin-top: 6px; color: var(--err); min-height: 16px; }
+.suggestions { display: flex; flex-direction: column; gap: 6px; }
+.suggestion-card {
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg-alt);
+}
+.sug-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.sug-pattern { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 600; }
+.sug-mode {
+    font-size: 9px; padding: 1px 6px; border-radius: 2px; text-transform: uppercase; letter-spacing: .4px;
+}
+.sug-mode.ignore { background: rgba(244,135,113,.15); color: var(--err); }
+.sug-mode.context-only { background: rgba(79,193,255,.15); color: var(--info); }
+.sug-reason { font-size: 10px; color: var(--fg-muted); margin-top: 3px; }
+.sug-actions { display: flex; gap: 6px; margin-top: 6px; }
+.sug-accept {
+    font-size: 10px; padding: 2px 8px; border: none; border-radius: 2px;
+    cursor: pointer; background: var(--btn-bg); color: var(--btn-fg);
+}
+.sug-dismiss {
+    font-size: 10px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 2px;
+    cursor: pointer; background: transparent; color: var(--fg-muted);
+}
+.sug-loading { font-size: 11px; color: var(--fg-muted); font-style: italic; padding: 8px 0; }
+.confidence { font-size: 9px; color: var(--fg-muted); }
 </style>
 </head>
 <body>
 <div class="hdr">
     <div class="hdr-title">Ignore Rules</div>
     <div class="hdr-sub">
-        Files and folders matching these glob patterns are excluded from all violation scanning.<br>
-        Patterns are stored per workspace and are never committed to source control.
+        <strong>Fully Ignore</strong>: Files excluded from all scanning and AI analysis.<br>
+        <strong>Context-Only</strong>: Files excluded from violation scanning but kept as AI context (tests, mocks, configs).
+    </div>
+</div>
+
+<div class="section">
+    <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>AI Suggestions</span>
+        <button class="btn-suggest" onclick="suggestPatterns()">Suggest Patterns</button>
+    </div>
+    <div id="suggestionsContainer">
+        <div class="empty-state">Click "Suggest Patterns" to analyze your project structure and get recommendations.</div>
     </div>
 </div>
 
@@ -1273,46 +1470,106 @@ body {
         <input type="text" id="patternInput" placeholder="e.g.  **/node_modules/**  or  src/tests/**  or  *.generated.ts" />
         <button class="btn-add" onclick="addPattern()">Add</button>
     </div>
+    <div class="mode-row">
+        <label><input type="radio" name="mode" value="ignore" checked /> Fully Ignore</label>
+        <label><input type="radio" name="mode" value="context-only" /> Context-Only</label>
+    </div>
     <div class="feedback" id="feedback"></div>
 </div>
 
 <div class="section">
-    <div class="sec-title">Active Patterns <span style="font-weight:400;text-transform:none;letter-spacing:0">(${patterns.length})</span></div>
+    <div class="sec-title">Fully Ignored <span style="font-weight:400;text-transform:none;letter-spacing:0">(${patterns.length})</span></div>
     ${rowsHtml}
+</div>
+
+<div class="section">
+    <div class="sec-title">Context-Only <span style="font-weight:400;text-transform:none;letter-spacing:0">(${contextOnlyPatterns.length})</span></div>
+    ${ctxRowsHtml}
 </div>
 
 <div class="section">
     <div class="sec-title">Common Examples</div>
     <div class="hint-list">
-        <div class="hint"><span>Ignore all node_modules</span><code>**/node_modules/**</code><button class="hint-add" onclick="quickAdd('**/node_modules/**')">+ Add</button></div>
-        <div class="hint"><span>Ignore test files</span><code>**/*.test.ts</code><button class="hint-add" onclick="quickAdd('**/*.test.ts')">+ Add</button></div>
-        <div class="hint"><span>Ignore spec files</span><code>**/*.spec.ts</code><button class="hint-add" onclick="quickAdd('**/*.spec.ts')">+ Add</button></div>
-        <div class="hint"><span>Ignore build output</span><code>dist/**</code><button class="hint-add" onclick="quickAdd('dist/**')">+ Add</button></div>
-        <div class="hint"><span>Ignore generated files</span><code>**/*.generated.ts</code><button class="hint-add" onclick="quickAdd('**/*.generated.ts')">+ Add</button></div>
-        <div class="hint"><span>Ignore a specific folder</span><code>src/migrations/**</code><button class="hint-add" onclick="quickAdd('src/migrations/**')">+ Add</button></div>
-        <div class="hint"><span>Ignore mock files</span><code>**/__mocks__/**</code><button class="hint-add" onclick="quickAdd('**/__mocks__/**')">+ Add</button></div>
+        <div class="hint"><span>Ignore all node_modules</span><code>**/node_modules/**</code><button class="hint-add" onclick="quickAdd('**/node_modules/**','ignore')">+ Ignore</button></div>
+        <div class="hint"><span>Ignore build output</span><code>dist/**</code><button class="hint-add" onclick="quickAdd('dist/**','ignore')">+ Ignore</button></div>
+        <div class="hint"><span>Ignore generated files</span><code>**/*.generated.ts</code><button class="hint-add" onclick="quickAdd('**/*.generated.ts','ignore')">+ Ignore</button></div>
+        <div class="hint"><span>Test files as context</span><code>**/*.test.ts</code><button class="hint-add" onclick="quickAdd('**/*.test.ts','context-only')">+ Context</button></div>
+        <div class="hint"><span>Spec files as context</span><code>**/*.spec.ts</code><button class="hint-add" onclick="quickAdd('**/*.spec.ts','context-only')">+ Context</button></div>
+        <div class="hint"><span>Mock files as context</span><code>**/__mocks__/**</code><button class="hint-add" onclick="quickAdd('**/__mocks__/**','context-only')">+ Context</button></div>
+        <div class="hint"><span>Config files as context</span><code>**/*.config.*</code><button class="hint-add" onclick="quickAdd('**/*.config.*','context-only')">+ Context</button></div>
     </div>
 </div>
 
 <script>
 const vscode = acquireVsCodeApi();
+function getMode() {
+    return document.querySelector('input[name="mode"]:checked')?.value || 'ignore';
+}
 function addPattern() {
     const input = document.getElementById('patternInput');
     const val = input.value.trim();
     if (!val) { showFb('Please enter a pattern.'); return; }
-    vscode.postMessage({ type: 'addIgnorePattern', pattern: val });
+    const mode = getMode();
+    if (mode === 'context-only') {
+        vscode.postMessage({ type: 'addContextOnlyPattern', pattern: val });
+    } else {
+        vscode.postMessage({ type: 'addIgnorePattern', pattern: val });
+    }
     input.value = '';
     showFb('');
 }
-function quickAdd(p) {
-    vscode.postMessage({ type: 'addIgnorePattern', pattern: p });
+function quickAdd(p, mode) {
+    if (mode === 'context-only') {
+        vscode.postMessage({ type: 'addContextOnlyPattern', pattern: p });
+    } else {
+        vscode.postMessage({ type: 'addIgnorePattern', pattern: p });
+    }
 }
 function removePattern(p) {
     vscode.postMessage({ type: 'removeIgnorePattern', pattern: p });
 }
+function removeCtxPattern(p) {
+    vscode.postMessage({ type: 'removeContextOnlyPattern', pattern: p });
+}
+function suggestPatterns() {
+    document.getElementById('suggestionsContainer').innerHTML = '<div class="sug-loading">Analyzing project structure...</div>';
+    vscode.postMessage({ type: 'generateIgnoreSuggestions' });
+}
+function acceptSuggestion(pattern, mode) {
+    if (mode === 'context-only') {
+        vscode.postMessage({ type: 'addContextOnlyPattern', pattern: pattern });
+    } else {
+        vscode.postMessage({ type: 'addIgnorePattern', pattern: pattern });
+    }
+}
+function dismissSuggestion(el) {
+    el.closest('.suggestion-card').remove();
+}
 function showFb(msg) {
     document.getElementById('feedback').textContent = msg;
 }
+window.addEventListener('message', function(event) {
+    const msg = event.data;
+    if (msg.type === 'ignoreSuggestions') {
+        const container = document.getElementById('suggestionsContainer');
+        if (!msg.suggestions || msg.suggestions.length === 0) {
+            container.innerHTML = '<div class="empty-state">No suggestions — your ignore patterns look good.</div>';
+            return;
+        }
+        container.innerHTML = '<div class="suggestions">' + msg.suggestions.map(s =>
+            '<div class="suggestion-card">' +
+            '<div class="sug-top">' +
+            '<span class="sug-pattern">' + s.pattern + '</span>' +
+            '<span class="sug-mode ' + s.mode + '">' + s.mode + '</span>' +
+            '</div>' +
+            '<div class="sug-reason">' + s.reason + ' <span class="confidence">(' + s.confidence + ' confidence)</span></div>' +
+            '<div class="sug-actions">' +
+            '<button class="sug-accept" onclick="acceptSuggestion(\'' + s.pattern.replace(/'/g, "\\'") + '\',\'' + s.mode + '\')">Accept</button>' +
+            '<button class="sug-dismiss" onclick="dismissSuggestion(this)">Dismiss</button>' +
+            '</div></div>'
+        ).join('') + '</div>';
+    }
+});
 document.getElementById('patternInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') addPattern();
 });

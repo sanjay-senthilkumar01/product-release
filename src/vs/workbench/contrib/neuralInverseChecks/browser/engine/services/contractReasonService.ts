@@ -4,15 +4,16 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * # Framework Intelligence Service
+ * # Contract Reason Service
  *
- * A **separate AI system** that makes GRC checks smarter without touching
- * framework definitions. Frameworks stay pure pattern-based (regex, AST,
- * dataflow, import-graph). This service operates alongside them.
+ * AI-powered contract reasoning engine that validates code against compliance
+ * contracts (framework rules) without touching framework definitions.
+ * Frameworks stay pure pattern-based (regex, AST, dataflow, import-graph).
+ * This service operates alongside them as the reasoning layer.
  *
  * ## How It Works
  *
- * **Phase 1 — Framework Comprehension (on import)**
+ * **Phase 1 — Contract Comprehension (on import)**
  *
  * When a framework is loaded, this service sends ALL its rules to the LLM
  * with a comprehension prompt. The LLM builds an understanding of:
@@ -23,13 +24,21 @@
  *
  * This understanding is cached per framework ID + version.
  *
- * **Phase 2 — Intelligent Analysis (on file save)**
+ * **Phase 2 — Contract Reasoning (on file save)**
  *
  * After pattern checks run, this service receives the code + pattern results
- * and uses the framework understanding to:
+ * and uses the contract understanding to:
  * - Find violations that patterns missed
  * - Flag likely false positives
  * - Add contextual explanations
+ *
+ * **Rate Limiting — Periodic Batch Processing**
+ *
+ * During workspace scans, files are processed in controlled batches to avoid
+ * overwhelming the AI provider with bulk requests. The service uses:
+ * - Configurable concurrency limit (max parallel LLM calls)
+ * - Inter-batch cooldown delay to respect rate limits
+ * - Exponential backoff on rate limit errors
  *
  * ## Void LLM API Reference
  *
@@ -74,12 +83,12 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../../../
 
 // ─── Service Interface ───────────────────────────────────────────────────────
 
-export const IFrameworkIntelligenceService = createDecorator<IFrameworkIntelligenceService>('frameworkIntelligenceService');
+export const IContractReasonService = createDecorator<IContractReasonService>('contractReasonService');
 
 /**
- * Intelligence results from AI analysis.
+ * Contract reasoning results from AI analysis.
  */
-export interface IntelligenceResult {
+export interface ContractReasonResult {
 	/** Violations the AI found that patterns missed */
 	additionalViolations: ICheckResult[];
 	/** Pattern results the AI thinks are false positives */
@@ -98,9 +107,9 @@ export interface IntelligenceResult {
 }
 
 /**
- * Cached framework comprehension.
+ * Cached framework comprehension (contract understanding).
  */
-interface FrameworkContext {
+interface ContractContext {
 	frameworkId: string;
 	version: string;
 	/** LLM's structured understanding of the framework */
@@ -110,45 +119,159 @@ interface FrameworkContext {
 }
 
 
-export interface IFrameworkIntelligenceService {
+export interface IContractReasonService {
 	readonly _serviceBrand: undefined;
 
-	/** Whether intelligence is available (model configured + framework comprehended + enabled) */
+	/** Whether contract reasoning is available (model configured + contract comprehended + enabled) */
 	readonly isAvailable: boolean;
 
-	/** Whether the hybrid intelligence system is enabled (defaults to OFF) */
+	/** Whether the contract reasoning system is enabled (defaults to OFF) */
 	readonly isEnabled: boolean;
 
-	/** Enable or disable the hybrid intelligence system */
+	/** Enable or disable the contract reasoning system */
 	setEnabled(enabled: boolean): void;
 
 	/** Event fired when enabled state changes */
 	readonly onDidEnabledChange: Event<boolean>;
 
-	/** Comprehend a framework — called on import/load */
+	/** Comprehend a framework's contracts — called on import/load */
 	comprehendFramework(framework: ILoadedFramework): Promise<void>;
 
-	/** Get intelligence-enhanced results for a file */
+	/** Get contract-reasoning-enhanced results for a file */
 	analyzeFile(
 		fileUri: URI,
 		fileContent: string,
 		patternResults: ICheckResult[],
 		rules: IGRCRule[],
-		context?: INanoAgentContext
-	): Promise<IntelligenceResult | undefined>;
+		context?: INanoAgentContext,
+		contextFiles?: Map<string, string>
+	): Promise<ContractReasonResult | undefined>;
 
-	/** Event fired when intelligence results are ready */
-	readonly onDidIntelligenceResultsReady: Event<IntelligenceResult>;
+	/** Event fired when contract reasoning results are ready */
+	readonly onDidContractReasonResultsReady: Event<ContractReasonResult>;
+
+	/** Send a one-shot query to the LLM (rate-limited). Returns raw response text. */
+	sendOneShotQuery(prompt: string): Promise<string | undefined>;
+}
+
+
+// ─── Rate Limiter ────────────────────────────────────────────────────────────
+
+/**
+ * Controls the rate at which AI analysis requests are dispatched.
+ * Prevents bulk workspace scans from overwhelming the LLM provider.
+ */
+class AnalysisRateLimiter {
+	/** Pending analysis tasks waiting to be processed */
+	private readonly _queue: Array<{ execute: () => Promise<void>; resolve: () => void }> = [];
+
+	/** Number of currently in-flight LLM calls */
+	private _activeCount = 0;
+
+	/** Whether the drain loop is running */
+	private _draining = false;
+
+	/** Current backoff delay (increases on rate limit errors) */
+	private _backoffMs = 0;
+
+	/** Max concurrent file-level analyses */
+	private static readonly MAX_CONCURRENCY = 2;
+
+	/** Delay between batches (ms) — gives the API breathing room */
+	private static readonly BATCH_COOLDOWN_MS = 3_000;
+
+	/** Base backoff on rate limit error */
+	private static readonly BACKOFF_BASE_MS = 5_000;
+
+	/** Max backoff ceiling */
+	private static readonly BACKOFF_MAX_MS = 60_000;
+
+	/**
+	 * Enqueue an analysis task. Returns a promise that resolves when the
+	 * task has been dispatched (not when the LLM responds).
+	 */
+	enqueue(execute: () => Promise<void>): Promise<void> {
+		return new Promise<void>((resolve) => {
+			this._queue.push({ execute, resolve });
+			this._drain();
+		});
+	}
+
+	/** Signal that a rate limit error occurred — increase backoff */
+	reportRateLimitError(): void {
+		this._backoffMs = this._backoffMs === 0
+			? AnalysisRateLimiter.BACKOFF_BASE_MS
+			: Math.min(this._backoffMs * 2, AnalysisRateLimiter.BACKOFF_MAX_MS);
+		console.warn(`[ContractReason] Rate limit hit — backoff increased to ${this._backoffMs}ms`);
+	}
+
+	/** Signal a successful call — gradually reduce backoff */
+	reportSuccess(): void {
+		if (this._backoffMs > 0) {
+			this._backoffMs = Math.max(0, this._backoffMs - AnalysisRateLimiter.BACKOFF_BASE_MS);
+		}
+	}
+
+	/** Number of items waiting + in-flight */
+	get pending(): number {
+		return this._queue.length + this._activeCount;
+	}
+
+	private async _drain(): Promise<void> {
+		if (this._draining) return;
+		this._draining = true;
+
+		try {
+			while (this._queue.length > 0) {
+				// Wait for a slot to open
+				if (this._activeCount >= AnalysisRateLimiter.MAX_CONCURRENCY) {
+					await new Promise<void>(r => setTimeout(r, 200));
+					continue;
+				}
+
+				// Apply backoff if we've been rate-limited
+				if (this._backoffMs > 0) {
+					console.log(`[ContractReason] Rate limit backoff: waiting ${this._backoffMs}ms before next batch`);
+					await new Promise<void>(r => setTimeout(r, this._backoffMs));
+				}
+
+				// Dispatch up to MAX_CONCURRENCY tasks
+				const batch: typeof this._queue[number][] = [];
+				while (batch.length < AnalysisRateLimiter.MAX_CONCURRENCY && this._queue.length > 0) {
+					batch.push(this._queue.shift()!);
+				}
+
+				this._activeCount += batch.length;
+
+				// Fire all tasks in this batch concurrently
+				await Promise.all(batch.map(async (task) => {
+					try {
+						await task.execute();
+					} finally {
+						this._activeCount--;
+						task.resolve();
+					}
+				}));
+
+				// Cooldown between batches to avoid bursts
+				if (this._queue.length > 0) {
+					await new Promise<void>(r => setTimeout(r, AnalysisRateLimiter.BATCH_COOLDOWN_MS));
+				}
+			}
+		} finally {
+			this._draining = false;
+		}
+	}
 }
 
 
 // ─── Implementation ──────────────────────────────────────────────────────────
 
-export class FrameworkIntelligenceService extends Disposable implements IFrameworkIntelligenceService {
+export class ContractReasonService extends Disposable implements IContractReasonService {
 	declare readonly _serviceBrand: undefined;
 
 	/** Storage key for persisting framework comprehension contexts across restarts */
-	private static readonly COMPREHENSION_STORAGE_KEY = 'grc.intelligenceComprehensions';
+	private static readonly COMPREHENSION_STORAGE_KEY = 'grc.contractReasonComprehensions';
 
 	/** Storage key for persisting per-file content hashes — skip LLM when content unchanged */
 	private static readonly FILE_HASH_STORAGE_KEY = 'grc.fileContentHashes';
@@ -157,21 +280,24 @@ export class FrameworkIntelligenceService extends Disposable implements IFramewo
 	private _persistedHashes = new Map<string, string>();
 
 	/** Cached framework comprehension contexts */
-	private readonly _frameworkContexts = new Map<string, FrameworkContext>();
+	private readonly _contractContexts = new Map<string, ContractContext>();
 
 	/** Currently running analysis requests (prevent duplicates) */
 	private readonly _runningAnalyses = new Set<string>();
 
 	/** Cached analysis results per file hash (LRU) */
-	private readonly _resultCache = new Map<string, { result: IntelligenceResult; hash: string }>();
+	private readonly _resultCache = new Map<string, { result: ContractReasonResult; hash: string }>();
 
 	/** Maximum cached analysis entries */
 	private static readonly MAX_CACHE = 50;
 
-	private readonly _onDidIntelligenceResultsReady = this._register(new Emitter<IntelligenceResult>());
-	public readonly onDidIntelligenceResultsReady = this._onDidIntelligenceResultsReady.event;
+	/** Rate limiter for AI analysis requests */
+	private readonly _rateLimiter = new AnalysisRateLimiter();
 
-	/** Hybrid intelligence enabled state — auto-enables when model is configured */
+	private readonly _onDidContractReasonResultsReady = this._register(new Emitter<ContractReasonResult>());
+	public readonly onDidContractReasonResultsReady = this._onDidContractReasonResultsReady.event;
+
+	/** Contract reasoning enabled state — auto-enables when model is configured */
 	private _enabled = false;
 	private readonly _onDidEnabledChange = this._register(new Emitter<boolean>());
 	public readonly onDidEnabledChange = this._onDidEnabledChange.event;
@@ -208,7 +334,7 @@ export class FrameworkIntelligenceService extends Disposable implements IFramewo
 			this._autoToggleBasedOnModel();
 		});
 
-		console.log('[FrameworkIntelligence] Service initialized (auto-enables when Checks or Chat model is configured)');
+		console.log('[ContractReason] Service initialized (auto-enables when Checks or Chat model is configured)');
 	}
 
 	/**
@@ -218,31 +344,31 @@ export class FrameworkIntelligenceService extends Disposable implements IFramewo
 	private _loadPersistedComprehensions(): void {
 		try {
 			const stored = this.storageService.get(
-				FrameworkIntelligenceService.COMPREHENSION_STORAGE_KEY,
+				ContractReasonService.COMPREHENSION_STORAGE_KEY,
 				StorageScope.WORKSPACE
 			);
 			if (!stored) return;
 
-			const contexts: FrameworkContext[] = JSON.parse(stored);
+			const contexts: ContractContext[] = JSON.parse(stored);
 			for (const ctx of contexts) {
 				const key = `${ctx.frameworkId}:${ctx.version}`;
-				this._frameworkContexts.set(key, ctx);
+				this._contractContexts.set(key, ctx);
 			}
-			console.log(`[FrameworkIntelligence] Restored ${contexts.length} framework comprehension(s) from storage`);
+			console.log(`[ContractReason] Restored ${contexts.length} contract comprehension(s) from storage`);
 		} catch (e) {
-			console.error('[FrameworkIntelligence] Failed to load persisted comprehensions:', e);
+			console.error('[ContractReason] Failed to load persisted comprehensions:', e);
 		}
 	}
 
 	private _loadPersistedHashes(): void {
 		try {
-			const stored = this.storageService.get(FrameworkIntelligenceService.FILE_HASH_STORAGE_KEY, StorageScope.WORKSPACE);
+			const stored = this.storageService.get(ContractReasonService.FILE_HASH_STORAGE_KEY, StorageScope.WORKSPACE);
 			if (!stored) return;
 			const entries: [string, string][] = JSON.parse(stored);
 			this._persistedHashes = new Map(entries);
-			console.log(`[FrameworkIntelligence] Restored content hashes for ${this._persistedHashes.size} file(s)`);
+			console.log(`[ContractReason] Restored content hashes for ${this._persistedHashes.size} file(s)`);
 		} catch (e) {
-			console.error('[FrameworkIntelligence] Failed to load persisted file hashes:', e);
+			console.error('[ContractReason] Failed to load persisted file hashes:', e);
 		}
 	}
 
@@ -250,13 +376,13 @@ export class FrameworkIntelligenceService extends Disposable implements IFramewo
 		try {
 			const entries = Array.from(this._persistedHashes.entries());
 			this.storageService.store(
-				FrameworkIntelligenceService.FILE_HASH_STORAGE_KEY,
+				ContractReasonService.FILE_HASH_STORAGE_KEY,
 				JSON.stringify(entries),
 				StorageScope.WORKSPACE,
 				StorageTarget.MACHINE
 			);
 		} catch (e) {
-			console.error('[FrameworkIntelligence] Failed to persist file hashes:', e);
+			console.error('[ContractReason] Failed to persist file hashes:', e);
 		}
 	}
 
@@ -266,20 +392,20 @@ export class FrameworkIntelligenceService extends Disposable implements IFramewo
 	 */
 	private _saveComprehensions(): void {
 		try {
-			const contexts = Array.from(this._frameworkContexts.values());
+			const contexts = Array.from(this._contractContexts.values());
 			this.storageService.store(
-				FrameworkIntelligenceService.COMPREHENSION_STORAGE_KEY,
+				ContractReasonService.COMPREHENSION_STORAGE_KEY,
 				JSON.stringify(contexts),
 				StorageScope.WORKSPACE,
 				StorageTarget.MACHINE
 			);
 		} catch (e) {
-			console.error('[FrameworkIntelligence] Failed to persist comprehensions:', e);
+			console.error('[ContractReason] Failed to persist comprehensions:', e);
 		}
 	}
 
 	/**
-	 * Automatically enable/disable intelligence based on whether
+	 * Automatically enable/disable contract reasoning based on whether
 	 * a Checks or Chat model is configured.
 	 */
 	private _autoToggleBasedOnModel(): void {
@@ -306,11 +432,11 @@ export class FrameworkIntelligenceService extends Disposable implements IFramewo
 		this._onDidEnabledChange.fire(enabled);
 
 		if (enabled) {
-			console.log('[FrameworkIntelligence] Hybrid Intelligence ENABLED');
+			console.log('[ContractReason] Contract Reasoning ENABLED');
 			// Comprehend frameworks now that we're enabled
 			this._comprehendAllFrameworks();
 		} else {
-			console.log('[FrameworkIntelligence] Hybrid Intelligence DISABLED');
+			console.log('[ContractReason] Contract Reasoning DISABLED');
 		}
 	}
 
@@ -330,7 +456,7 @@ export class FrameworkIntelligenceService extends Disposable implements IFramewo
 	}
 
 
-	// ─── Phase 1: Framework Comprehension ────────────────────────────
+	// ─── Phase 1: Contract Comprehension ─────────────────────────────
 
 	/**
 	 * Comprehend all active frameworks.
@@ -354,13 +480,13 @@ export class FrameworkIntelligenceService extends Disposable implements IFramewo
 		const cacheKey = `${fwId}:${fwVersion}`;
 
 		// Already comprehended this version
-		if (this._frameworkContexts.has(cacheKey)) {
+		if (this._contractContexts.has(cacheKey)) {
 			return;
 		}
 
 		const modelSelection = this._getModelSelection();
 		if (!modelSelection) {
-			console.log('[FrameworkIntelligence] No model configured for Checks or Chat — skipping comprehension');
+			console.log('[ContractReason] No model configured for Checks or Chat — skipping comprehension');
 			return;
 		}
 
@@ -396,7 +522,7 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 				overridesOfModel: undefined,
 				onText: () => { },
 				onFinalMessage: (params: { fullText: string }) => {
-					this._frameworkContexts.set(cacheKey, {
+					this._contractContexts.set(cacheKey, {
 						frameworkId: fwId,
 						version: fwVersion,
 						understanding: params.fullText,
@@ -404,35 +530,39 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 					});
 					// Persist so next restart doesn't re-call the LLM
 					this._saveComprehensions();
-					console.log(`[FrameworkIntelligence] Comprehended framework: ${fwId} v${fwVersion} (${params.fullText.length} chars)`);
+					console.log(`[ContractReason] Comprehended framework: ${fwId} v${fwVersion} (${params.fullText.length} chars)`);
 					resolve();
 				},
 				onError: (err: { message: string }) => {
-					console.error(`[FrameworkIntelligence] Comprehension failed for ${fwId}:`, err.message);
+					console.error(`[ContractReason] Comprehension failed for ${fwId}:`, err.message);
 					resolve(); // Don't block on failure
 				},
 				onAbort: () => { resolve(); },
-				logging: { loggingName: 'GRC-Intelligence-Comprehend' },
+				logging: { loggingName: 'GRC-ContractReason-Comprehend' },
 			});
 		});
 	}
 
 
-	// ─── Phase 2: Intelligent File Analysis ──────────────────────────
+	// ─── Phase 2: Contract Reasoning (File Analysis) ─────────────────
 
 	/**
-	 * Analyze a file using the framework understanding + pattern results.
+	 * Analyze a file using the contract understanding + pattern results.
 	 *
 	 * Called after pattern checks complete (on file save, not keystroke).
 	 * Returns additional violations, false positive flags, and explanations.
+	 *
+	 * All calls are routed through the rate limiter to prevent overwhelming
+	 * the AI provider during bulk workspace scans.
 	 */
 	public async analyzeFile(
 		fileUri: URI,
 		fileContent: string,
 		patternResults: ICheckResult[],
 		rules: IGRCRule[],
-		context?: INanoAgentContext
-	): Promise<IntelligenceResult | undefined> {
+		context?: INanoAgentContext,
+		contextFiles?: Map<string, string>
+	): Promise<ContractReasonResult | undefined> {
 		if (!this.isAvailable) {
 			return undefined;
 		}
@@ -448,49 +578,51 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		const cached = this._resultCache.get(fileKey);
 		if (cached && cached.hash === contentHash) {
 			// Fire the event so the engine and diagnostics pick up the cached violations.
-			// Without this, re-opening a file with unchanged content would silently lose
-			// its AI enrichments (the caller ignores the return value).
-			this._onDidIntelligenceResultsReady.fire(cached.result);
+			this._onDidContractReasonResultsReady.fire(cached.result);
 			return cached.result;
 		}
 
 		// Check persisted hash from a previous session.
-		// If the content hasn't changed since the last LLM run, violations are already
-		// restored from disk by the workspace scan — skip the LLM entirely.
 		if (this._persistedHashes.get(fileKey) === contentHash) {
-			console.log(`[FrameworkIntelligence] Content unchanged for ${fileUri.path.split('/').pop()} — skipping LLM (use saved violations)`);
+			console.log(`[ContractReason] Content unchanged for ${fileUri.path.split('/').pop()} — skipping LLM (use saved violations)`);
 			return undefined;
 		}
 
 		this._runningAnalyses.add(fileKey);
 
+		// Route through rate limiter — waits for a slot before executing
+		let result: ContractReasonResult | undefined;
 		try {
-			const result = await this._runAnalysis(fileUri, fileContent, patternResults, rules, context);
-			if (result) {
-				// Cache result in memory
-				this._resultCache.set(fileKey, { result, hash: contentHash });
+			await this._rateLimiter.enqueue(async () => {
+				result = await this._runAnalysis(fileUri, fileContent, patternResults, rules, context, contextFiles);
+				if (result) {
+					this._rateLimiter.reportSuccess();
 
-				// Evict old entries
-				if (this._resultCache.size > FrameworkIntelligenceService.MAX_CACHE) {
-					const firstKey = this._resultCache.keys().next().value;
-					if (firstKey) this._resultCache.delete(firstKey);
+					// Cache result in memory
+					this._resultCache.set(fileKey, { result, hash: contentHash });
+
+					// Evict old entries
+					if (this._resultCache.size > ContractReasonService.MAX_CACHE) {
+						const firstKey = this._resultCache.keys().next().value;
+						if (firstKey) this._resultCache.delete(firstKey);
+					}
+
+					// Persist content hash so future sessions skip the LLM for unchanged files
+					this._persistedHashes.set(fileKey, contentHash);
+					this._savePersistedHashes();
+
+					// Persist AI violations securely to .inverse/audit disk storage
+					await this.projectAnalyzerService.saveAuditData(fileUri, result.additionalViolations);
+
+					this._onDidContractReasonResultsReady.fire(result);
+					this.accessibilitySignalService.playSignal(AccessibilitySignal.neuralInverseTaskComplete);
 				}
-
-				// Persist content hash so future sessions skip the LLM for unchanged files
-				this._persistedHashes.set(fileKey, contentHash);
-				this._savePersistedHashes();
-
-				// Persist AI violations securely to .inverse/audit disk storage
-				await this.projectAnalyzerService.saveAuditData(fileUri, result.additionalViolations);
-
-				this._onDidIntelligenceResultsReady.fire(result);
-				// Test playing the new sound when an intelligence result is ready
-				this.accessibilitySignalService.playSignal(AccessibilitySignal.neuralInverseTaskComplete);
-			}
-			return result;
+			});
 		} finally {
 			this._runningAnalyses.delete(fileKey);
 		}
+
+		return result;
 	}
 
 
@@ -502,15 +634,19 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		fileContent: string,
 		patternResults: ICheckResult[],
 		rules: IGRCRule[],
-		context?: INanoAgentContext
-	): Promise<IntelligenceResult | undefined> {
+		context?: INanoAgentContext,
+		contextFiles?: Map<string, string>
+	): Promise<ContractReasonResult | undefined> {
 		const modelSelection = this._getModelSelection();
 		if (!modelSelection) return undefined;
 
-		// Gather framework understanding
-		const allContexts = Array.from(this._frameworkContexts.values())
+		// Gather contract understanding
+		const allContexts = Array.from(this._contractContexts.values())
 			.map(ctx => ctx.understanding)
 			.join('\n\n---\n\n');
+
+		// Build context files snippet (test/mock/config files for AI reference)
+		const contextSnippet = this._buildContextFilesSnippet(contextFiles);
 
 		// Extract functions from the file for function-level analysis
 		const functions = this._extractFunctions(fileContent);
@@ -521,10 +657,10 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 
 		// If we extracted functions, analyze each individually with relevant rules
 		if (functions.length > 0) {
-			console.log(`[FrameworkIntelligence] Analyzing ${functions.length} functions in ${fileName}`);
+			console.log(`[ContractReason] Analyzing ${functions.length} functions in ${fileName}`);
 
 			// Analyze functions concurrently (max 3 at a time)
-			const allResults: (IntelligenceResult | undefined)[] = [];
+			const allResults: (ContractReasonResult | undefined)[] = [];
 			const concurrencyLimit = 3;
 
 			for (let i = 0; i < functions.length; i += concurrencyLimit) {
@@ -539,10 +675,10 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 						// Route relevant rules based on function content patterns
 						const relevantRules = this._getRelevantRules(fn, rules, context);
 
-						console.log(`[FrameworkIntelligence] Analyzing function: ${fn.name} (lines ${fn.startLine}-${fn.endLine}, ${relevantRules.length} rules)`);
+						console.log(`[ContractReason] Analyzing function: ${fn.name} (lines ${fn.startLine}-${fn.endLine}, ${relevantRules.length} rules)`);
 
 						return this._analyzeFunctionChunk(
-							fileUri, fn, ext, fnPatternResults, relevantRules, allContexts, modelSelection
+							fileUri, fn, ext, fnPatternResults, relevantRules, allContexts, modelSelection, contextSnippet
 						);
 					})
 				);
@@ -555,7 +691,7 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 
 		// Fallback: analyze the whole file if no functions were extracted
 		return this._analyzeWholeFile(
-			fileUri, fileContent, ext, patternResults, rules, allContexts, modelSelection
+			fileUri, fileContent, ext, patternResults, rules, allContexts, modelSelection, contextSnippet
 		);
 	}
 
@@ -703,8 +839,9 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		patternResults: ICheckResult[],
 		relevantRules: IGRCRule[],
 		frameworkContext: string,
-		modelSelection: { providerName: string; modelName: string }
-	): Promise<IntelligenceResult | undefined> {
+		modelSelection: { providerName: string; modelName: string },
+		contextSnippet: string = ''
+	): Promise<ContractReasonResult | undefined> {
 		const patternSummary = patternResults.length > 0
 			? patternResults.map(r =>
 				`  Line ${r.line}: [${r.ruleId}] ${r.message.substring(0, 100)}`
@@ -762,9 +899,9 @@ FOCUS ON:
 - Violations patterns MISSED (obfuscated secrets, aliased variables, indirect flows)
 - Each additionalViolation MUST reference a ruleId from the rules above
 - Be conservative — only flag real issues with high confidence
-- Return ONLY valid JSON`;
+- Return ONLY valid JSON${contextSnippet}`;
 
-		return new Promise<IntelligenceResult | undefined>((resolve) => {
+		return new Promise<ContractReasonResult | undefined>((resolve) => {
 			const timeoutId = setTimeout(() => {
 				resolve(undefined);
 			}, 20_000);
@@ -785,11 +922,15 @@ FOCUS ON:
 				},
 				onError: (err: { message: string }) => {
 					clearTimeout(timeoutId);
-					console.error(`[FrameworkIntelligence] Function analysis error (${fn.name}):`, err.message);
+					// Detect rate limit errors and signal the limiter
+					if (err.message && (err.message.includes('rate') || err.message.includes('429') || err.message.includes('quota'))) {
+						this._rateLimiter.reportRateLimitError();
+					}
+					console.error(`[ContractReason] Function analysis error (${fn.name}):`, err.message);
 					resolve(undefined);
 				},
 				onAbort: () => { clearTimeout(timeoutId); resolve(undefined); },
-				logging: { loggingName: `GRC-Intelligence-Function-${fn.name}` },
+				logging: { loggingName: `GRC-ContractReason-Function-${fn.name}` },
 			});
 		});
 	}
@@ -804,8 +945,9 @@ FOCUS ON:
 		patternResults: ICheckResult[],
 		rules: IGRCRule[],
 		frameworkContext: string,
-		modelSelection: { providerName: string; modelName: string }
-	): Promise<IntelligenceResult | undefined> {
+		modelSelection: { providerName: string; modelName: string },
+		contextSnippet: string = ''
+	): Promise<ContractReasonResult | undefined> {
 		const patternSummary = patternResults.length > 0
 			? patternResults.map(r =>
 				`  Line ${r.line}: [${r.ruleId}] ${r.message.substring(0, 100)}`
@@ -851,11 +993,11 @@ Respond with ONLY valid JSON:
   ]
 }
 
-FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.`;
+FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${contextSnippet}`;
 
-		return new Promise<IntelligenceResult | undefined>((resolve) => {
+		return new Promise<ContractReasonResult | undefined>((resolve) => {
 			const timeoutId = setTimeout(() => {
-				console.warn('[FrameworkIntelligence] Whole-file analysis timed out for', fileUri.path);
+				console.warn('[ContractReason] Whole-file analysis timed out for', fileUri.path);
 				resolve(undefined);
 			}, 30_000);
 
@@ -874,11 +1016,14 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.`;
 				},
 				onError: (err: { message: string }) => {
 					clearTimeout(timeoutId);
-					console.error('[FrameworkIntelligence] Analysis error:', err.message);
+					if (err.message && (err.message.includes('rate') || err.message.includes('429') || err.message.includes('quota'))) {
+						this._rateLimiter.reportRateLimitError();
+					}
+					console.error('[ContractReason] Analysis error:', err.message);
 					resolve(undefined);
 				},
 				onAbort: () => { clearTimeout(timeoutId); resolve(undefined); },
-				logging: { loggingName: 'GRC-Intelligence-WholeFile' },
+				logging: { loggingName: 'GRC-ContractReason-WholeFile' },
 			});
 		});
 	}
@@ -887,10 +1032,10 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.`;
 	 * Merge multiple function-level analysis results into one file-level result.
 	 */
 	private _mergeResults(
-		results: (IntelligenceResult | undefined)[],
+		results: (ContractReasonResult | undefined)[],
 		fileUri: URI
-	): IntelligenceResult {
-		const merged: IntelligenceResult = {
+	): ContractReasonResult {
+		const merged: ContractReasonResult = {
 			additionalViolations: [],
 			falsePositiveFlags: [],
 			enrichments: new Map(),
@@ -907,7 +1052,7 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.`;
 		}
 
 		console.log(
-			`[FrameworkIntelligence] Merged results: ` +
+			`[ContractReason] Merged results: ` +
 			`${merged.additionalViolations.length} AI violations, ` +
 			`${merged.enrichments.size} enrichments, ` +
 			`${merged.falsePositiveFlags.length} false positives`
@@ -920,13 +1065,13 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.`;
 	// ─── Response Parsing ────────────────────────────────────────────
 
 	/**
-	 * Parse the LLM's JSON response into a structured IntelligenceResult.
+	 * Parse the LLM's JSON response into a structured ContractReasonResult.
 	 */
 	private _parseAnalysisResponse(
 		response: string,
 		fileUri: URI,
 		rules: IGRCRule[]
-	): IntelligenceResult | undefined {
+	): ContractReasonResult | undefined {
 		try {
 			// Extract JSON from response (handle markdown-wrapped responses)
 			let jsonStr = response.trim();
@@ -992,13 +1137,85 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.`;
 				fileUri,
 			};
 		} catch (e) {
-			console.error('[FrameworkIntelligence] Failed to parse LLM response:', e);
+			console.error('[ContractReason] Failed to parse LLM response:', e);
 			return undefined;
 		}
 	}
 
 
+	// ─── One-Shot Query ─────────────────────────────────────────────
+
+	/**
+	 * Send a single prompt to the LLM, rate-limited.
+	 * Used for non-file-analysis queries like ignore suggestions.
+	 */
+	public async sendOneShotQuery(prompt: string): Promise<string | undefined> {
+		if (!this.isAvailable) return undefined;
+
+		const modelSelection = this._getModelSelection();
+		if (!modelSelection) return undefined;
+
+		let response: string | undefined;
+		await this._rateLimiter.enqueue(async () => {
+			response = await new Promise<string | undefined>((resolve) => {
+				const timeoutId = setTimeout(() => resolve(undefined), 30_000);
+
+				this.llmMessageService.sendLLMMessage({
+					messagesType: 'chatMessages',
+					messages: [{ role: 'user', content: prompt }] as LLMChatMessage[],
+					separateSystemMessage: undefined,
+					chatMode: null,
+					modelSelection: modelSelection as any,
+					modelSelectionOptions: undefined,
+					overridesOfModel: undefined,
+					onText: () => { },
+					onFinalMessage: (params: { fullText: string }) => {
+						clearTimeout(timeoutId);
+						this._rateLimiter.reportSuccess();
+						resolve(params.fullText);
+					},
+					onError: (err: { message: string }) => {
+						clearTimeout(timeoutId);
+						if (err.message && (err.message.includes('rate') || err.message.includes('429') || err.message.includes('quota'))) {
+							this._rateLimiter.reportRateLimitError();
+						}
+						console.error('[ContractReason] One-shot query error:', err.message);
+						resolve(undefined);
+					},
+					onAbort: () => { clearTimeout(timeoutId); resolve(undefined); },
+					logging: { loggingName: 'GRC-ContractReason-OneShot' },
+				});
+			});
+		});
+
+		return response;
+	}
+
+
 	// ─── Helpers ─────────────────────────────────────────────────────
+
+	/**
+	 * Build a prompt snippet from context-only files (tests, mocks, configs).
+	 * These files are excluded from scanning but provide important context
+	 * for AI reasoning about the code being analyzed.
+	 */
+	private _buildContextFilesSnippet(contextFiles?: Map<string, string>): string {
+		if (!contextFiles || contextFiles.size === 0) return '';
+
+		const MAX_FILES = 5;
+		const MAX_CHARS_PER_FILE = 2000;
+		const entries = Array.from(contextFiles.entries()).slice(0, MAX_FILES);
+
+		const snippets = entries.map(([uriStr, content]) => {
+			const fileName = uriStr.split('/').pop() || 'unknown';
+			const truncated = content.length > MAX_CHARS_PER_FILE
+				? content.substring(0, MAX_CHARS_PER_FILE) + '\n... (truncated)'
+				: content;
+			return `--- ${fileName} ---\n${truncated}`;
+		}).join('\n\n');
+
+		return `\n\nCONTEXT FILES (excluded from scanning, for reference only — tests, mocks, configs):\n${snippets}`;
+	}
 
 	/**
 	 * Simple hash for content-based caching.
@@ -1017,4 +1234,4 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.`;
 
 // ─── Registration ────────────────────────────────────────────────────────────
 
-registerSingleton(IFrameworkIntelligenceService, FrameworkIntelligenceService, InstantiationType.Delayed);
+registerSingleton(IContractReasonService, ContractReasonService, InstantiationType.Delayed);

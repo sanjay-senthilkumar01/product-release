@@ -10,7 +10,9 @@ import { ExternalCheckRunner } from '../services/externalCheckRunner.js';
 import { DataFlowAnalyzer } from './dataFlowAnalyzer.js';
 import { ImportGraphAnalyzer } from './importGraphAnalyzer.js';
 import { UniversalAnalyzer } from './universalAnalyzer.js';
+import { InvariantAnalyzer } from './invariantAnalyzer.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
+import { IContractReasonService } from '../services/contractReasonService.js';
 import * as ts from './tsCompilerShim.js';
 
 /**
@@ -23,7 +25,8 @@ export class GRCAnalyzerRegistration implements IWorkbenchContribution {
 
 	constructor(
 		@IGRCEngineService grcEngine: IGRCEngineService,
-		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService
+		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService,
+		@IContractReasonService contractReasonService: IContractReasonService
 	) {
 		// Register Universal Analyzer (for type: "universal" rules — all languages)
 		grcEngine.registerAnalyzer(new UniversalAnalyzer());
@@ -40,7 +43,10 @@ export class GRCAnalyzerRegistration implements IWorkbenchContribution {
 		// Register Import Graph Analyzer (for type: "import-graph" rules)
 		grcEngine.registerAnalyzer(new ImportGraphAnalyzer(workspaceContextService));
 
-		console.log('[GRCAnalyzerRegistration] Registered core analyzers (AST, External, DataFlow, ImportGraph)');
+		// Register Invariant Analyzer (for type: "invariant" rules — formal verification)
+		grcEngine.registerAnalyzer(new InvariantAnalyzer(contractReasonService));
+
+		console.log('[GRCAnalyzerRegistration] Registered core analyzers (AST, External, DataFlow, ImportGraph, Invariant)');
 
 		// Smoke test: verify TypeScript compiler is actually loaded
 		// This runs after a short delay to give the async loader time to complete

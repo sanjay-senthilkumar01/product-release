@@ -18,6 +18,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { EndOfLinePreference } from '../../../../editor/common/model.js';
 import { ToolName } from '../common/toolsServiceTypes.js';
 import { IMCPService } from '../common/mcpService.js';
+import { INeuralInverseAgentService } from './neuralInverseAgentService.js';
 
 export const EMPTY_MESSAGE = '(empty message)'
 
@@ -542,6 +543,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IVoidModelService private readonly voidModelService: IVoidModelService,
 		@IMCPService private readonly mcpService: IMCPService,
+		@INeuralInverseAgentService private readonly neuralInverseAgentService: INeuralInverseAgentService,
 	) {
 		super()
 	}
@@ -578,6 +580,11 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const ans: string[] = []
 		if (globalAIInstructions) ans.push(globalAIInstructions)
 		if (voidRulesFileContent) ans.push(voidRulesFileContent)
+
+		// Inject NeuralInverse Agent working memory context when a task is active
+		const agentContext = this.neuralInverseAgentService.getContextSummary();
+		if (agentContext) ans.push(agentContext)
+
 		return ans.join('\n\n')
 	}
 

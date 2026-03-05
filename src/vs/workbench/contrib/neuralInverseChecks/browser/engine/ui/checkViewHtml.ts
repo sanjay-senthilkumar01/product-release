@@ -19,6 +19,7 @@ const DOMAIN_THEME: Record<GRCDomain, { accent: string; accentBg: string; label:
     'fail-safe': { accent: '#ff9800', accentBg: '#1a1a1a', label: 'FAIL-SAFE DEFAULTS' },
     'architecture': { accent: '#42a5f5', accentBg: '#1a1a2e', label: 'ARCHITECTURE AS CODE' },
     'policy': { accent: '#66bb6a', accentBg: '#1a1a2e', label: 'CODE AS POLICY' },
+    'formal-verification': { accent: '#e040fb', accentBg: '#1a1a2e', label: 'FORMAL VERIFICATION' },
 };
 
 export interface CheckViewOptions {
@@ -328,6 +329,11 @@ export function buildAuditViewHtml(
         <div class="metric"><div class="metric-label">Info</div><div class="metric-value">${totalInfos}</div></div>
     </div>
 
+    <div style="margin-bottom: 16px;">
+        <button id="exportReportBtn" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-size:12px;border-radius:2px;">Export Compliance Report</button>
+        <span id="exportStatus" style="margin-left:8px;font-size:12px;color:var(--fg-muted);"></span>
+    </div>
+
     <div class="tabs">
         <div class="tab active" onclick="show('overview', this)">Overview</div>
         <div class="tab" onclick="show('timeline', this)">Timeline</div>
@@ -360,12 +366,29 @@ export function buildAuditViewHtml(
     </div>
 
     <script>
+        const vscode = acquireVsCodeApi();
+
         function show(id, tab) {
             document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
             document.getElementById(id).classList.add('active');
             document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
             tab.classList.add('active');
         }
+
+        document.getElementById('exportReportBtn').addEventListener('click', () => {
+            document.getElementById('exportStatus').textContent = 'Generating...';
+            vscode.postMessage({ type: 'exportReport' });
+        });
+
+        window.addEventListener('message', (event) => {
+            const msg = event.data;
+            if (msg.type === 'exportResult') {
+                document.getElementById('exportStatus').textContent = msg.success
+                    ? 'Report exported to .inverse/reports/'
+                    : 'Export failed';
+                setTimeout(() => { document.getElementById('exportStatus').textContent = ''; }, 5000);
+            }
+        });
     </script>
 </body>
 </html>`;
