@@ -32,6 +32,10 @@ jobs:
   - script: npm install
     displayName: 'Install Dependencies'
 
+  - script: |
+      sed -i '' "s|http://localhost:3002|https://agent-socket.pilot.api.neuralinverse.com|g" src/vs/workbench/contrib/void/common/neuralInverseConfig.ts
+    displayName: 'Inject Production Agent Socket URL'
+
   - script: npm run buildreact
     displayName: 'Build React UI'
 
@@ -71,6 +75,10 @@ jobs:
 
   - script: npm install
     displayName: 'Install Dependencies'
+
+  - script: |
+      sed -i "s|http://localhost:3002|https://agent-socket.pilot.api.neuralinverse.com|g" src/vs/workbench/contrib/void/common/neuralInverseConfig.ts
+    displayName: 'Inject Production Agent Socket URL'
 
   - script: npm run buildreact
     displayName: 'Build React UI'
@@ -118,6 +126,10 @@ jobs:
 
   - script: npm install
     displayName: 'Install Dependencies'
+
+  - script: |
+      sed -i "s|http://localhost:3002|https://agent-socket.pilot.api.neuralinverse.com|g" src/vs/workbench/contrib/void/common/neuralInverseConfig.ts
+    displayName: 'Inject Production Agent Socket URL'
 
   - script: npm run buildreact
     displayName: 'Build React UI'

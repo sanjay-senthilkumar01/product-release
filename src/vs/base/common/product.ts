@@ -58,6 +58,8 @@ export type ExtensionVirtualWorkspaceSupport = {
 export interface IProductConfiguration {
 	readonly version: string;
 	readonly voidVersion?: string;
+	readonly voidRelease?: string;
+	readonly agentSocketUrl?: string; // ARCH-001: URL for agent-socket. Set in product.json. Dev=localhost:3002, Prod=agent-socket.pilot.api.neuralinverse.com
 	readonly release?: string; // Void - VSCodium added this, we add it for TS
 	readonly date?: string;
 	readonly quality?: string;

@@ -3,6 +3,7 @@
 	"nameLong": "NeuralInverse",
 	"voidVersion": "1.4.9",
 	"voidRelease": "0044",
+	"agentSocketUrl": "http://localhost:3002",
 	"applicationName": "neuralinverse",
 	"dataFolderName": ".neural-inverse",
 	"win32MutexName": "neuralinverse",
