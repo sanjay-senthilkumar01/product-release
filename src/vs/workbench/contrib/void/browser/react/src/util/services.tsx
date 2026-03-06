@@ -112,11 +112,19 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		voidCommandBarService: accessor.get(IVoidCommandBarService),
 		modelService: accessor.get(IModelService),
 		mcpService: accessor.get(IMCPService),
-		agentService: accessor.get(INeuralInverseAgentService),
-		subAgentService: accessor.get(INeuralInverseSubAgentService),
 	}
 
-	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, editCodeService, voidCommandBarService, modelService, mcpService, agentService, subAgentService } = stateServices
+	// Agent services are optional — they may not be registered yet during early startup
+	let agentService: InstanceType<typeof INeuralInverseAgentService> | null = null
+	let subAgentService: InstanceType<typeof INeuralInverseSubAgentService> | null = null
+	try {
+		agentService = accessor.get(INeuralInverseAgentService)
+		subAgentService = accessor.get(INeuralInverseSubAgentService)
+	} catch {
+		// Services not available yet — agent hooks will return null
+	}
+
+	const { settingsStateService, chatThreadsStateService, refreshModelService, themeService, editCodeService, voidCommandBarService, modelService, mcpService } = stateServices
 
 
 
@@ -189,23 +197,26 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		})
 	)
 
-	// Agent state
-	agentTask = agentService.activeTask
-	disposables.push(
-		agentService.onDidChangeAgentState(() => {
-			agentTask = agentService.activeTask
-			agentTaskListeners.forEach(l => l(agentTask))
-		})
-	)
+	// Agent state (only if services resolved)
+	if (agentService) {
+		agentTask = agentService.activeTask
+		disposables.push(
+			agentService.onDidChangeAgentState(() => {
+				agentTask = agentService!.activeTask
+				agentTaskListeners.forEach(l => l(agentTask))
+			})
+		)
+	}
 
-	// Sub-agent state
-	agentSubAgents = subAgentService.subAgents
-	disposables.push(
-		subAgentService.onDidChangeSubAgent(() => {
-			agentSubAgents = subAgentService.subAgents
-			agentSubAgentListeners.forEach(l => l(agentSubAgents))
-		})
-	)
+	if (subAgentService) {
+		agentSubAgents = subAgentService.subAgents
+		disposables.push(
+			subAgentService.onDidChangeSubAgent(() => {
+				agentSubAgents = subAgentService!.subAgents
+				agentSubAgentListeners.forEach(l => l(agentSubAgents))
+			})
+		)
+	}
 
 
 	return disposables
@@ -262,11 +273,23 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IStorageService: accessor.get(IStorageService),
 		ILabelService: accessor.get(ILabelService),
 
-		INeuralInverseAgentService: accessor.get(INeuralInverseAgentService),
-		INeuralInverseSubAgentService: accessor.get(INeuralInverseSubAgentService),
+	}
 
+	// Agent services — optional, won't crash sidebar if unavailable
+	let niAgent: any = undefined
+	let niSubAgent: any = undefined
+	try {
+		niAgent = accessor.get(INeuralInverseAgentService)
+		niSubAgent = accessor.get(INeuralInverseSubAgentService)
+	} catch {
+		// Agent services not registered yet
+	}
+
+	return {
+		...reactAccessor,
+		INeuralInverseAgentService: niAgent,
+		INeuralInverseSubAgentService: niSubAgent,
 	} as const
-	return reactAccessor
 }
 
 type ReactAccessor = ReturnType<typeof getReactAccessor>

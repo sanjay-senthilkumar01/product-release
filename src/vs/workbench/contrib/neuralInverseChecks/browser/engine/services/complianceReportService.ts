@@ -11,7 +11,7 @@ import { IWorkspaceContextService } from '../../../../../../platform/workspace/c
 import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IGRCEngineService } from './grcEngineService.js';
-import { IAuditTrailService, IAuditEntry } from './auditTrailService.js';
+import { IAuditTrailService } from './auditTrailService.js';
 import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
 
 export const IComplianceReportService = createDecorator<IComplianceReportService>('complianceReportService');

@@ -102,7 +102,7 @@ class NeuralInverseAgentConfigService extends Disposable implements INeuralInver
 	}
 
 	isCommandAllowed(command: string): boolean {
-		const { allowedCommands, blockedCommands } = this._config.constraints;
+		const { allowedCommands = [], blockedCommands = [] } = this._config.constraints;
 
 		// Check blocked first
 		if (blockedCommands.length > 0) {

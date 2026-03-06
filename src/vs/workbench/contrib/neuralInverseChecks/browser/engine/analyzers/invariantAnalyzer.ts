@@ -19,7 +19,7 @@
 
 import { ITextModel } from '../../../../../../editor/common/model.js';
 import { URI } from '../../../../../../base/common/uri.js';
-import { IGRCRule, ICheckResult, toDisplaySeverity } from '../types/grcTypes.js';
+import { IGRCRule, ICheckResult } from '../types/grcTypes.js';
 import { IInvariantDefinition, parseInvariantExpression, IParsedExpression } from '../types/invariantTypes.js';
 import { IRuleAnalyzer } from '../services/grcEngineService.js';
 import { IContractReasonService } from '../services/contractReasonService.js';
@@ -31,7 +31,7 @@ export class InvariantAnalyzer implements IRuleAnalyzer {
 	private _sourceFileCache = new Map<string, { version: number; sourceFile: ts.SourceFile }>();
 
 	constructor(
-		private readonly contractReasonService: IContractReasonService
+		_contractReasonService: IContractReasonService
 	) { }
 
 	evaluate(rule: IGRCRule, model: ITextModel, fileUri: URI, timestamp: number): ICheckResult[] {
@@ -155,16 +155,18 @@ export class InvariantAnalyzer implements IRuleAnalyzer {
 			}
 
 			// Check unary: x-- (prefix/postfix decrement for >= 0 checks)
-			if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-				(node.operator === ts.SyntaxKind.MinusMinusToken || node.operator === ts.SyntaxKind.PlusPlusToken)) {
-				const operandText = this._getIdentifierName(node.operand);
-				if (operandText && trackedVars.has(operandText)) {
-					if (this._unaryCouldViolate(parsed, node.operator)) {
-						const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-						results.push(this._makeResult(
-							rule, fileUri, line + 1, character + 1, node, sourceFile, timestamp, invariant,
-							[{ line: line + 1, label: `${operandText} modified by ${node.operator === ts.SyntaxKind.MinusMinusToken ? '--' : '++'} — may violate ${invariant.expression}` }]
-						));
+			if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node))) {
+				const unary = node as ts.PrefixUnaryExpression | ts.PostfixUnaryExpression;
+				if (unary.operator === ts.SyntaxKind.MinusMinusToken || unary.operator === ts.SyntaxKind.PlusPlusToken) {
+					const operandText = this._getIdentifierName(unary.operand);
+					if (operandText && trackedVars.has(operandText)) {
+						if (this._unaryCouldViolate(parsed, unary.operator)) {
+							const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+							results.push(this._makeResult(
+								rule, fileUri, line + 1, character + 1, node, sourceFile, timestamp, invariant,
+								[{ line: line + 1, label: `${operandText} modified by ${unary.operator === ts.SyntaxKind.MinusMinusToken ? '--' : '++'} — may violate ${invariant.expression}` }]
+							));
+						}
 					}
 				}
 			}
@@ -271,7 +273,7 @@ export class InvariantAnalyzer implements IRuleAnalyzer {
 	// ─── Assignment Violation Checking ────────────────────────────────
 
 	private _checkAssignmentViolation(
-		parsed: IParsedExpression, rhs: ts.Expression,
+		parsed: IParsedExpression, rhs: ts.Node,
 		sourceFile: ts.SourceFile, fileUri: URI,
 		rule: IGRCRule, timestamp: number, invariant: IInvariantDefinition,
 		action: string
@@ -456,7 +458,7 @@ export class InvariantAnalyzer implements IRuleAnalyzer {
 		return undefined;
 	}
 
-	private _evaluateLiteral(node: ts.Expression): number | string | boolean | null | undefined {
+	private _evaluateLiteral(node: ts.Node): number | string | boolean | null | undefined {
 		if (ts.isNumericLiteral(node)) {
 			return Number(node.text);
 		}
@@ -509,7 +511,7 @@ export class InvariantAnalyzer implements IRuleAnalyzer {
 		return false;
 	}
 
-	private _conditionChecksVariable(expr: ts.Expression, variableName: string): boolean {
+	private _conditionChecksVariable(expr: ts.Node, variableName: string): boolean {
 		const exprText = expr.getText();
 		return exprText.includes(variableName);
 	}
@@ -522,7 +524,7 @@ export class InvariantAnalyzer implements IRuleAnalyzer {
 				ts.isArrowFunction(current)) {
 				return current;
 			}
-			current = current.parent;
+			current = (current as ts.Node).parent;
 		}
 		return undefined;
 	}

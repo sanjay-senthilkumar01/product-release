@@ -43,8 +43,20 @@ export const enum SyntaxKind {
 	// ── Tokens ──
 	EqualsToken = 63,
 	PlusToken = 40,
+	MinusToken = 41,
+	MinusMinusToken = 46,
+	PlusPlusToken = 45,
+	MinusEqualsToken = 68,
+	PlusEqualsToken = 64,
+	AsteriskEqualsToken = 67,
+	SlashEqualsToken = 69,
 	AmpersandAmpersandToken = 56,
 	BarBarToken = 57,
+
+	// ── Keywords ──
+	TrueKeyword = 112,
+	FalseKeyword = 97,
+	NullKeyword = 104,
 
 	// ── Object/Array Patterns ──
 	ObjectBindingPattern = 206,
@@ -454,6 +466,18 @@ export function isAwaitExpression(node: Node): node is AwaitExpression {
 
 export function isSpreadElement(node: Node): node is SpreadElement {
 	return node.kind === SyntaxKind.SpreadElement;
+}
+
+export function isPrefixUnaryExpression(node: Node): node is PrefixUnaryExpression {
+	return node.kind === SyntaxKind.PrefixUnaryExpression;
+}
+
+export function isPostfixUnaryExpression(node: Node): node is PostfixUnaryExpression {
+	return node.kind === SyntaxKind.PostfixUnaryExpression;
+}
+
+export function isSourceFile(node: Node): node is SourceFile {
+	return node.kind === SyntaxKind.SourceFile;
 }
 
 export function isParenthesizedExpression(node: Node): node is ParenthesizedExpression {

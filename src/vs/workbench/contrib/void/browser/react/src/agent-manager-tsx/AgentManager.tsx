@@ -3,7 +3,7 @@
  *  Agent Manager — Dashboard for the agentic execution engine.
  *--------------------------------------------------------------------------------------*/
 
-import React, { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { useAccessor, useAgentTask, useSubAgents } from '../util/services.js'
 import { AgentTaskStatus } from '../../../../common/neuralInverseAgentTypes.js'
 import { SubAgentTask } from '../../../../common/subAgentTypes.js'
@@ -168,7 +168,7 @@ const IdleState = () => (
 
 // ======================== Main Component ========================
 
-export const AgentManager: React.FC = () => {
+export const AgentManager = () => {
 	const accessor = useAccessor()
 	const agentService = accessor.get('INeuralInverseAgentService')
 	const task = useAgentTask()

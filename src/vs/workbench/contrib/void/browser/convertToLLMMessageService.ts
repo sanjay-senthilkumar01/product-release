@@ -2,7 +2,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
-import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
@@ -543,9 +543,23 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IVoidModelService private readonly voidModelService: IVoidModelService,
 		@IMCPService private readonly mcpService: IMCPService,
-		@INeuralInverseAgentService private readonly neuralInverseAgentService: INeuralInverseAgentService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) {
 		super()
+	}
+
+	// Lazy-resolved to break cyclic dependency:
+	// ConvertToLLMMessageService -> neuralInverseAgentService -> chatThreadService -> ConvertToLLMMessageService
+	private _agentService: INeuralInverseAgentService | null | undefined
+	private _getAgentService(): INeuralInverseAgentService | null {
+		if (this._agentService === undefined) {
+			try {
+				this._agentService = this.instantiationService.invokeFunction(a => a.get(INeuralInverseAgentService))
+			} catch {
+				this._agentService = null
+			}
+		}
+		return this._agentService
 	}
 
 	// Read .voidrules files from workspace folders
@@ -582,7 +596,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		if (voidRulesFileContent) ans.push(voidRulesFileContent)
 
 		// Inject NeuralInverse Agent working memory context when a task is active
-		const agentContext = this.neuralInverseAgentService.getContextSummary();
+		const agentContext = this._getAgentService()?.getContextSummary()
 		if (agentContext) ans.push(agentContext)
 
 		return ans.join('\n\n')

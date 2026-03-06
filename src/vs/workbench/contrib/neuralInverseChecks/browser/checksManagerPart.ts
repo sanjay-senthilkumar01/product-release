@@ -60,7 +60,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
     private _sash: Sash | undefined;
     private _startHeight: number = 0;
     private _currentDomain: string | undefined = undefined;
-    private _currentViewMode: 'dashboard' | 'ignore' | 'nano' | 'chat' = 'dashboard';
+    private _currentViewMode: 'dashboard' | 'ignore' | 'impact' | 'nano' | 'chat' = 'dashboard';
 
     constructor(
         @IThemeService themeService: IThemeService,
@@ -373,7 +373,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
 
         // ── Sidebar Navigation ────────────────────────────────────────
-        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'ignore' | 'nano' | 'chat';
+        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'impact' | 'ignore' | 'nano' | 'chat';
         const DOMAIN_MAP: Partial<Record<ViewId, string>> = {
             security: 'security', compliance: 'compliance', policy: 'policy',
             architecture: 'architecture', 'data-integrity': 'data-integrity',
@@ -387,6 +387,8 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
             if (!this.webviewElement) return;
             if (this._currentViewMode === 'ignore') {
                 this.webviewElement.setHtml(this.getIgnoreHtml());
+            } else if (this._currentViewMode === 'impact') {
+                this.webviewElement.setHtml(this._getImpactViewHtml());
             } else if (this._currentViewMode === 'dashboard') {
                 this.webviewElement.setHtml(this.getDashboardHtml(this._currentDomain));
             }
@@ -428,6 +430,13 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 this.formalVerificationControl?.show();
                 this.formalVerificationControl?.layout(body.clientWidth, body.clientHeight);
                 this._currentViewMode = 'dashboard';
+            } else if (view === 'impact') {
+                checksContainer.style.display = 'block';
+                this._currentViewMode = 'impact';
+                this._currentDomain = undefined;
+                if (this.webviewElement) {
+                    this.webviewElement.setHtml(this._getImpactViewHtml());
+                }
             } else if (view === 'ignore') {
                 checksContainer.style.display = 'block';
                 this._currentViewMode = 'ignore';
@@ -511,6 +520,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
         addSidebarLabel('Verification');
         createSidebarItem('Formal Verification', 'formal-verification', '⊢');
+        createSidebarItem('Cross-File Impact', 'impact', '⊷');
 
         addSidebarLabel('Settings');
         createSidebarItem('Ignore Rules', 'ignore', '⊖');
@@ -1311,6 +1321,114 @@ window.addEventListener('message', function(ev) {
 
         html += '</div>';
         return html;
+    }
+
+    private _getImpactViewHtml(): string {
+        const allResults = this.grcEngine.getAllResults();
+        const importMap = this.grcEngine.getImportedByMap();
+
+        // Collect unique files with violations
+        const filesWithViolations = new Map<string, URI>();
+        for (const r of allResults) {
+            filesWithViolations.set(r.fileUri.toString(), r.fileUri);
+        }
+
+        // Build impact trees for ALL files with violations (not just 5)
+        const impactTrees: string[] = [];
+        const noImpactFiles: string[] = [];
+
+        for (const [, fileUri] of filesWithViolations) {
+            const chain = this.grcEngine.getImpactChain(fileUri, 3);
+            if (!chain || chain.dependents.length === 0) {
+                noImpactFiles.push(fileUri.path.split('/').pop() || fileUri.path);
+                continue;
+            }
+
+            const breakingAlert = chain.hasBreakingChanges
+                ? `<div class="impact-alert">Breaking changes in <strong>${this._esc(chain.fileName)}</strong> affect <strong>${chain.dependents.length} dependent file${chain.dependents.length === 1 ? '' : 's'}</strong></div>`
+                : '';
+
+            impactTrees.push(`
+                ${breakingAlert}
+                <div class="impact-tree">
+                    ${this._renderImpactNode(chain, true)}
+                </div>
+            `);
+        }
+
+        // Stats
+        const totalTrackedFiles = importMap.size;
+        const totalViolatedFiles = filesWithViolations.size;
+        const filesWithDependents = impactTrees.length;
+        const breakingCount = allResults.filter(r => r.isBreakingChange).length;
+
+        const statsHtml = `
+<div class="impact-stats">
+    <div class="impact-stat"><span class="impact-stat-n">${totalTrackedFiles}</span><span class="impact-stat-l">Tracked Files</span></div>
+    <div class="impact-stat"><span class="impact-stat-n">${totalViolatedFiles}</span><span class="impact-stat-l">With Violations</span></div>
+    <div class="impact-stat"><span class="impact-stat-n">${filesWithDependents}</span><span class="impact-stat-l">Propagating</span></div>
+    <div class="impact-stat"><span class="impact-stat-n" style="color:var(--err)">${breakingCount}</span><span class="impact-stat-l">Breaking</span></div>
+</div>`;
+
+        let bodyHtml: string;
+        if (importMap.size === 0) {
+            bodyHtml = `<div class="impact-empty">
+                <div class="impact-empty-icon">⊷</div>
+                <div class="impact-empty-title">No import graph available</div>
+                <div class="impact-empty-desc">Run a <strong>Workspace Scan</strong> from the All Checks view to discover cross-file import relationships.</div>
+                <button class="impact-scan-btn" onclick="scanWorkspace()">Scan Workspace</button>
+            </div>`;
+        } else if (impactTrees.length === 0) {
+            bodyHtml = `<div class="impact-empty">
+                <div class="impact-empty-icon" style="color:var(--ok)">✓</div>
+                <div class="impact-empty-title">No cross-file impact detected</div>
+                <div class="impact-empty-desc">Violations in ${totalViolatedFiles} file${totalViolatedFiles === 1 ? '' : 's'} do not propagate to dependent files. ${totalTrackedFiles} files tracked in the import graph.</div>
+            </div>`;
+        } else {
+            bodyHtml = impactTrees.join('');
+        }
+
+        return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+body { font-family: var(--vscode-font-family, sans-serif); font-size: 12px; color: var(--vscode-foreground); padding: 16px; margin: 0; background: transparent; }
+:root { --err: #f48771; --warn: #cca700; --ok: #73c991; --info: #75beff; --border: var(--vscode-panel-border, #333); --fg-muted: var(--vscode-descriptionForeground, #888); }
+h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+.impact-subtitle { font-size: 11px; color: var(--fg-muted); margin-bottom: 16px; }
+.impact-stats { display: flex; gap: 16px; margin-bottom: 20px; padding: 12px; background: var(--vscode-editor-background); border: 1px solid var(--border); border-radius: 6px; }
+.impact-stat { display: flex; flex-direction: column; align-items: center; flex: 1; }
+.impact-stat-n { font-size: 20px; font-weight: 700; }
+.impact-stat-l { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--fg-muted); margin-top: 2px; }
+.impact-tree { margin-bottom: 12px; }
+.impact-node { padding: 4px 0 4px 12px; border-left: 2px solid var(--border); margin-left: 4px; }
+.impact-node.root { border-left: 2px solid var(--err); padding-left: 12px; }
+.impact-node.root.no-breaking { border-left-color: var(--warn); }
+.impact-file { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 600; }
+.impact-file.nav-link { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
+.impact-file.nav-link:hover { color: var(--info); }
+.impact-badge { font-size: 9px; padding: 1px 5px; border-radius: 2px; margin-left: 6px; vertical-align: middle; }
+.impact-badge.breaking { background: rgba(244,135,113,.15); color: var(--err); }
+.impact-badge.affected { background: rgba(204,167,0,.15); color: var(--warn); }
+.impact-badge.ok { background: rgba(115,201,145,.15); color: var(--ok); }
+.impact-arrow { font-size: 9px; color: var(--fg-muted); margin: 2px 0 2px 16px; }
+.impact-alert { font-size: 11px; padding: 6px 10px; margin-bottom: 8px; background: rgba(244,135,113,.08); border: 1px solid rgba(244,135,113,.3); border-radius: 3px; color: var(--err); }
+.impact-empty { text-align: center; padding: 48px 20px; }
+.impact-empty-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.4; }
+.impact-empty-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.impact-empty-desc { font-size: 11px; color: var(--fg-muted); max-width: 340px; margin: 0 auto 16px; line-height: 1.5; }
+.impact-scan-btn { padding: 6px 16px; background: var(--info); color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; }
+.impact-scan-btn:hover { filter: brightness(1.1); }
+</style></head><body>
+<h2>Cross-File Impact</h2>
+<div class="impact-subtitle">Shows how violations in one file propagate to files that import it</div>
+${statsHtml}
+${bodyHtml}
+<script>
+const vscode = acquireVsCodeApi();
+function navigate(uri, line, col) { vscode.postMessage({ type: 'navigateToFile', uri, line, col }); }
+function scanWorkspace() { vscode.postMessage({ type: 'scanWorkspace' }); }
+</script>
+</body></html>`;
     }
 
     private getIgnoreHtml(): string {
