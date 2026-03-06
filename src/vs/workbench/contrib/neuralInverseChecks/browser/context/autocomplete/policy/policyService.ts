@@ -12,6 +12,7 @@ import { registerSingleton, InstantiationType } from '../../../../../../../platf
 import { VSBuffer } from '../../../../../../../base/common/buffer.js';
 
 import { IEnclaveEnvironmentService } from '../../../../../neuralInverseEnclave/common/services/environment/enclaveEnvironmentService.js';
+import { withInverseWriteAccess } from '../../../engine/utils/inverseFs.js';
 
 export const IPolicyService = createDecorator<IPolicyService>('neuralInversePolicyService');
 
@@ -114,22 +115,19 @@ export class PolicyService extends Disposable implements IPolicyService {
         const policyUri = URI.joinPath(folderUri, POLICY_FILE);
 
         try {
-            // Always try to create the folder first.
-            // checking .exists() is racy. If it fails (exists), we proceed.
-            try {
-                if (!(await this.fileService.exists(folderUri))) {
-                    await this.fileService.createFolder(folderUri);
-                }
-            } catch (err) {
-                // Ignore folder creation errors (likely already exists or specific permission issue)
-                console.log('[PolicyService] Folder creation check skipped/failed, proceeding to file logic', err);
-            }
-
-            // Now check file
             if (!(await this.fileService.exists(policyUri))) {
-                const content = VSBuffer.fromString(JSON.stringify(DEFAULT_POLICY, null, 4));
-                await this.fileService.createFile(policyUri, content);
-                console.log('[PolicyService] Created default policy file');
+                await withInverseWriteAccess(folderUri.fsPath, async () => {
+                    try {
+                        if (!(await this.fileService.exists(folderUri))) {
+                            await this.fileService.createFolder(folderUri);
+                        }
+                    } catch (err) {
+                        console.log('[PolicyService] Folder creation check skipped/failed', err);
+                    }
+                    const content = VSBuffer.fromString(JSON.stringify(DEFAULT_POLICY, null, 4));
+                    await this.fileService.createFile(policyUri, content);
+                    console.log('[PolicyService] Created default policy file');
+                });
             }
         } catch (e) {
             console.error('[PolicyService] Failed to ensure policy file exists', e);

@@ -12,6 +12,7 @@ import { createDecorator } from '../../../../../../platform/instantiation/common
 import { registerSingleton, InstantiationType } from '../../../../../../platform/instantiation/common/extensions.js';
 import { ICheckResult } from '../types/grcTypes.js';
 import { IGRCEngineService } from './grcEngineService.js';
+import { withInverseWriteAccess } from '../utils/inverseFs.js';
 
 export const IAuditTrailService = createDecorator<IAuditTrailService>('neuralInverseAuditTrailService');
 
@@ -103,20 +104,11 @@ export class AuditTrailService extends Disposable implements IAuditTrailService 
 			return;
 		}
 
-		try {
-			// Ensure audit folder exists
-			const folderUri = this._getAuditFolderUri();
-			if (folderUri) {
-				try {
-					if (!(await this.fileService.exists(folderUri))) {
-						await this.fileService.createFolder(folderUri);
-					}
-				} catch {
-					// May already exist
-				}
-			}
+		const folderUri = this._getAuditFolderUri();
+		const inversePath = folderUri ? URI.joinPath(folderUri, '..').fsPath : undefined;
 
-			// Read existing entries
+		try {
+			// Read existing entries (before locking, since reads work fine on locked files)
 			let existing: IAuditEntry[] = [];
 			try {
 				if (await this.fileService.exists(auditUri)) {
@@ -127,12 +119,19 @@ export class AuditTrailService extends Disposable implements IAuditTrailService 
 				existing = [];
 			}
 
-			// Append new entries
 			const combined = [...existing, ...entries];
-
-			// Write back
 			const buffer = VSBuffer.fromString(JSON.stringify(combined, null, 2));
-			await this.fileService.writeFile(auditUri, buffer);
+
+			if (inversePath) {
+				await withInverseWriteAccess(inversePath, async () => {
+					if (folderUri && !(await this.fileService.exists(folderUri))) {
+						await this.fileService.createFolder(folderUri).catch(() => { /* may exist */ });
+					}
+					await this.fileService.writeFile(auditUri, buffer);
+				});
+			} else {
+				await this.fileService.writeFile(auditUri, buffer);
+			}
 
 			console.log('[AuditTrail] Wrote', entries.length, 'entries to audit log');
 		} catch (e) {

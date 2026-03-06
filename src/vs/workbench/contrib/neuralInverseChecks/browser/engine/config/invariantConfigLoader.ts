@@ -11,6 +11,7 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IGRCRule } from '../types/grcTypes.js';
 import { IInvariantConfig, IInvariantDefinition, DEFAULT_INVARIANT_CONFIG } from '../types/invariantTypes.js';
+import { withInverseWriteAccess } from '../utils/inverseFs.js';
 
 const INVERSE_FOLDER = '.inverse';
 const INVARIANT_FILE = 'invariants.json';
@@ -160,20 +161,18 @@ export class InvariantConfigLoader extends Disposable {
 			return;
 		}
 
+		const folderUri = URI.joinPath(this.workspaceContextService.getWorkspace().folders[0].uri, INVERSE_FOLDER);
 		try {
-			// Ensure .inverse folder exists
-			const folderUri = URI.joinPath(this.workspaceContextService.getWorkspace().folders[0].uri, INVERSE_FOLDER);
-			try {
-				if (!(await this.fileService.exists(folderUri))) {
-					await this.fileService.createFolder(folderUri);
-				}
-			} catch {
-				// May already exist
-			}
-
 			const json = JSON.stringify(this._config, null, 4);
 			const buffer = VSBuffer.fromString(json);
-			await this.fileService.writeFile(configUri, buffer);
+			await withInverseWriteAccess(folderUri.fsPath, async () => {
+				try {
+					if (!(await this.fileService.exists(folderUri))) {
+						await this.fileService.createFolder(folderUri);
+					}
+				} catch { /* May already exist */ }
+				await this.fileService.writeFile(configUri, buffer);
+			});
 			console.log('[InvariantConfigLoader] Invariants saved');
 		} catch (e) {
 			console.error('[InvariantConfigLoader] Failed to save invariants:', e);

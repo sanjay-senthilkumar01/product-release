@@ -13,6 +13,7 @@ import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IGRCEngineService } from './grcEngineService.js';
 import { IAuditTrailService } from './auditTrailService.js';
 import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
+import { withInverseWriteAccess } from '../utils/inverseFs.js';
 
 export const IComplianceReportService = createDecorator<IComplianceReportService>('complianceReportService');
 
@@ -203,28 +204,30 @@ class ComplianceReportService extends Disposable implements IComplianceReportSer
 		const rootUri = folders[0].uri;
 		const reportsFolder = URI.joinPath(rootUri, '.inverse', 'reports');
 
-		try {
-			// Ensure reports folder exists
-			try {
-				if (!(await this.fileService.exists(reportsFolder))) {
-					await this.fileService.createFolder(reportsFolder);
-				}
-			} catch {
-				// May already exist
-			}
+		const inversePath = URI.joinPath(rootUri, '.inverse').fsPath;
+		let resultUri: URI | undefined;
 
+		try {
 			const markdown = await this.generateReport();
 			const dateStr = new Date().toISOString().split('T')[0];
 			const fileUri = URI.joinPath(reportsFolder, `compliance-${dateStr}.md`);
 
-			await this.fileService.writeFile(fileUri, VSBuffer.fromString(markdown));
-			console.log('[ComplianceReport] Exported to', fileUri.path);
+			await withInverseWriteAccess(inversePath, async () => {
+				try {
+					if (!(await this.fileService.exists(reportsFolder))) {
+						await this.fileService.createFolder(reportsFolder);
+					}
+				} catch { /* May already exist */ }
+				await this.fileService.writeFile(fileUri, VSBuffer.fromString(markdown));
+			});
 
-			return fileUri;
+			console.log('[ComplianceReport] Exported to', fileUri.path);
+			resultUri = fileUri;
 		} catch (e) {
 			console.error('[ComplianceReport] Failed to export report:', e);
-			return undefined;
 		}
+
+		return resultUri;
 	}
 
 	private _getWorkspaceName(): string {

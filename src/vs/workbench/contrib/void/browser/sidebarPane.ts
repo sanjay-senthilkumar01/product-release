@@ -80,6 +80,8 @@ class SidebarViewPane extends ViewPane {
 		else if (chatMode === 'copilot') newTitle = 'Copilot';
 		else if (chatMode === 'reason') newTitle = 'Reasoning';
 		else if (chatMode === 'validate') newTitle = 'Validation';
+		else if (chatMode === 'agent') newTitle = 'Agent';
+		else if (chatMode === 'gather') newTitle = 'Gather';
 
 		if (this.title === newTitle) return;
 

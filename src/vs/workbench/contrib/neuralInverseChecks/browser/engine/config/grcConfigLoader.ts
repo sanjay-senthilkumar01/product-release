@@ -39,6 +39,7 @@ import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
 import { InvariantConfigLoader } from './invariantConfigLoader.js';
 import { IPolicyService } from '../../context/autocomplete/policy/policyService.js';
 import { PolicyRuleGenerator } from '../services/policyRuleGenerator.js';
+import { withInverseWriteAccess } from '../utils/inverseFs.js';
 
 const GRC_FOLDER = '.inverse';
 const GRC_CONFIG_FILE = 'grc-rules.json';
@@ -139,20 +140,17 @@ export class GRCConfigLoader extends Disposable {
 		const configUri = URI.joinPath(folderUri, GRC_CONFIG_FILE);
 
 		try {
-			// Ensure .inverse folder exists
-			try {
-				if (!(await this.fileService.exists(folderUri))) {
-					await this.fileService.createFolder(folderUri);
-				}
-			} catch {
-				// Folder may already exist
-			}
-
-			// Create default config if missing
 			if (!(await this.fileService.exists(configUri))) {
-				const content = VSBuffer.fromString(JSON.stringify(DEFAULT_GRC_CONFIG, null, 4));
-				await this.fileService.createFile(configUri, content);
-				console.log('[GRCConfigLoader] Created default GRC config file');
+				await withInverseWriteAccess(folderUri.fsPath, async () => {
+					try {
+						if (!(await this.fileService.exists(folderUri))) {
+							await this.fileService.createFolder(folderUri);
+						}
+					} catch { /* Folder may already exist */ }
+					const content = VSBuffer.fromString(JSON.stringify(DEFAULT_GRC_CONFIG, null, 4));
+					await this.fileService.createFile(configUri, content);
+					console.log('[GRCConfigLoader] Created default GRC config file');
+				});
 			}
 		} catch (e) {
 			console.error('[GRCConfigLoader] Failed to ensure config file exists:', e);
@@ -383,10 +381,13 @@ export class GRCConfigLoader extends Disposable {
 			return;
 		}
 
+		const inversePath = URI.joinPath(this.workspaceContextService.getWorkspace().folders[0].uri, GRC_FOLDER).fsPath;
 		try {
 			const json = JSON.stringify(this._config, null, 4);
 			const buffer = VSBuffer.fromString(json);
-			await this.fileService.writeFile(configUri, buffer);
+			await withInverseWriteAccess(inversePath, async () => {
+				await this.fileService.writeFile(configUri, buffer);
+			});
 			console.log('[GRCConfigLoader] Config saved');
 			// Reload to re-merge rules
 			await this._loadConfig();

@@ -16,6 +16,8 @@ export const mountFnGenerator = (Component: (params: any) => React.ReactNode) =>
 		return
 	}
 
+	rootElement.classList.add('void-scope')
+
 	const disposables = _registerServices(accessor)
 
 	const root = ReactDOM.createRoot(rootElement)

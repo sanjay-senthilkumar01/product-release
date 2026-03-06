@@ -46,7 +46,6 @@ import { createDecorator } from '../../../../../../platform/instantiation/common
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { URI } from '../../../../../../base/common/uri.js';
-import { isWindows } from '../../../../../../base/common/platform.js';
 import { Event, Emitter } from '../../../../../../base/common/event.js';
 import { registerSingleton, InstantiationType } from '../../../../../../platform/instantiation/common/extensions.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
@@ -56,6 +55,7 @@ import {
 	validateFramework
 } from './frameworkSchema.js';
 import { IGRCRule, GRCRuleType, toDisplaySeverity } from '../types/grcTypes.js';
+import { withInverseWriteAccess } from '../utils/inverseFs.js';
 
 
 // ─── Service Interface ───────────────────────────────────────────────────────
@@ -194,48 +194,6 @@ export class FrameworkRegistry extends Disposable implements IFrameworkRegistry 
 	 * Creates the `.inverse/frameworks/` directory if it doesn't exist.
 	 * Also creates a README.md explaining the format.
 	 */
-	/**
-	 * Unlock the `.inverse` directory for writing.
-	 * The nano agents lock it with `chmod -R a-w` after analysis;
-	 * we must temporarily unlock before any file operations.
-	 */
-	private async _unlockInverseDir(): Promise<void> {
-		const inverseUri = this._getInverseDir();
-		if (!inverseUri) { return; }
-		const inversePath = inverseUri.fsPath;
-		const cmd = isWindows
-			? `attrib -r "${inversePath}\\*" /s`
-			: `chmod -R u+w "${inversePath}"`;
-		try {
-			const { exec } = await import('child_process');
-			await new Promise<void>((resolve, reject) => {
-				exec(cmd, (err) => err ? reject(err) : resolve());
-			});
-		} catch (e) {
-			// Best-effort; might not be locked yet on first run
-			console.warn('[FrameworkRegistry] Could not unlock .inverse directory:', e);
-		}
-	}
-
-	/**
-	 * Re-lock the `.inverse` directory after writing.
-	 */
-	private async _lockInverseDir(): Promise<void> {
-		const inverseUri = this._getInverseDir();
-		if (!inverseUri) { return; }
-		const inversePath = inverseUri.fsPath;
-		const cmd = isWindows
-			? `attrib +r "${inversePath}\\*" /s`
-			: `chmod -R a-w "${inversePath}"`;
-		try {
-			const { exec } = await import('child_process');
-			await new Promise<void>((resolve, reject) => {
-				exec(cmd, (err) => err ? reject(err) : resolve());
-			});
-		} catch (e) {
-			console.warn('[FrameworkRegistry] Could not lock .inverse directory:', e);
-		}
-	}
 
 	/**
 	 * Returns the URI of the `.inverse` root directory.
@@ -254,11 +212,10 @@ export class FrameworkRegistry extends Disposable implements IFrameworkRegistry 
 			return;
 		}
 
+		const inverseDir = this._getInverseDir();
 		try {
 			if (!(await this.fileService.exists(frameworksUri))) {
-				// Unlock .inverse so we can create directories/files
-				await this._unlockInverseDir();
-				try {
+				await withInverseWriteAccess(inverseDir?.fsPath ?? frameworksUri.fsPath, async () => {
 					await this.fileService.createFolder(frameworksUri);
 
 					// Create a README explaining the format
@@ -312,9 +269,7 @@ export class FrameworkRegistry extends Disposable implements IFrameworkRegistry 
 
 					await this.fileService.createFile(readmePath, VSBuffer.fromString(readmeContent));
 					console.log('[FrameworkRegistry] Created frameworks directory with README');
-				} finally {
-					await this._lockInverseDir();
-				}
+				});  // end withInverseWriteAccess
 			}
 		} catch (e) {
 			console.error('[FrameworkRegistry] Failed to create frameworks directory:', e);
@@ -618,27 +573,28 @@ export class FrameworkRegistry extends Disposable implements IFrameworkRegistry 
 		}
 
 		// 4. Unlock .inverse, ensure directory exists, and write file
-		await this._unlockInverseDir();
+		const inverseUri = this._getInverseDir();
+		if (!inverseUri) {
+			return { valid: false, errors: ['Cannot resolve .inverse directory'], warnings: [] };
+		}
 		try {
-			if (!(await this.fileService.exists(frameworksDir))) {
-				await this.fileService.createFolder(frameworksDir);
-			}
-
 			const fileName = `${frameworkId}.json`;
 			const fileUri = URI.joinPath(frameworksDir, fileName);
 			const buffer = VSBuffer.fromString(JSON.stringify(parsed, null, 2));
-			await this.fileService.writeFile(fileUri, buffer);
-
+			await withInverseWriteAccess(inverseUri.fsPath, async () => {
+				if (!(await this.fileService.exists(frameworksDir))) {
+					await this.fileService.createFolder(frameworksDir);
+				}
+				await this.fileService.writeFile(fileUri, buffer);
+			});
 			console.log(`[FrameworkRegistry] Imported framework: ${frameworkId} → ${fileUri.path}`);
 		} catch (e) {
-			await this._lockInverseDir();
 			return {
 				valid: false,
 				errors: [`Failed to write file: ${(e as Error).message}`],
 				warnings: []
 			};
 		}
-		await this._lockInverseDir();
 
 		// 5. Reload all frameworks
 		await this._loadAllFrameworks();

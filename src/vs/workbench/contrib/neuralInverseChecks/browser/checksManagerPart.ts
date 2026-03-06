@@ -373,7 +373,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
 
         // ── Sidebar Navigation ────────────────────────────────────────
-        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'impact' | 'ignore' | 'nano' | 'chat';
+        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'impact' | 'audit' | 'ignore' | 'nano' | 'chat';
         const DOMAIN_MAP: Partial<Record<ViewId, string>> = {
             security: 'security', compliance: 'compliance', policy: 'policy',
             architecture: 'architecture', 'data-integrity': 'data-integrity',
@@ -429,6 +429,11 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 fvContainer.style.display = 'block';
                 this.formalVerificationControl?.show();
                 this.formalVerificationControl?.layout(body.clientWidth, body.clientHeight);
+                this._currentViewMode = 'dashboard';
+            } else if (view === 'audit') {
+                aedContainer.style.display = 'block';
+                this.auditAndEvidenceControl?.show();
+                this.auditAndEvidenceControl?.layout(body.clientWidth, body.clientHeight);
                 this._currentViewMode = 'dashboard';
             } else if (view === 'impact') {
                 checksContainer.style.display = 'block';
@@ -521,6 +526,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         addSidebarLabel('Verification');
         createSidebarItem('Formal Verification', 'formal-verification', '⊢');
         createSidebarItem('Cross-File Impact', 'impact', '⊷');
+        createSidebarItem('Audit & Evidence', 'audit', '⊜');
 
         addSidebarLabel('Settings');
         createSidebarItem('Ignore Rules', 'ignore', '⊖');
@@ -1732,7 +1738,6 @@ document.getElementById('patternInput').addEventListener('keydown', function(e) 
         this.auditAndEvidenceControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
         this.failSafeDefaultsControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
         this.formalVerificationControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
-        this.auditAndEvidenceControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
 
         if (this.terminalVisible && this.terminalInstance && this.terminalInstance.xterm) {
             const font = this.terminalInstance.xterm.getFont();

@@ -247,22 +247,22 @@ const ReasoningOptionSlider = ({ featureName }: { featureName: FeatureName }) =>
 
 
 
-const nameOfChatMode = {
+const nameOfChatMode: Record<ChatMode, string> = {
 	'ask': 'Ask',
 	'reason': 'Reason',
 	'validate': 'Validate',
-	'copilot': 'Agent',
+	'copilot': 'Copilot',
 	'agent': 'Agent',
 	'gather': 'Gather',
 }
 
-const detailOfChatMode = {
-	'ask': 'Agent can read files but cannot edit. Use for understanding code or asking questions.',
-	'reason': 'Agent plans and designs. Use for complex problems or architectural decisions.',
-	'validate': 'Agent validates changes using tools. Use for running tests or verification.',
-	'copilot': 'Agent executes changes directly. Use for coding, refactoring, or fixing bugs.',
-	'agent': 'Agent acts autonomously. Use for end-to-end task completion.',
-	'gather': 'Agent retrieves required data across tools.',
+const detailOfChatMode: Record<ChatMode, string> = {
+	'ask': 'Can read files but cannot edit. Best for understanding code or asking questions.',
+	'reason': 'Plans and designs. Best for complex problems or architectural decisions.',
+	'validate': 'Validates changes using tools. Best for running tests or verification.',
+	'copilot': 'Executes changes directly. Best for coding, refactoring, or fixing bugs.',
+	'agent': 'Acts autonomously via the NI Agent panel. Best for end-to-end task completion.',
+	'gather': 'Retrieves required data across tools.',
 }
 
 
@@ -272,7 +272,7 @@ const ChatModeDropdown = ({ className }: { className: string }) => {
 	const voidSettingsService = accessor.get('IVoidSettingsService')
 	const settingsState = useSettingsState()
 
-	const options: ChatMode[] = useMemo(() => ['ask', 'reason', 'validate', 'copilot'], [])
+	const options: ChatMode[] = useMemo(() => ['ask', 'reason', 'copilot', 'agent'], [])
 
 	const onChangeOption = useCallback((newVal: ChatMode) => {
 		voidSettingsService.setGlobalSetting('chatMode', newVal)

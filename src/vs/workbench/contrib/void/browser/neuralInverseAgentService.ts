@@ -92,6 +92,7 @@ class NeuralInverseAgentService extends Disposable implements INeuralInverseAgen
 	private _approvalOverrides: Map<string, ApprovalTier> = new Map();
 	private _consecutiveErrors = 0;
 	private _isPaused = false;
+	private _lastStreamIsRunning: string | undefined = undefined; // tracks previous state to detect LLM transitions
 
 	private readonly _onDidChangeAgentState = this._register(new Emitter<AgentEvent>());
 	readonly onDidChangeAgentState: Event<AgentEvent> = this._onDidChangeAgentState.event;
@@ -295,9 +296,12 @@ class NeuralInverseAgentService extends Disposable implements INeuralInverseAgen
 
 			const task = this._activeTask;
 			const streamState = this._chatThreadService.streamState[threadId];
+			const prevIsRunning = this._lastStreamIsRunning;
+			this._lastStreamIsRunning = streamState?.isRunning;
 
-			// Track iterations
-			if (streamState?.isRunning === 'LLM') {
+			// Track iterations — only count ONCE per LLM call by detecting the transition into 'LLM'
+			// (onText fires _setStreamState on every token, so we must not increment per-token)
+			if (streamState?.isRunning === 'LLM' && prevIsRunning !== 'LLM') {
 				task.totalLLMCalls++;
 				task.iteration++;
 				task.updatedAt = new Date().toISOString();

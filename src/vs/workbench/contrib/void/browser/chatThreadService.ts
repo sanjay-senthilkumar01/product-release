@@ -7,6 +7,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 
 import { URI } from '../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -39,6 +40,7 @@ import { IDirectoryStrService } from '../common/directoryStrService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IMCPService } from '../common/mcpService.js';
 import { RawMCPToolCall } from '../common/mcpServiceTypes.js';
+import { INeuralInverseAgentService } from './neuralInverseAgentService.js';
 
 
 // related to retrying when LLM message has error
@@ -137,7 +139,18 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	// used in checkpointing
 	// private readonly _userModifiedFilesToCheckInCheckpoints = new LRUCache<string, null>(50)
 
-
+	// Lazy reference to avoid cyclic DI (agentService -> chatThreadService -> agentService)
+	private _agentService: INeuralInverseAgentService | null | undefined
+	private _getAgentService(): INeuralInverseAgentService | null {
+		if (this._agentService === undefined) {
+			try {
+				this._agentService = this._instantiationService.invokeFunction(a => a.get(INeuralInverseAgentService))
+			} catch {
+				this._agentService = null
+			}
+		}
+		return this._agentService
+	}
 
 	constructor(
 		@IStorageService private readonly _storageService: IStorageService,
@@ -154,6 +167,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		@IDirectoryStrService private readonly _directoryStringService: IDirectoryStrService,
 		@IFileService private readonly _fileService: IFileService,
 		@IMCPService private readonly _mcpService: IMCPService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super()
 		this.state = { allThreads: {}, currentThreadId: null as unknown as string } // default state
@@ -1102,6 +1116,12 @@ We only need to do it for files that were edited since `from`, ie files between 
 		this._addMessageToThread(threadId, userHistoryElt)
 
 		this._setThreadState(threadId, { currCheckpointIdx: null }) // no longer at a checkpoint because started streaming
+
+		// If in agent mode, start the NI agent task tracker before running the chat loop
+		const { chatMode } = this._settingsService.state.globalSettings
+		if (chatMode === 'agent') {
+			this._getAgentService()?.startTask(instructions, threadId)
+		}
 
 		this._wrapRunAgentToNotify(
 			this._runChatAgent({ threadId, ...this._currentModelSelectionProps(), }),
