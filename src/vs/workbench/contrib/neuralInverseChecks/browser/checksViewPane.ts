@@ -16,6 +16,7 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IMarkerService, MarkerSeverity, IMarker } from '../../../../platform/markers/common/markers.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IGRCEngineService } from './engine/services/grcEngineService.js';
+import { IContractReasonService } from './engine/services/contractReasonService.js';
 import { URI } from '../../../../base/common/uri.js';
 
 const GRC_MARKER_OWNER = 'neuralInverse.grc';
@@ -57,15 +58,19 @@ export class ChecksViewPane extends ViewPane {
 		@IMarkerService private readonly markerService: IMarkerService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IGRCEngineService private readonly grcEngine: IGRCEngineService,
+		@IContractReasonService private readonly contractReasonService: IContractReasonService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
 
 	protected override renderBody(container: HTMLElement): void {
-		super.renderBody(container);
 		this._container = container;
 		container.style.overflow = 'auto';
 		container.style.userSelect = 'text';
+		container.style.height = '100%';
+		container.style.minHeight = '40px';
+
+		try { super.renderBody(container); } catch (_) { /* best-effort */ }
 
 		this._renderContent();
 
@@ -84,30 +89,95 @@ export class ChecksViewPane extends ViewPane {
 
 		this._injectStyles(c);
 
-		const allMarkers = this.markerService.read({ owner: GRC_MARKER_OWNER });
-		const rulesCount = this.grcEngine.getRules().length;
-		const isConfigured = rulesCount > 0;
+		try {
+			const allMarkers = this.markerService.read({ owner: GRC_MARKER_OWNER });
+			const rulesCount = this.grcEngine.getRules().length;
+			const isConfigured = rulesCount > 0;
+			let aiEnabled = false;
+			let aiAvailable = false;
+			try { aiEnabled = this.contractReasonService.isEnabled; } catch (_) { /* service not ready */ }
+			try { aiAvailable = this.contractReasonService.isAvailable; } catch (_) { /* service not ready */ }
+			const allResults = this.grcEngine.getAllResults();
+			const totalFiles = allResults.reduce<Set<string>>((s, r) => { s.add(r.fileUri.toString()); return s; }, new Set()).size;
 
-		const panel = document.createElement('div');
-		panel.className = 'ni-panel';
-		c.appendChild(panel);
+			const panel = document.createElement('div');
+			panel.className = 'ni-panel';
+			c.appendChild(panel);
 
-		this._renderHeader(panel, allMarkers, isConfigured);
-		this._renderSummaryRow(panel, allMarkers);
+			this._renderHeader(panel, allMarkers, isConfigured);
+			this._renderSummaryRow(panel, allMarkers);
+			this._renderActionBar(panel, rulesCount, aiEnabled, aiAvailable, allResults.length, totalFiles);
 
-		if (!isConfigured) {
-			this._renderZeroState(panel);
-			return;
+			if (!isConfigured) {
+				this._renderZeroState(panel);
+				return;
+			}
+
+			if (allMarkers.length === 0) {
+				this._renderAllClear(panel);
+				return;
+			}
+
+			this._renderAnalysisCoverage(panel, allMarkers);
+			this._renderDomainBar(panel, allMarkers);
+			this._renderIssueList(panel, allMarkers);
+		} catch (err) {
+			const errDiv = document.createElement('div');
+			errDiv.style.cssText = 'padding:16px;font-size:12px;color:#ef5350;font-family:monospace;white-space:pre-wrap;';
+			errDiv.textContent = `Neural Inverse Checks — render error:\n${err instanceof Error ? err.message + '\n' + err.stack : String(err)}`;
+			c.appendChild(errDiv);
+		}
+	}
+
+
+	// ─── Action bar ──────────────────────────────────────────────────
+
+	private _renderActionBar(panel: HTMLElement, rulesCount: number, aiEnabled: boolean, aiAvailable: boolean, totalViolations: number, totalFiles: number): void {
+		const bar = document.createElement('div');
+		bar.className = 'ni-action-bar';
+
+		// Scan button
+		const scanBtn = document.createElement('button');
+		scanBtn.className = 'ni-scan-btn';
+		scanBtn.textContent = '⟳ Scan Workspace';
+		scanBtn.title = 'Run static + AI analysis on all workspace files';
+		scanBtn.addEventListener('click', () => {
+			scanBtn.textContent = '⟳ Scanning…';
+			scanBtn.disabled = true;
+			this.grcEngine.scanWorkspace().finally(() => {
+				scanBtn.textContent = '⟳ Scan Workspace';
+				scanBtn.disabled = false;
+			});
+		});
+		bar.appendChild(scanBtn);
+
+		// Stats row
+		const stats = document.createElement('div');
+		stats.className = 'ni-bar-stats';
+
+		const rulesPill = document.createElement('span');
+		rulesPill.className = 'ni-bar-pill';
+		rulesPill.title = 'Active rules';
+		rulesPill.innerHTML = `<span class="ni-pill-icon">≡</span>${rulesCount} rules`;
+		stats.appendChild(rulesPill);
+
+		if (totalFiles > 0) {
+			const filesPill = document.createElement('span');
+			filesPill.className = 'ni-bar-pill';
+			filesPill.title = 'Files with results';
+			filesPill.innerHTML = `<span class="ni-pill-icon">◈</span>${totalFiles} files`;
+			stats.appendChild(filesPill);
 		}
 
-		if (allMarkers.length === 0) {
-			this._renderAllClear(panel);
-			return;
-		}
+		// AI status pill
+		const aiPill = document.createElement('span');
+		aiPill.className = `ni-bar-pill ${aiEnabled && aiAvailable ? 'ni-pill-ai-on' : 'ni-pill-ai-off'}`;
+		aiPill.title = aiEnabled ? (aiAvailable ? 'AI analysis active' : 'AI enabled, no model configured') : 'AI analysis disabled';
+		aiPill.innerHTML = `<span class="ni-pill-icon">◆</span>AI ${aiEnabled && aiAvailable ? 'ON' : 'OFF'}`;
+		stats.appendChild(aiPill);
 
-		this._renderAnalysisCoverage(panel, allMarkers);
-		this._renderDomainBar(panel, allMarkers);
-		this._renderIssueList(panel, allMarkers);
+		bar.appendChild(stats);
+		panel.appendChild(bar);
 	}
 
 
@@ -384,15 +454,15 @@ export class ChecksViewPane extends ViewPane {
 		z.className = 'ni-zero-state';
 		z.innerHTML = `
 			<div class="ni-zero-icon">◈</div>
-			<div class="ni-zero-title">No rules configured</div>
+			<div class="ni-zero-title">No framework loaded</div>
 			<div class="ni-zero-body">
-				Import a compliance framework to start enforcing architecture,
-				security, and GRC rules across your codebase.
+				Import a compliance framework to activate GRC rule enforcement.
+				Open the Checks Manager window (⌘⌥C) to import a framework JSON.
 			</div>
 			<div class="ni-zero-hints">
-				<div class="ni-zero-hint">Drop a <code>.json</code> framework file into <code>.inverse/frameworks/</code></div>
-				<div class="ni-zero-hint">Framework rules work for TypeScript, Python, Java, C/C++, Go, Rust, and more</div>
-				<div class="ni-zero-hint">AI analysis runs on every save — no additional setup required</div>
+				<div class="ni-zero-hint">Place framework <code>.json</code> files in <code>.inverse/frameworks/</code></div>
+				<div class="ni-zero-hint">Supports TypeScript, Python, Java, Go, Rust, C/C++ and more</div>
+				<div class="ni-zero-hint">AI checks activate automatically when a Chat or Checks model is configured</div>
 			</div>
 		`;
 		panel.appendChild(z);
@@ -479,6 +549,46 @@ export class ChecksViewPane extends ViewPane {
 .ni-badge-err  { background: #b71c1c; color: #ef9a9a; border: 1px solid #c62828; }
 .ni-badge-warn { background: #e65100; color: #ffcc80; border: 1px solid #ef6c00; }
 .ni-badge-grey { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border: 1px solid var(--vscode-panel-border); }
+
+/* ── Action bar ──────────────────────────────────────────────────── */
+.ni-action-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 10px;
+}
+.ni-scan-btn {
+	font-size: 10px;
+	font-weight: 700;
+	padding: 4px 10px;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-button-background, #0e639c);
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #fff);
+	cursor: pointer;
+	letter-spacing: 0.2px;
+	flex-shrink: 0;
+}
+.ni-scan-btn:hover:not(:disabled) { opacity: 0.9; }
+.ni-scan-btn:disabled { opacity: 0.5; cursor: default; }
+.ni-bar-stats { display: flex; gap: 6px; flex-wrap: wrap; }
+.ni-bar-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 9px;
+	font-weight: 600;
+	padding: 2px 6px;
+	border-radius: 10px;
+	border: 1px solid rgba(255,255,255,0.1);
+	background: rgba(255,255,255,0.05);
+	color: var(--vscode-foreground);
+	opacity: 0.65;
+}
+.ni-pill-ai-on  { background: rgba(103,58,183,0.2); border-color: rgba(103,58,183,0.4); color: #ce93d8; opacity: 1; }
+.ni-pill-ai-off { background: rgba(96,125,139,0.15); border-color: rgba(96,125,139,0.3); opacity: 0.5; }
+.ni-pill-icon { font-size: 8px; }
 
 /* ── Summary row ─────────────────────────────────────────────────── */
 .ni-summary-row {

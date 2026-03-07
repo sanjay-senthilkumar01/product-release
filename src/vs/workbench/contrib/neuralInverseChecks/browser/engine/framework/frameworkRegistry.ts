@@ -119,6 +119,11 @@ export interface IFrameworkRegistry {
 	 * Returns the validation result so callers can display errors.
 	 */
 	importFramework(json: string): Promise<IFrameworkValidationResult>;
+
+	/**
+	 * Remove a framework by ID. Deletes the file from `.inverse/frameworks/` and reloads.
+	 */
+	removeFramework(id: string): Promise<void>;
 }
 
 
@@ -600,6 +605,24 @@ export class FrameworkRegistry extends Disposable implements IFrameworkRegistry 
 		await this._loadAllFrameworks();
 
 		return validation;
+	}
+
+	public async removeFramework(id: string): Promise<void> {
+		const frameworksDir = this._getFrameworksDir();
+		const inverseUri = this._getInverseDir();
+		if (!frameworksDir || !inverseUri) return;
+
+		const fileUri = URI.joinPath(frameworksDir, `${id}.json`);
+		try {
+			await withInverseWriteAccess(inverseUri.fsPath, async () => {
+				if (await this.fileService.exists(fileUri)) {
+					await this.fileService.del(fileUri);
+				}
+			});
+			await this._loadAllFrameworks();
+		} catch (e) {
+			console.error(`[FrameworkRegistry] Failed to remove framework ${id}:`, e);
+		}
 	}
 
 

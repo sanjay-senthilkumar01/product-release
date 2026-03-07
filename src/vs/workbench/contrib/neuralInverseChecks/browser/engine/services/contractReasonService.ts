@@ -583,8 +583,23 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		}
 
 		// Check persisted hash from a previous session.
+		// Content unchanged — restore saved violations from audit trail instead of re-calling LLM.
 		if (this._persistedHashes.get(fileKey) === contentHash) {
-			console.log(`[ContractReason] Content unchanged for ${fileUri.path.split('/').pop()} — skipping LLM (use saved violations)`);
+			const saved = await this.projectAnalyzerService.loadAuditData(fileUri);
+			if (saved.length > 0) {
+				const violations: ICheckResult[] = saved.map((v: any) => ({ ...v, fileUri, checkSource: 'ai' as const }));
+				const restored: ContractReasonResult = {
+					additionalViolations: violations,
+					falsePositiveFlags: [],
+					enrichments: new Map(),
+					fileUri,
+				};
+				this._resultCache.set(fileKey, { result: restored, hash: contentHash });
+				this._onDidContractReasonResultsReady.fire(restored);
+				console.log(`[ContractReason] Restored ${violations.length} AI violation(s) for ${fileUri.path.split('/').pop()} from audit trail`);
+			} else {
+				console.log(`[ContractReason] Content unchanged for ${fileUri.path.split('/').pop()} — no prior AI violations`);
+			}
 			return undefined;
 		}
 
@@ -648,8 +663,21 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		// Build context files snippet (test/mock/config files for AI reference)
 		const contextSnippet = this._buildContextFilesSnippet(contextFiles);
 
-		// Extract functions from the file for function-level analysis
-		const functions = this._extractFunctions(fileContent);
+		// Extract functions from the file for function-level analysis.
+		// Cap at 6 functions per file to avoid LLM flooding — prioritize functions
+		// that overlap with existing pattern violations, then by code size.
+		const allFunctions = this._extractFunctions(fileContent);
+		const MAX_FUNCTIONS_PER_FILE = 6;
+		const functions = allFunctions.length > MAX_FUNCTIONS_PER_FILE
+			? [
+				// Priority 1: functions that contain existing pattern violations
+				...allFunctions.filter(fn => patternResults.some(r => r.line >= fn.startLine && r.line <= fn.endLine)),
+				// Priority 2: largest functions (most likely to have issues)
+				...allFunctions
+					.filter(fn => !patternResults.some(r => r.line >= fn.startLine && r.line <= fn.endLine))
+					.sort((a, b) => (b.endLine - b.startLine) - (a.endLine - a.startLine)),
+			].slice(0, MAX_FUNCTIONS_PER_FILE)
+			: allFunctions;
 
 		// Get file extension for language hint
 		const ext = fileUri.path.split('.').pop() || 'ts';
@@ -657,7 +685,7 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 
 		// If we extracted functions, analyze each individually with relevant rules
 		if (functions.length > 0) {
-			console.log(`[ContractReason] Analyzing ${functions.length} functions in ${fileName}`);
+			console.log(`[ContractReason] Analyzing ${functions.length}/${allFunctions.length} functions in ${fileName}`);
 
 			// Analyze functions concurrently (max 3 at a time)
 			const allResults: (ContractReasonResult | undefined)[] = [];
@@ -1111,7 +1139,8 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${
 					references: rule.references,
 					blockingBehavior: rule.blockingBehavior,
 					// AI-generated fields
-					aiExplanation: v.aiExplanation,
+					checkSource: 'ai' as const,
+					aiExplanation: v.aiExplanation || `AI detected a potential ${rule.domain} violation.`,
 					aiConfidence: v.aiConfidence || 'medium',
 				});
 			}

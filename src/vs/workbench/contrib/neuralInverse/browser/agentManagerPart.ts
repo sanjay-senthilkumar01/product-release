@@ -12,11 +12,11 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { Part } from '../../../browser/part.js';
 import { IWebviewService, IWebviewElement } from '../../webview/browser/webview.js';
 import { IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
-import { IAgentRegistryService } from '../common/agentRegistryService.js';
-import { ILLMMessageService } from '../../void/common/sendLLMMessageService.js';
-import { IConvertToLLMMessageService } from '../../void/browser/convertToLLMMessageService.js';
+import { IAgentStoreService } from './agentStoreService.js';
+import { IVoidSettingsService } from '../../void/common/voidSettingsService.js';
 import { mountSidebar } from '../../void/browser/react/out/sidebar-tsx/index.js';
 import { toDisposable } from '../../../../base/common/lifecycle.js';
+import { IWorkflowAgentService } from './workflowAgentService.js';
 
 export class AgentManagerPart extends Part {
 
@@ -37,9 +37,9 @@ export class AgentManagerPart extends Part {
         @IInstantiationService private readonly instantiationService: IInstantiationService,
         @IWebviewService private readonly webviewService: IWebviewService,
         @IConfigurationService private readonly configurationService: IConfigurationService,
-        @IAgentRegistryService private readonly agentRegistryService: IAgentRegistryService,
-        @ILLMMessageService private readonly llmMessageService: ILLMMessageService,
-        @IConvertToLLMMessageService private readonly convertToLLMMessageService: IConvertToLLMMessageService
+        @IAgentStoreService private readonly agentStore: IAgentStoreService,
+        @IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
+        @IWorkflowAgentService private readonly workflowAgentService: IWorkflowAgentService,
     ) {
         super(AgentManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
         this.registerListeners();
@@ -277,21 +277,56 @@ export class AgentManagerPart extends Part {
         this.registerWebviewListeners();
         this.registerConfigurationListeners();
 
-        // Initial agent load
-        setTimeout(() => this.updateAgentsList(), 1000); // Give webview a moment to load
+        // Initial data load — give webview a moment to initialise
+        setTimeout(() => {
+            this.updateAgentsList();
+            this.updateModelsList();
+            this.updateWorkflowsList();
+            this.updateRunsList();
+        }, 1000);
 
         return parent;
     }
 
     private registerListeners(): void {
-        this.disposables.add(this.agentRegistryService.onDidAgentsChange(() => {
+        this.disposables.add(this.agentStore.onDidChange(() => {
             this.updateAgentsList();
+        }));
+        this.disposables.add(this.voidSettingsService.onDidChangeState(() => {
+            this.updateModelsList();
+        }));
+        this.disposables.add(this.workflowAgentService.onDidChangeWorkflows(() => {
+            this.updateWorkflowsList();
+        }));
+        this.disposables.add(this.workflowAgentService.onDidChangeRun(() => {
+            this.updateRunsList();
         }));
     }
 
     private updateAgentsList(): void {
-        const agents = this.agentRegistryService.getAgents();
+        const agents = this.agentStore.getAgents();
         this.webviewElement?.postMessage({ command: 'updateAgents', data: agents });
+    }
+
+    private updateModelsList(): void {
+        const models = this.voidSettingsService.state._modelOptions.map(opt => ({
+            label: opt.name,
+            providerName: opt.selection.providerName,
+            modelName: opt.selection.modelName,
+            value: `${opt.selection.providerName}::${opt.selection.modelName}`,
+        }));
+        this.webviewElement?.postMessage({ command: 'updateModels', data: models });
+    }
+
+    private updateWorkflowsList(): void {
+        const workflows = this.workflowAgentService.getWorkflows();
+        this.webviewElement?.postMessage({ command: 'updateWorkflows', data: workflows });
+    }
+
+    private updateRunsList(): void {
+        const active = this.workflowAgentService.getActiveRuns();
+        const history = this.workflowAgentService.getRunHistory(20);
+        this.webviewElement?.postMessage({ command: 'updateRuns', data: { active, history } });
     }
 
     private updateWebviewContent(): void {
@@ -304,12 +339,47 @@ export class AgentManagerPart extends Part {
         if (!this.webviewElement) { return; }
 
         this.disposables.add(this.webviewElement.onMessage(e => {
-            if (e.message.command === 'sendMessage') {
-                this.handleAgentMessage(e.message.data);
-            } else if (e.message.command === 'refreshAgents') {
+            const { command, data } = e.message;
+            if (command === 'sendMessage') {
+                this.handleAgentMessage(data);
+            } else if (command === 'refreshAgents') {
                 this.updateAgentsList();
-            } else if (e.message.command === 'createAgent') {
-                this.handleCreateAgent(e.message.data);
+            } else if (command === 'createAgent') {
+                this.handleCreateAgent(data);
+            } else if (command === 'runWorkflow') {
+                this.workflowAgentService.runWorkflow(data.workflowId, data.input ?? '', 'manual').catch((err: Error) => {
+                    console.error('[AgentManagerPart] runWorkflow error:', err);
+                });
+            } else if (command === 'cancelRun') {
+                this.workflowAgentService.cancelRun(data.runId);
+            } else if (command === 'refreshWorkflows') {
+                this.updateWorkflowsList();
+                this.updateRunsList();
+            } else if (command === 'refreshModels') {
+                this.updateModelsList();
+            } else if (command === 'deleteAgent') {
+                this.agentStore.deleteAgent(data.id).catch((err: Error) => {
+                    this.webviewElement?.postMessage({ command: 'agentCreateError', data: 'Delete failed: ' + err.message });
+                });
+            } else if (command === 'updateAgent') {
+                this.agentStore.updateAgent(data.id, data.updates).then(() => {
+                    this.webviewElement?.postMessage({ command: 'agentUpdated', data: data.id });
+                }).catch((err: Error) => {
+                    this.webviewElement?.postMessage({ command: 'agentUpdateError', data: 'Update failed: ' + err.message });
+                });
+            } else if (command === 'createWorkflow') {
+                this.workflowAgentService.saveWorkflow(data).then(() => {
+                    this.webviewElement?.postMessage({ command: 'workflowCreated', data: data.id });
+                    this.updateWorkflowsList();
+                }).catch((err: Error) => {
+                    this.webviewElement?.postMessage({ command: 'workflowCreateError', data: err.message });
+                });
+            } else if (command === 'deleteWorkflow') {
+                this.workflowAgentService.deleteWorkflow(data.id).then(() => {
+                    this.updateWorkflowsList();
+                }).catch((err: Error) => {
+                    console.error('[AgentManagerPart] deleteWorkflow error:', err);
+                });
             }
         }));
     }
@@ -322,86 +392,38 @@ export class AgentManagerPart extends Part {
         }));
     }
 
-    private getMappedTools(agentTools: string[] | undefined): string[] {
-        const TOOLS_MAP: { [key: string]: string[] } = {
-            'Terminal': ['run_command', 'run_persistent_command', 'open_persistent_terminal', 'kill_persistent_terminal'],
-            'FileSystem': ['read_file', 'ls_dir', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_in_file', 'create_file_or_folder', 'delete_file_or_folder', 'edit_file', 'rewrite_file', 'read_lint_errors'],
-            'Browser': ['read_browser_page', 'open_browser_url', 'browser_search'],
-            'GitHub': [], // Placeholder for internal tools replacement
-            'Jira': [], // Placeholder for internal tools replacement
-            'Linear': [], // Placeholder for internal tools replacement
-            'Database': [] // Placeholder for internal tools replacement
-        };
-
-        if (!agentTools || agentTools.length === 0) return []; // No tools
-
-        const allowed: string[] = [];
-        agentTools.forEach(t => {
-            const mapped = TOOLS_MAP[t];
-            if (mapped) allowed.push(...mapped);
-            // Also allow direct builtin tool names if specified? Maybe later.
-        });
-        return [...new Set(allowed)];
-    }
-
-    private async handleAgentMessage(data: { agentName: string; input: string }): Promise<void> {
-        const agent = this.agentRegistryService.getAgents().find(a => a.name === data.agentName);
+    private handleAgentMessage(data: { agentId: string; input: string }): void {
+        const agent = this.agentStore.getAgent(data.agentId);
         if (!agent) {
-            console.error('Agent not found:', data.agentName);
+            this.webviewElement?.postMessage({ command: 'agentResponseError', data: `Agent "${data.agentId}" not found in .inverse/agents/` });
             return;
         }
 
-        const allowedTools = this.getMappedTools(agent.tools);
-        // If allowedTools is empty, we might want to use 'normal' mode, but 'agent' mode handles system prompt better.
-        // If allowedTools is empty, prompts.ts will filter all tools out, which is what we want.
+        this.webviewElement?.postMessage({ command: 'agentRunStarted' });
 
-        // Generate the robust system message including tools definitions and context
-        const systemMessage = await this.convertToLLMMessageService.generateSystemMessage('agent', undefined, allowedTools);
-
-        // Combine agent instructions with the scaffolded system message
-        const fullSystemMessage = `AGENT INSTRUCTIONS:\n${agent.systemInstructions}\n\n${systemMessage}`;
-
-        const messages = [
-            { role: 'system', content: fullSystemMessage },
-            { role: 'user', content: data.input }
-        ];
-
-        this.webviewElement?.postMessage({ command: 'agentResponseStart' });
-
-        this.llmMessageService.sendLLMMessage({
-            messagesType: 'chatMessages',
-            messages: messages as any, // Type check bypass for now
-            modelSelection: { providerName: 'openAI', modelName: agent.model }, // Defaulting to OpenAI for now
-            logging: { loggingName: 'AgentManager' },
-            modelSelectionOptions: undefined,
-            overridesOfModel: undefined,
-            separateSystemMessage: undefined,
-            chatMode: 'agent', // Important to trigger tool use logic in downstream services if any
-            onText: (params) => {
-                this.webviewElement?.postMessage({ command: 'agentResponseText', data: params.fullText });
-            },
-            onFinalMessage: (params) => {
-                this.webviewElement?.postMessage({ command: 'agentResponseEnd' });
-            },
-            onError: (params) => {
-                this.webviewElement?.postMessage({ command: 'agentResponseError', data: params.message });
-            },
-            onAbort: () => { },
-        });
+        this.workflowAgentService.runAgent(agent.id, data.input)
+            .then(run => {
+                this.webviewElement?.postMessage({ command: 'agentRunFinished', data: { runId: run.id, status: run.status, output: run.finalOutput, error: run.error } });
+            })
+            .catch((err: Error) => {
+                this.webviewElement?.postMessage({ command: 'agentResponseError', data: err.message });
+            });
     }
 
-    private async handleCreateAgent(data: { name: string; model: string; instructions: string; tools: string[] }): Promise<void> {
+    private async handleCreateAgent(data: { name: string; model: string; description: string; instructions: string; tools: string[] }): Promise<void> {
         try {
-            await this.agentRegistryService.createAgent({
+            // model is "providerName::modelName" from the webview dropdown
+            const [providerName, modelName] = data.model.split('::');
+            const agent = await this.agentStore.createAgent({
                 name: data.name,
-                model: data.model,
+                description: data.description || undefined,
+                model: { providerName: providerName ?? '', modelName: modelName ?? data.model },
                 systemInstructions: data.instructions,
-                tools: data.tools
+                allowedTools: data.tools,
             });
-            this.webviewElement?.postMessage({ command: 'agentCreated', data: data.name });
-            // The registry service listener will trigger updateAgentsList anyway
+            this.webviewElement?.postMessage({ command: 'agentCreated', data: agent.id });
         } catch (e) {
-            this.webviewElement?.postMessage({ command: 'agentResponseError', data: 'Failed to create agent: ' + (e instanceof Error ? e.message : String(e)) });
+            this.webviewElement?.postMessage({ command: 'agentCreateError', data: 'Failed to create agent: ' + (e instanceof Error ? e.message : String(e)) });
         }
     }
 
@@ -411,592 +433,1222 @@ export class AgentManagerPart extends Part {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent</title>
+    <title>Neural Inverse</title>
     <style>
         :root {
-            --sidebar-width: 250px;
+            --sidebar-w: 256px;
+            --radius: 6px;
+            --radius-lg: 10px;
+            --bg: var(--vscode-editor-background);
+            --bg-panel: var(--vscode-editorWidget-background, var(--vscode-editor-inactiveSelectionBackground));
+            --bg-sidebar: var(--vscode-sideBar-background);
+            --border: var(--vscode-widget-border, rgba(255,255,255,0.1));
+            --fg: var(--vscode-editor-foreground);
+            --fg-dim: var(--vscode-descriptionForeground);
+            --accent: var(--vscode-button-background);
+            --accent-hover: var(--vscode-button-hoverBackground);
+            --accent-fg: var(--vscode-button-foreground);
+            --green: #22c55e;
+            --red: #ef4444;
+            --blue: #3b82f6;
+            --yellow: #eab308;
+            --purple: #a78bfa;
         }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: var(--vscode-font-family);
-            font-size: var(--vscode-font-size);
-            background-color: var(--vscode-editor-background);
-            color: var(--vscode-editor-foreground);
-            margin: 0;
+            font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+            font-size: 13px;
+            background: var(--bg);
+            color: var(--fg);
             display: flex;
             height: 100vh;
             overflow: hidden;
         }
-        /* Sidebar */
+        /* ─── Sidebar ─────────────────────────────────────────────────────── */
         .sidebar {
-            width: var(--sidebar-width);
-            background-color: var(--vscode-sideBar-background);
-            border-right: 1px solid var(--vscode-sideBar-border, var(--vscode-widget-border));
-            display: flex;
-            flex-direction: column;
+            width: var(--sidebar-w); min-width: var(--sidebar-w); flex-shrink: 0;
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; overflow: hidden;
         }
         .sidebar-header {
-            padding: 12px 16px;
-            display: flex;
+            padding: 10px 16px 0; display: flex; align-items: center;
+            justify-content: space-between; flex-shrink: 0;
+        }
+        .sidebar-title {
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.8px; color: var(--vscode-sideBarTitle-foreground);
+        }
+        /* ─── Sidebar Tab Bar ──────────────────────────────────────────────── */
+        .sidebar-tabs {
+            display: flex; flex-shrink: 0; border-bottom: 1px solid var(--border);
+            margin-top: 8px;
+        }
+        .sidebar-tab {
+            flex: 1; padding: 7px 0; text-align: center; font-size: 11px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer;
+            user-select: none; color: var(--vscode-panelTitle-inactiveForeground);
+            border-bottom: 2px solid transparent; margin-bottom: -1px;
+            transition: color 0.1s;
+        }
+        .sidebar-tab:hover:not(.active) { color: var(--fg); }
+        .sidebar-tab.active {
+            color: var(--vscode-panelTitle-activeForeground);
+            border-bottom-color: var(--accent);
+        }
+        .sidebar-pane { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+        .sidebar-pane.active { display: flex; }
+        .icon-btn {
+            background: transparent; border: none; cursor: pointer; color: var(--fg-dim);
+            width: 22px; height: 22px; border-radius: 4px; display: flex;
+            align-items: center; justify-content: center; flex-shrink: 0;
+        }
+        .icon-btn:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--fg); }
+        .sidebar-search { padding: 8px 12px 6px; flex-shrink: 0; }
+        .sidebar-search input {
+            width: 100%; background: var(--vscode-input-background); color: var(--fg);
+            border: 1px solid var(--border); padding: 5px 10px; border-radius: 4px;
+            font-size: 12px; font-family: inherit;
+        }
+        .sidebar-search input:focus { outline: none; border-color: var(--vscode-focusBorder); }
+        .sidebar-search input::placeholder { color: var(--fg-dim); }
+        .sidebar-scroll { flex: 1; overflow-y: auto; }
+        .sec-label {
+            padding: 10px 16px 3px; font-size: 10px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.8px; color: var(--fg-dim); display: flex; align-items: center;
             justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
         }
-        .sidebar-header h2 {
-            font-size: 11px;
-            text-transform: uppercase;
-            margin: 0;
-            font-weight: 600;
-            color: var(--vscode-sideBarTitle-foreground);
-            letter-spacing: 0.5px;
+        .sec-label button {
+            background: transparent; border: none; cursor: pointer; color: var(--fg-dim);
+            font-size: 10px; padding: 2px 6px; border-radius: 3px; font-family: inherit;
         }
-        .new-agent-btn {
-            background: transparent;
-            color: var(--vscode-icon-foreground);
-            border: none;
-            cursor: pointer;
-            padding: 4px;
-            display: flex;
-            align-items: center;
-            border-radius: 3px;
-        }
-        .new-agent-btn:hover {
-            background: var(--vscode-toolbar-hoverBackground);
-        }
-        .agent-list {
-            flex: 1;
-            overflow-y: auto;
-            padding: 8px 0;
-        }
+        .sec-label button:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--fg); }
         .agent-item {
-            padding: 6px 16px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: var(--vscode-sideBar-foreground);
-            font-size: 13px;
-            user-select: none;
+            padding: 6px 16px; cursor: pointer; display: flex; align-items: center;
+            gap: 9px; font-size: 13px; user-select: none;
         }
-        .agent-item:hover {
-            background-color: var(--vscode-list-hoverBackground);
-            color: var(--vscode-list-hoverForeground);
+        .agent-item:hover { background: var(--vscode-list-hoverBackground); }
+        .agent-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+        .a-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .a-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .a-del {
+            background: transparent; border: none; cursor: pointer; color: var(--fg-dim);
+            opacity: 0; font-size: 14px; padding: 0 3px; border-radius: 3px; flex-shrink: 0;
+            line-height: 1;
         }
-        .agent-item.selected {
-            background-color: var(--vscode-list-activeSelectionBackground);
-            color: var(--vscode-list-activeSelectionForeground);
+        .agent-item:hover .a-del { opacity: 0.5; }
+        .a-del:hover { opacity: 1 !important; color: var(--red); }
+        .wf-sidebar-item {
+            padding: 5px 16px; cursor: pointer; display: flex; align-items: center;
+            gap: 8px; font-size: 12px; color: var(--fg-dim); user-select: none;
         }
-        .agent-icon {
-            width: 16px;
-            height: 16px;
-            background-color: var(--vscode-symbolIcon-classForeground);
-            border-radius: 50%;
-            display: inline-block;
-        }
+        .wf-sidebar-item:hover { background: var(--vscode-list-hoverBackground); color: var(--fg); }
+        .wf-bullet { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+        .wf-bullet.off { background: var(--fg-dim); }
 
-        /* Main Workspace */
-        .workspace {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            background-color: var(--vscode-editor-background);
-            position: relative;
-        }
-        .view {
-            display: none;
-            flex-direction: column;
-            height: 100%;
-            width: 100%;
-        }
-        .view.active {
-            display: flex;
-        }
+        /* ─── Workspace ────────────────────────────────────────────────────── */
+        .workspace { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
+        .view { display: none; flex-direction: column; height: 100%; width: 100%; position: absolute; top: 0; left: 0; }
+        .view.active { display: flex; }
 
-        /* Empty State */
+        /* ─── Empty State ──────────────────────────────────────────────────── */
         .empty-state {
-            align-items: center;
-            justify-content: center;
-            color: var(--vscode-descriptionForeground);
-            text-align: center;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100%; gap: 10px; color: var(--fg-dim); text-align: center; padding: 40px;
         }
-        .empty-state h3 { margin-bottom: 8px; font-weight: 500; font-size: 16px; color: var(--vscode-foreground); }
-        .empty-state p { font-size: 13px; max-width: 300px; line-height: 1.5; }
-
-        /* Form (Create Agent) */
-        .form-container {
-            padding: 32px;
-            max-width: 600px;
-            margin: 0 auto;
-            width: 100%;
-            box-sizing: border-box;
-            overflow-y: auto;
-        }
-        .form-header { margin-bottom: 24px; }
-        .form-header h2 { font-size: 18px; font-weight: 500; margin: 0; color: var(--vscode-foreground); }
-        .form-group { margin-bottom: 20px; }
-        .form-group label {
-            display: block;
-            font-size: 11px;
-            text-transform: uppercase;
-            font-weight: 600;
-            color: var(--vscode-descriptionForeground);
+        .empty-icon {
+            width: 52px; height: 52px; border-radius: 14px; background: var(--bg-panel);
+            border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
             margin-bottom: 6px;
         }
-        input, select, textarea {
-            width: 100%;
-            background: var(--vscode-input-background);
-            color: var(--vscode-input-foreground);
-            border: 1px solid var(--vscode-input-border);
-            padding: 8px;
-            border-radius: 3px;
-            font-family: inherit;
-            font-size: 13px;
-            box-sizing: border-box;
-        }
-        input:focus, select:focus, textarea:focus {
-            outline: 1px solid var(--vscode-focusBorder);
-            border-color: var(--vscode-focusBorder);
-        }
-        textarea { resize: vertical; min-height: 100px; }
-        .tools-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-            background: var(--vscode-editor-inactiveSelectionBackground);
-            padding: 16px;
-            border-radius: 4px;
-            border: 1px solid var(--vscode-widget-border);
-        }
-        .tool-checkbox {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 13px;
-            cursor: pointer;
-        }
-        .tool-checkbox input { width: auto; margin: 0; cursor: pointer; }
-        .form-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 12px;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid var(--vscode-widget-border);
-        }
-        button {
-            background: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            border: none;
-            padding: 6px 16px;
-            border-radius: 2px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 500;
-        }
-        button:hover { background: var(--vscode-button-hoverBackground); }
-        button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-button-border, transparent); }
-        button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+        .empty-state h3 { font-size: 15px; font-weight: 500; color: var(--fg); }
+        .empty-state p { font-size: 12px; max-width: 280px; line-height: 1.6; }
 
-        /* Agent Details Tabs */
-        .agent-tabs {
-            display: flex;
-            gap: 16px;
-            padding: 0 20px;
-            border-bottom: 1px solid var(--vscode-widget-border);
-            margin-top: 12px;
+        /* ─── Buttons ──────────────────────────────────────────────────────── */
+        .btn {
+            border: none; border-radius: var(--radius); cursor: pointer; font-size: 13px;
+            font-weight: 500; font-family: inherit; padding: 7px 16px;
+            display: inline-flex; align-items: center; gap: 6px; transition: background 0.1s;
         }
-        .agent-tab {
-            padding: 8px 4px;
-            font-size: 11px;
-            text-transform: uppercase;
-            font-weight: 500;
-            color: var(--vscode-descriptionForeground);
-            cursor: pointer;
-            border-bottom: 2px solid transparent;
-            user-select: none;
+        .btn-primary { background: var(--accent); color: var(--accent-fg); }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-ghost {
+            background: transparent; color: var(--fg-dim);
+            border: 1px solid var(--border);
         }
-        .agent-tab:hover {
-            color: var(--vscode-foreground);
-        }
-        .agent-tab.active {
-            color: var(--vscode-foreground);
-            border-bottom-color: var(--vscode-button-background);
-        }
-        .agent-tab-content {
-            display: none;
-            flex: 1;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        .agent-tab-content.active {
-            display: flex;
-        }
+        .btn-ghost:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--fg); }
+        .btn-sm { padding: 4px 12px; font-size: 11px; }
+        .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-        /* Chat View / Agent Detail */
-        .chat-header {
-            padding: 16px 20px 0 20px;
-            display: flex;
-            flex-direction: column;
-            background: var(--vscode-editor-background);
+        /* ─── Create Agent Form ────────────────────────────────────────────── */
+        .form-scroll { overflow-y: auto; padding: 32px 40px 40px; flex: 1; }
+        .form-card { max-width: 580px; width: 100%; margin: 0 auto; }
+        .form-title { font-size: 20px; font-weight: 600; color: var(--fg); margin-bottom: 4px; }
+        .form-sub { font-size: 12px; color: var(--fg-dim); margin-bottom: 28px; line-height: 1.5; }
+        .form-group { margin-bottom: 18px; }
+        .form-label {
+            display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.5px; color: var(--fg-dim); margin-bottom: 6px;
         }
-        .chat-header-top {
-            display: flex;
-            align-items: center;
-            gap: 12px;
+        .req { color: var(--red); }
+        .form-ctrl {
+            width: 100%; background: var(--vscode-input-background); color: var(--fg);
+            border: 1px solid var(--border); padding: 8px 12px; border-radius: var(--radius);
+            font-family: inherit; font-size: 13px;
         }
-        .chat-header h3 { margin: 0; font-size: 14px; font-weight: 500; color: var(--vscode-foreground); }
-        .chat-header .model-badge {
-            font-size: 11px;
-            background: var(--vscode-badge-background);
-            color: var(--vscode-badge-foreground);
-            padding: 2px 6px;
-            border-radius: 10px;
+        .form-ctrl:focus { outline: none; border-color: var(--vscode-focusBorder); box-shadow: 0 0 0 1px var(--vscode-focusBorder); }
+        textarea.form-ctrl { resize: vertical; min-height: 110px; line-height: 1.5; }
+        .form-hint { font-size: 11px; color: var(--fg-dim); margin-top: 5px; line-height: 1.4; }
+        .form-err {
+            display: none; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.35);
+            color: #f87171; border-radius: var(--radius); padding: 8px 12px; font-size: 12px;
+            margin-bottom: 14px;
         }
-        .chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
+        .form-err.show { display: block; }
+        .form-divider { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+        .form-actions { display: flex; justify-content: flex-end; gap: 10px; }
+        .tools-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+        .tool-chip {
+            display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+            background: var(--bg-panel); border: 1px solid var(--border);
+            border-radius: var(--radius); cursor: pointer; font-size: 11px;
+            font-weight: 500; user-select: none; transition: border-color 0.1s;
         }
-        .message { display: flex; flex-direction: column; max-width: 85%; }
-        .message.user { align-self: flex-end; }
-        .message.agent { align-self: flex-start; }
-        .message-bubble {
-            padding: 10px 14px;
-            border-radius: 6px;
-            font-size: 13px;
-            line-height: 1.5;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-        .message.user .message-bubble {
-            background-color: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            border-bottom-right-radius: 2px;
-        }
-        .message.agent .message-bubble {
-            background-color: var(--vscode-editor-inactiveSelectionBackground);
-            color: var(--vscode-editor-foreground);
-            border-bottom-left-radius: 2px;
-            font-family: var(--vscode-editor-font-family, monospace);
-        }
+        .tool-chip input[type="checkbox"] { margin: 0; width: auto; cursor: pointer; }
+        .tool-chip:has(input:checked) { border-color: var(--vscode-focusBorder); }
 
-        .chat-input-area {
-            padding: 16px 20px;
-            border-top: 1px solid var(--vscode-widget-border);
-            background: var(--vscode-editor-background);
+        /* ─── Agent Detail ─────────────────────────────────────────────────── */
+        .detail-head { padding: 16px 20px 0; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+        .detail-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+        .agent-avatar {
+            width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center;
+            justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; color: #fff;
         }
-        .input-container {
-            display: flex;
-            gap: 10px;
+        .detail-name { font-size: 15px; font-weight: 600; flex: 1; }
+        .model-pill {
+            font-size: 10px; padding: 3px 8px; border-radius: 10px; background: var(--bg-panel);
+            border: 1px solid var(--border); color: var(--fg-dim);
         }
-        .input-container input {
-            flex: 1;
-            margin: 0;
-            padding: 10px 14px;
-            border-radius: 4px;
+        .tab-bar { display: flex; padding: 0 4px; }
+        .tab {
+            padding: 8px 12px; font-size: 12px; font-weight: 500; color: var(--fg-dim);
+            cursor: pointer; border-bottom: 2px solid transparent; user-select: none; white-space: nowrap;
         }
+        .tab:hover { color: var(--fg); }
+        .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+        .tab-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+        .tab-panel.active { display: flex; }
+        .chat-msgs {
+            flex: 1; overflow-y: auto; padding: 20px; display: flex;
+            flex-direction: column; gap: 14px;
+        }
+        .msg { display: flex; flex-direction: column; max-width: 82%; }
+        .msg.user { align-self: flex-end; }
+        .msg.agent { align-self: flex-start; }
+        .bubble {
+            padding: 9px 14px; border-radius: var(--radius-lg); font-size: 13px;
+            line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+        }
+        .msg.user .bubble { background: var(--accent); color: var(--accent-fg); border-bottom-right-radius: 3px; }
+        .msg.agent .bubble { background: var(--bg-panel); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+        .chat-bar { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0; }
+        .chat-bar input {
+            flex: 1; background: var(--vscode-input-background); color: var(--fg);
+            border: 1px solid var(--border); padding: 8px 12px; border-radius: var(--radius);
+            font-family: inherit; font-size: 13px;
+        }
+        .chat-bar input:focus { outline: none; border-color: var(--vscode-focusBorder); }
+
+        /* ─── Settings Tab ─────────────────────────────────────────────────── */
+        .settings-form { display: flex; flex-direction: column; gap: 16px; padding: 20px; overflow-y: auto; height: 100%; }
+        .settings-form .field-group { display: flex; flex-direction: column; gap: 6px; }
+        .settings-form label { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+        .settings-form input, .settings-form textarea, .settings-form select {
+            background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+            color: var(--fg); font-size: 12px; padding: 6px 8px; width: 100%; box-sizing: border-box;
+        }
+        .settings-form textarea { resize: vertical; min-height: 80px; font-family: var(--vscode-editor-font-family, monospace); }
+        .settings-form input:focus, .settings-form textarea:focus, .settings-form select:focus {
+            outline: none; border-color: var(--vscode-focusBorder);
+        }
+        .settings-form .tool-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+        .settings-form .tool-label { display: flex; align-items: center; gap: 5px; font-size: 11px; cursor: pointer; }
+        .settings-footer { display: flex; align-items: center; gap: 10px; padding-top: 4px; border-top: 1px solid var(--border); }
+        .settings-msg { font-size: 11px; color: var(--green); }
+        .settings-err { font-size: 11px; color: #f87171; }
+
+        /* ─── Tool Groups ──────────────────────────────────────────────────── */
+        .tool-group { margin-bottom: 8px; }
+        .tool-group-name { font-size: 10px; font-weight: 600; text-transform: uppercase; color: var(--fg-dim); margin-bottom: 4px; letter-spacing: 0.5px; }
+        .tool-group-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+        .tool-chip { display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer;
+            background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 2px 7px; }
+        .tool-chip:hover { border-color: var(--accent); }
+        .tool-chip input { margin: 0; cursor: pointer; }
+
+        /* ─── Workflow Builder ──────────────────────────────────────────────── */
+        .wf-builder { display: flex; flex-direction: column; gap: 14px; padding: 20px; overflow-y: auto; height: 100%; }
+        .wf-builder .field-group { display: flex; flex-direction: column; gap: 5px; }
+        .wf-builder label { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+        .wf-builder input[type=text], .wf-builder input[type=number], .wf-builder textarea, .wf-builder select {
+            background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+            color: var(--fg); font-size: 12px; padding: 6px 8px; width: 100%; box-sizing: border-box;
+        }
+        .wf-builder textarea { resize: vertical; min-height: 54px; }
+        .wf-builder input:focus, .wf-builder textarea:focus, .wf-builder select:focus { outline: none; border-color: var(--vscode-focusBorder); }
+        .wf-enabled-row { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+        .wf-enabled-row input { margin: 0; width: auto; }
+        .step-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .step-section-head span { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+        .step-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 10px; }
+        .step-card-head { display: flex; align-items: center; justify-content: space-between; }
+        .step-card-head .step-num { font-size: 11px; font-weight: 600; color: var(--accent); }
+        .step-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .step-tools-wrap { grid-column: 1 / -1; }
+
+        /* ─── Workflows Panel ──────────────────────────────────────────────── */
+        .wf-page { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+        .wf-toolbar {
+            padding: 14px 24px; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+        }
+        .wf-toolbar h2 { font-size: 14px; font-weight: 600; flex: 1; }
+        .wf-scroll { flex: 1; overflow-y: auto; padding: 20px 24px; }
+        .wf-section { margin-bottom: 28px; }
+        .wf-sec-title {
+            font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
+            color: var(--fg-dim); margin-bottom: 10px;
+        }
+        .wf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+        .wf-card {
+            background: var(--bg-panel); border: 1px solid var(--border);
+            border-radius: var(--radius-lg); padding: 16px; transition: border-color 0.15s;
+        }
+        .wf-card:hover { border-color: var(--vscode-focusBorder); }
+        .wf-card-top { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+        .wf-icon {
+            width: 28px; height: 28px; border-radius: 7px; background: rgba(99,102,241,0.2);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px; flex-shrink: 0; color: var(--purple);
+        }
+        .wf-card-name { font-size: 13px; font-weight: 600; color: var(--fg); flex: 1; line-height: 1.3; }
+        .wf-card-desc { font-size: 11px; color: var(--fg-dim); line-height: 1.4; margin-bottom: 10px; }
+        .wf-card-meta { display: flex; gap: 12px; font-size: 10px; color: var(--fg-dim); margin-bottom: 12px; }
+        .wf-card-footer { display: flex; justify-content: flex-end; }
+        .run-list { display: flex; flex-direction: column; gap: 6px; }
+        .run-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+        .run-card-head {
+            padding: 9px 14px; display: flex; align-items: center; gap: 8px;
+            cursor: pointer; user-select: none;
+        }
+        .run-card-head:hover { background: rgba(255,255,255,0.03); }
+        .run-card-name { font-size: 12px; font-weight: 500; flex: 1; }
+        .run-card-time { font-size: 10px; color: var(--fg-dim); }
+        .run-card-body { display: none; padding: 8px 14px 12px; border-top: 1px solid var(--border); }
+        .run-card-body.open { display: block; }
+        .step-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 11px; color: var(--fg-dim); }
+        .step-name { flex: 1; }
+        .log-box {
+            margin-top: 8px; background: var(--vscode-terminal-background, var(--bg));
+            border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px;
+            font-family: var(--vscode-editor-font-family, monospace); font-size: 10px;
+            max-height: 100px; overflow-y: auto; white-space: pre-wrap; color: var(--fg-dim);
+        }
+        .cancel-btn {
+            background: transparent; border: 1px solid var(--border); color: var(--fg-dim);
+            border-radius: 3px; padding: 2px 8px; font-size: 10px; cursor: pointer; font-family: inherit;
+        }
+        .cancel-btn:hover { border-color: var(--red); color: var(--red); }
+        .empty-list { text-align: center; padding: 16px; color: var(--fg-dim); font-size: 12px; }
+
+        /* ─── Status Chips ─────────────────────────────────────────────────── */
+        .chip { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; flex-shrink: 0; }
+        .chip-running   { background: rgba(34,197,94,0.15);   color: #22c55e; }
+        .chip-done      { background: rgba(148,163,184,0.12); color: #94a3b8; }
+        .chip-failed    { background: rgba(239,68,68,0.15);   color: #f87171; }
+        .chip-cancelled { background: rgba(234,179,8,0.15);   color: #eab308; }
+        .chip-queued    { background: rgba(59,130,246,0.15);  color: #60a5fa; }
+        .chip-planning  { background: rgba(167,139,250,0.15); color: #a78bfa; }
+        .chip-skipped   { background: rgba(100,116,139,0.15); color: #94a3b8; }
+
+        /* ─── Scrollbars ───────────────────────────────────────────────────── */
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
     </style>
 </head>
 <body>
+
+    <!-- ── Sidebar ────────────────────────────────────────────────────────── -->
     <div class="sidebar">
         <div class="sidebar-header">
-            <h2>Agents</h2>
-            <button class="new-agent-btn" onclick="showView('create')" title="New Agent">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/>
-                </svg>
+            <span class="sidebar-title">Agents / Workflows <span style="font-size:9px;font-weight:500;opacity:0.55;letter-spacing:0;text-transform:none;vertical-align:middle;background:rgba(99,102,241,0.18);color:#a78bfa;border-radius:3px;padding:1px 5px">beta</span></span>
+            <button class="icon-btn" id="new-agent-btn" title="New Agent" style="display:flex">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>
             </button>
         </div>
-        <div class="agent-list" id="agent-list">
-            <!-- Dynamically populated -->
+        <div class="sidebar-tabs">
+            <div class="sidebar-tab active" id="stab-agents">Agents</div>
+            <div class="sidebar-tab" id="stab-workflows">Workflows</div>
+        </div>
+
+        <!-- Agents pane -->
+        <div class="sidebar-pane active" id="spane-agents">
+            <div class="sidebar-search">
+                <input type="text" id="agent-search" placeholder="Search agents...">
+            </div>
+            <div class="sidebar-scroll">
+                <div id="agent-list"></div>
+            </div>
+        </div>
+
+        <!-- Workflows pane -->
+        <div class="sidebar-pane" id="spane-workflows">
+            <div style="padding:8px 12px 6px;flex-shrink:0">
+                <button class="btn btn-primary btn-sm" id="new-workflow-sidebar-btn" style="width:100%">+ New Workflow</button>
+            </div>
+            <div class="sidebar-scroll">
+                <div id="workflow-list"></div>
+            </div>
         </div>
     </div>
 
+    <!-- ── Workspace ──────────────────────────────────────────────────────── -->
     <div class="workspace">
-        <!-- Empty State -->
+
+        <!-- Empty -->
         <div class="view active" id="view-empty">
             <div class="empty-state">
-                <h3>Agent Manager</h3>
-                <p>Select an agent from the sidebar to start a conversation, or create a new agent to replace internal tools.</p>
-                <button onclick="showView('create')" style="margin-top: 16px;">Create New Agent</button>
+                <div class="empty-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                    </svg>
+                </div>
+                <h3>No agent selected</h3>
+                <p>Pick an agent from the sidebar or create a new one to automate your workflows.</p>
+                <button class="btn btn-primary" id="show-create-btn" style="margin-top:6px">+ New Agent</button>
             </div>
         </div>
 
         <!-- Create Agent -->
         <div class="view" id="view-create">
-            <div class="form-container">
-                <div class="form-header">
-                    <h2>Create New Agent</h2>
-                </div>
-                <div class="form-group">
-                    <label>Name</label>
-                    <input type="text" id="new-agent-name" placeholder="e.g. JiraManager, DB_Assistant...">
-                </div>
-                <div class="form-group">
-                    <label>Model</label>
-                    <select id="new-agent-model">
-                        <option value="gpt-4o">GPT-4o</option>
-                        <option value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>System Instructions</label>
-                    <textarea id="new-agent-instructions" placeholder="You are a helpful assistant specialized in..."></textarea>
-                </div>
-                <div class="form-group">
-                    <label>Internal Tools</label>
-                    <div class="tools-grid">
-                        <label class="tool-checkbox"><input type="checkbox" value="FileSystem" class="tool-check"> FileSystem</label>
-                        <label class="tool-checkbox"><input type="checkbox" value="Terminal" class="tool-check"> Terminal</label>
-                        <label class="tool-checkbox"><input type="checkbox" value="Browser" class="tool-check"> Browser</label>
-                        <label class="tool-checkbox"><input type="checkbox" value="GitHub" class="tool-check"> GitHub</label>
-                        <label class="tool-checkbox"><input type="checkbox" value="Jira" class="tool-check"> Jira</label>
-                        <label class="tool-checkbox"><input type="checkbox" value="Linear" class="tool-check"> Linear</label>
-                        <label class="tool-checkbox"><input type="checkbox" value="Database" class="tool-check"> Database connection</label>
+            <div class="form-scroll">
+                <div class="form-card">
+                    <h2 class="form-title">New Agent</h2>
+                    <p class="form-sub">Configure an autonomous agent that will run as part of a multi-step workflow.</p>
+
+                    <div class="form-group">
+                        <label class="form-label">Name <span class="req">*</span></label>
+                        <input type="text" class="form-ctrl" id="new-agent-name" placeholder="e.g. code-reviewer, db-migrator">
+                        <div class="form-hint">Letters, numbers, hyphens, underscores only — no spaces.</div>
                     </div>
-                </div>
-                <div class="form-actions">
-                    <button class="secondary" onclick="showView('empty')">Cancel</button>
-                    <button onclick="createAgent()">Create Agent</button>
+                    <div class="form-group">
+                        <label class="form-label">Description</label>
+                        <input type="text" class="form-ctrl" id="new-agent-description" placeholder="What does this agent do?">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Model <span class="req">*</span></label>
+                        <select class="form-ctrl" id="new-agent-model">
+                            <option value="" disabled selected>Loading models...</option>
+                        </select>
+                        <div class="form-hint">Configured in Settings &rsaquo; Void &rsaquo; LLM Providers.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">System Instructions <span class="req">*</span></label>
+                        <textarea class="form-ctrl" id="new-agent-instructions" rows="5" placeholder="You are a senior engineer. Your role is to review code for correctness, security, and performance..."></textarea>
+                        <div class="form-hint">What this agent knows, how it behaves, and what it focuses on.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Allowed Tools</label>
+                        <div id="create-tool-grid"></div>
+                    </div>
+
+                    <div id="form-err" class="form-err"></div>
+                    <hr class="form-divider">
+                    <div class="form-actions">
+                        <button class="btn btn-ghost" id="cancel-create-btn">Cancel</button>
+                        <button class="btn btn-primary" id="create-agent-btn">Create Agent</button>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- Agent Detail View -->
+        <!-- Agent Detail -->
         <div class="view" id="view-agent-detail">
-            <div class="chat-header">
-                <div class="chat-header-top">
-                    <div class="agent-icon" style="background-color: var(--vscode-symbolIcon-eventForeground)"></div>
-                    <h3 id="chat-header-name">Agent Name</h3>
-                    <span class="model-badge" id="chat-header-model">gpt-4o</span>
+            <div class="detail-head">
+                <div class="detail-top">
+                    <div class="agent-avatar" id="detail-avatar">A</div>
+                    <span class="detail-name" id="detail-name">Agent</span>
+                    <span class="model-pill" id="detail-model">model</span>
                 </div>
-                <!-- Agentic Tabs -->
-                <div class="agent-tabs">
-                    <div class="agent-tab active" onclick="switchAgentTab('chat')" id="tab-nav-chat">Chat</div>
-                    <div class="agent-tab" onclick="switchAgentTab('workflow')" id="tab-nav-workflow">Agentic Workflow</div>
-                    <div class="agent-tab" onclick="switchAgentTab('knowledge')" id="tab-nav-knowledge">Knowledge Base</div>
-                    <div class="agent-tab" onclick="switchAgentTab('tools')" id="tab-nav-tools">Tools Config</div>
-                    <div class="agent-tab" onclick="switchAgentTab('integrations')" id="tab-nav-integrations">Integrations</div>
-                    <div class="agent-tab" onclick="switchAgentTab('security')" id="tab-nav-security">Security & Access</div>
-                    <div class="agent-tab" onclick="switchAgentTab('audit')" id="tab-nav-audit">Audit Logs</div>
-                    <div class="agent-tab" onclick="switchAgentTab('analytics')" id="tab-nav-analytics">Analytics</div>
+                <div class="tab-bar">
+                    <div class="tab active" data-tab="chat" id="tab-nav-chat">Chat</div>
+                    <div class="tab" data-tab="settings" id="tab-nav-settings">Settings</div>
                 </div>
             </div>
-
-            <!-- Tab: Chat -->
-            <div class="agent-tab-content active" id="tab-content-chat">
-                <div class="chat-messages" id="chat-messages">
-                    <!-- Messages go here -->
+            <div class="tab-panel active" id="tab-content-chat">
+                <div class="chat-msgs" id="chat-messages"></div>
+                <div class="chat-bar">
+                    <input type="text" id="user-input" placeholder="Instruct the agent...">
+                    <button class="btn btn-primary btn-sm" id="send-msg-btn">Send</button>
                 </div>
-                <div class="chat-input-area">
-                    <div class="input-container">
-                        <input type="text" id="user-input" placeholder="Ask the agent to do something..." onkeydown="if(event.key === 'Enter') sendMessage()" />
-                        <button onclick="sendMessage()">Send</button>
+            </div>
+            <div class="tab-panel" id="tab-content-settings">
+                <div class="settings-form">
+                    <div class="field-group">
+                        <label>Name</label>
+                        <input type="text" id="edit-agent-name" placeholder="Agent name">
+                    </div>
+                    <div class="field-group">
+                        <label>Description</label>
+                        <input type="text" id="edit-agent-description" placeholder="Short description (optional)">
+                    </div>
+                    <div class="field-group">
+                        <label>Model</label>
+                        <select id="edit-agent-model"></select>
+                    </div>
+                    <div class="field-group">
+                        <label>System Instructions</label>
+                        <textarea id="edit-agent-instructions" rows="6" placeholder="System prompt for this agent..."></textarea>
+                    </div>
+                    <div class="field-group">
+                        <label>Allowed Tools</label>
+                        <div id="edit-tool-grid"></div>
+                    </div>
+                    <div class="settings-footer">
+                        <button class="btn btn-primary btn-sm" id="save-agent-btn">Save Changes</button>
+                        <span id="settings-msg" class="settings-msg" style="display:none"></span>
+                        <span id="settings-err" class="settings-err" style="display:none"></span>
                     </div>
                 </div>
             </div>
+        </div>
 
-            <!-- Placeholder Tabs -->
-            <div class="agent-tab-content" id="tab-content-workflow">
-                <div class="empty-state">
-                    <h3>Agentic Workflow</h3>
-                    <p>Define multi-step autonomous workflows and triggers (Coming Soon)</p>
+        <!-- Workflow Builder -->
+        <div class="view" id="view-create-workflow">
+            <div class="wf-page">
+                <div class="wf-toolbar">
+                    <h2>New Workflow</h2>
+                    <button class="btn btn-ghost btn-sm" id="cancel-wf-btn">Cancel</button>
                 </div>
-            </div>
-            <div class="agent-tab-content" id="tab-content-knowledge">
-                <div class="empty-state">
-                    <h3>Knowledge Base</h3>
-                    <p>Upload documents, API specs, and connect Vector Databases to ground the agent (Coming Soon)</p>
-                </div>
-            </div>
-            <div class="agent-tab-content" id="tab-content-tools">
-                <div class="empty-state">
-                    <h3>Tools Config</h3>
-                    <p>Configure advanced parameters for attached tools (Coming Soon)</p>
-                </div>
-            </div>
-            <div class="agent-tab-content" id="tab-content-integrations">
-                <div class="empty-state">
-                    <h3>Integrations</h3>
-                    <p>Connect and authenticate with external services (Coming Soon)</p>
-                </div>
-            </div>
-            <div class="agent-tab-content" id="tab-content-security">
-                <div class="empty-state">
-                    <h3>Security & Access</h3>
-                    <p>Configure role-based access control, sandboxing limits, and review human-in-the-loop policies (Coming Soon)</p>
-                </div>
-            </div>
-            <div class="agent-tab-content" id="tab-content-audit">
-                <div class="empty-state">
-                    <h3>Audit Logs</h3>
-                    <p>Review all actions and tool calls made by this agent (Coming Soon)</p>
-                </div>
-            </div>
-            <div class="agent-tab-content" id="tab-content-analytics">
-                <div class="empty-state">
-                    <h3>Performance Analytics</h3>
-                    <p>Monitor token usage, cost projections, latency, and success rates for this agent (Coming Soon)</p>
+                <div class="wf-builder">
+                    <div class="field-group">
+                        <label>Name *</label>
+                        <input type="text" id="wf-name" placeholder="e.g. code-review (letters, numbers, hyphens)">
+                    </div>
+                    <div class="field-group">
+                        <label>Description</label>
+                        <textarea id="wf-description" rows="2" placeholder="What does this workflow do?"></textarea>
+                    </div>
+                    <div class="field-group">
+                        <label>Trigger</label>
+                        <select id="wf-trigger">
+                            <option value="manual">Manual — run on demand</option>
+                            <option value="file-save">On File Save</option>
+                            <option value="on-commit">On Git Commit</option>
+                            <option value="schedule">Schedule (interval)</option>
+                            <option value="terminal-command">Terminal Command (watch exit code)</option>
+                        </select>
+                    </div>
+                    <div class="field-group" id="wf-glob-row" style="display:none">
+                        <label>File Glob</label>
+                        <input type="text" id="wf-glob" placeholder="src/**/*.ts">
+                    </div>
+                    <div class="field-group" id="wf-schedule-row" style="display:none">
+                        <label>Poll Interval (minutes)</label>
+                        <input type="number" id="wf-schedule-minutes" min="1" value="60" style="width:120px">
+                    </div>
+                    <div id="wf-terminal-cmd-row" style="display:none;flex-direction:column;gap:10px">
+                        <div class="field-group">
+                            <label>Command to watch</label>
+                            <input type="text" id="wf-trigger-command" placeholder="e.g. npm run check, tsc --noEmit, pytest -q">
+                            <div style="font-size:11px;color:var(--fg-dim);margin-top:3px">Runs in a background terminal. Workflow fires based on exit code below.</div>
+                        </div>
+                        <div class="field-group">
+                            <label>Fire workflow when</label>
+                            <select id="wf-trigger-on-exit">
+                                <option value="failure">Command fails (exit ≠ 0) — agent fixes the error</option>
+                                <option value="success">Command succeeds (exit = 0) — agent acts on results</option>
+                                <option value="any">Any exit — always fire</option>
+                            </select>
+                        </div>
+                        <div class="field-group">
+                            <label>Poll every (minutes)</label>
+                            <input type="number" id="wf-cmd-interval-minutes" min="1" value="5" style="width:120px">
+                        </div>
+                    </div>
+                    <label class="wf-enabled-row">
+                        <input type="checkbox" id="wf-enabled" checked> Enabled
+                    </label>
+                    <div>
+                        <div class="step-section-head">
+                            <span>Steps</span>
+                            <button class="btn btn-ghost btn-sm" id="add-step-btn">+ Add Step</button>
+                        </div>
+                        <div id="wf-steps-list"></div>
+                        <div id="wf-steps-empty" style="font-size:12px;color:var(--fg-dim);padding:8px 0">Add at least one step to define what agents run.</div>
+                    </div>
+                    <div class="settings-footer">
+                        <button class="btn btn-primary btn-sm" id="create-wf-btn">Create Workflow</button>
+                        <span id="wf-create-msg" class="settings-msg" style="display:none"></span>
+                        <span id="wf-create-err" class="settings-err" style="display:none"></span>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
+
+        <!-- Workflows Panel -->
+        <div class="view" id="view-workflows">
+            <div class="wf-page">
+                <div class="wf-toolbar">
+                    <h2>Workflows</h2>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-primary btn-sm" id="new-workflow-btn">+ New</button>
+                        <button class="btn btn-ghost btn-sm" id="refresh-wf-btn">Refresh</button>
+                    </div>
+                </div>
+                <div class="wf-scroll">
+                    <div class="wf-section">
+                        <div class="wf-sec-title">Active Runs</div>
+                        <div class="run-list" id="active-runs-list"><div class="empty-list">No active runs</div></div>
+                    </div>
+                    <div class="wf-section">
+                        <div class="wf-sec-title">Defined Workflows</div>
+                        <div class="wf-grid" id="workflow-defs-list">
+                            <div class="empty-list" style="grid-column:1/-1">No workflows found. Add JSON files to .inverse/workflows/</div>
+                        </div>
+                    </div>
+                    <div class="wf-section">
+                        <div class="wf-sec-title">Recent History</div>
+                        <div class="run-list" id="history-runs-list"><div class="empty-list">No completed runs yet</div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /workspace -->
 
     <script>
-        const vscode = acquireVsCodeApi();
-        let currentAgents = [];
-        let activeAgentName = null;
-        let activeMessageBubble = null;
+        var vscode = acquireVsCodeApi();
+        var currentAgents = [];
+        var currentWorkflows = [];
+        var activeAgentId = null;
+        var activeMessageBubble = null;
+        var agentListEl = document.getElementById('agent-list');
+        var chatMsgsEl  = document.getElementById('chat-messages');
 
-        const agentListEl = document.getElementById('agent-list');
-        const chatMessagesEl = document.getElementById('chat-messages');
+        // ── Tool Groups ────────────────────────────────────────────────────
+        var TOOL_GROUPS = [
+            { group: 'Filesystem',     tools: ['readFile','writeFile','listDirectory','searchCode','deleteFile'] },
+            { group: 'Terminal',       tools: ['runCommand','runScript'] },
+            { group: 'Git',            tools: ['gitStatus','gitDiff','gitLog','gitBranches','gitAdd','gitCommit','gitCreateBranch'] },
+            { group: 'HTTP',           tools: ['httpRequest'] },
+            { group: 'Communication',  tools: ['notify','playNotificationSound','setStatusBar','showProgress','clipboardWrite','clipboardRead','openUrl'] },
+        ];
+        function buildToolGridHtml(checkClass, selectedTools) {
+            return TOOL_GROUPS.map(function(g) {
+                return '<div class="tool-group">' +
+                    '<div class="tool-group-name">' + g.group + '</div>' +
+                    '<div class="tool-group-checks">' +
+                    g.tools.map(function(t) {
+                        var chk = selectedTools && selectedTools.indexOf(t) >= 0 ? ' checked' : '';
+                        return '<label class="tool-chip"><input type="checkbox" class="' + esc(checkClass) + '" value="' + esc(t) + '"' + chk + '> ' + esc(t) + '</label>';
+                    }).join('') +
+                    '</div></div>';
+            }).join('');
+        }
+        function initToolGrids() {
+            var cg = document.getElementById('create-tool-grid');
+            if (cg) cg.innerHTML = buildToolGridHtml('tool-check', ['readFile','writeFile','listDirectory','searchCode']);
+            var eg = document.getElementById('edit-tool-grid');
+            if (eg) eg.innerHTML = buildToolGridHtml('edit-tool-check', []);
+        }
+        initToolGrids();
 
-        function showView(viewName) {
-            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-            // Map "chat" back to the new "agent-detail" view
-            const actualView = viewName === 'chat' ? 'agent-detail' : viewName;
-            document.getElementById('view-' + actualView).classList.add('active');
+        // ── Utility ────────────────────────────────────────────────────────
+        function esc(s) {
+            if (!s) return '';
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+        function chip(status) {
+            return '<span class="chip chip-' + status + '">' + status + '</span>';
+        }
+        function relTime(ts) {
+            if (!ts) return '';
+            var d = Math.round((Date.now() - ts) / 1000);
+            if (d < 60) return d + 's ago';
+            if (d < 3600) return Math.round(d/60) + 'm ago';
+            return Math.round(d/3600) + 'h ago';
+        }
+        function colorHue(str) {
+            var h = 0;
+            for (var i = 0; i < str.length; i++) h = (h + str.charCodeAt(i)) % 360;
+            return h;
+        }
 
-            if (actualView !== 'agent-detail') {
-                activeAgentName = null;
-                renderAgentList(); // clear selection
-            } else if (viewName === 'chat') {
-                switchAgentTab('chat');
+        // ── Sidebar Tab Switcher ────────────────────────────────────────────
+        function switchSidebarTab(tab) {
+            document.querySelectorAll('.sidebar-tab').forEach(function(t) { t.classList.remove('active'); });
+            document.querySelectorAll('.sidebar-pane').forEach(function(p) { p.classList.remove('active'); });
+            var t = document.getElementById('stab-' + tab);
+            var p = document.getElementById('spane-' + tab);
+            if (t) t.classList.add('active');
+            if (p) p.classList.add('active');
+            // Show/hide new-agent-btn based on context
+            var newAgentBtn = document.getElementById('new-agent-btn');
+            if (newAgentBtn) newAgentBtn.style.display = tab === 'agents' ? 'flex' : 'none';
+            // Auto-navigate workspace to match
+            if (tab === 'workflows') {
+                showView('workflows');
+            } else {
+                // Return to agent context
+                if (activeAgentId) showView('chat');
+                else showView('empty');
             }
         }
 
-        function switchAgentTab(tabName) {
-            document.querySelectorAll('.agent-tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.agent-tab-content').forEach(c => c.classList.remove('active'));
-
-            document.getElementById('tab-nav-' + tabName).classList.add('active');
-            document.getElementById('tab-content-' + tabName).classList.add('active');
+        // ── Navigation ─────────────────────────────────────────────────────
+        function showView(name) {
+            document.querySelectorAll('.view').forEach(function(v) { v.classList.remove('active'); });
+            var actual = name === 'chat' ? 'agent-detail' : name;
+            var el = document.getElementById('view-' + actual);
+            if (el) el.classList.add('active');
+            if (actual !== 'agent-detail') { activeAgentId = null; renderAgentList(); }
+            else if (name === 'chat') { switchTab('chat'); }
+        }
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+            document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+            var n = document.getElementById('tab-nav-' + tab);
+            var p = document.getElementById('tab-content-' + tab);
+            if (n) n.classList.add('active');
+            if (p) p.classList.add('active');
         }
 
-        function selectAgent(name) {
-            activeAgentName = name;
-            const agent = currentAgents.find(a => a.name === name);
-            if (agent) {
-                document.getElementById('chat-header-name').textContent = agent.name;
-                document.getElementById('chat-header-model').textContent = agent.model;
-                chatMessagesEl.innerHTML = ''; // clear chat on select
-                showView('chat');
-                renderAgentList(); // update selection visual
+        // ── Agent List ─────────────────────────────────────────────────────
+        function selectAgent(id) {
+            activeAgentId = id;
+            var agent = currentAgents.find(function(a) { return a.id === id; });
+            if (!agent) return;
+            var h = colorHue(agent.id || agent.name);
+            var av = document.getElementById('detail-avatar');
+            av.textContent = agent.name.charAt(0).toUpperCase();
+            av.style.background = 'hsl(' + h + ',55%,42%)';
+            document.getElementById('detail-name').textContent = agent.name;
+            document.getElementById('detail-model').textContent =
+                agent.model ? (agent.model.providerName + ' / ' + agent.model.modelName) : 'no model';
+            // Populate settings form
+            document.getElementById('edit-agent-name').value = agent.name || '';
+            document.getElementById('edit-agent-description').value = agent.description || '';
+            document.getElementById('edit-agent-instructions').value = agent.systemInstructions || '';
+            var editModelSel = document.getElementById('edit-agent-model');
+            var agentModelVal = agent.model ? (agent.model.providerName + '::' + agent.model.modelName) : '';
+            if (editModelSel.options.length === 0) {
+                // Models not yet populated — populate from current models
+                syncEditModelDropdown();
             }
+            editModelSel.value = agentModelVal;
+            var eg = document.getElementById('edit-tool-grid');
+            if (eg) eg.innerHTML = buildToolGridHtml('edit-tool-check', agent.allowedTools || []);
+            hideSettingsMsg();
+            chatMsgsEl.innerHTML = '';
+            showView('chat');
+            renderAgentList();
         }
-
+        function syncEditModelDropdown() {
+            var src = document.getElementById('new-agent-model');
+            var dst = document.getElementById('edit-agent-model');
+            dst.innerHTML = src.innerHTML;
+        }
         function renderAgentList() {
+            var search = (document.getElementById('agent-search').value || '').toLowerCase();
             agentListEl.innerHTML = '';
-            if (currentAgents.length === 0) {
-                const emptyEl = document.createElement('div');
-                emptyEl.style.padding = '12px 16px';
-                emptyEl.style.color = 'var(--vscode-descriptionForeground)';
-                emptyEl.style.fontSize = '12px';
-                emptyEl.textContent = 'No agents configured.';
-                agentListEl.appendChild(emptyEl);
+            var list = currentAgents.filter(function(a) {
+                return !search || a.name.toLowerCase().indexOf(search) >= 0;
+            });
+            if (!list.length) {
+                agentListEl.innerHTML = '<div style="padding:10px 16px;font-size:12px;color:var(--fg-dim)">' +
+                    (currentAgents.length === 0 ? 'No agents yet. Click + to create one.' : 'No results.') + '</div>';
                 return;
             }
-
-            currentAgents.forEach(agent => {
-                const el = document.createElement('div');
-                el.className = 'agent-item' + (activeAgentName === agent.name ? ' selected' : '');
-
-                // Color based on name hash (simple)
-                const hue = agent.name.split('').reduce((a,b)=>a+b.charCodeAt(0),0) % 360;
-
-                el.innerHTML = '<div class="agent-icon" style="background-color: hsl(' + hue + ', 70%, 60%)"></div><span>' + agent.name + '</span>';
-                el.onclick = () => selectAgent(agent.name);
+            list.forEach(function(agent) {
+                var el = document.createElement('div');
+                el.className = 'agent-item' + (activeAgentId === agent.id ? ' selected' : '');
+                el.dataset.agentId = agent.id;
+                var h = colorHue(agent.id || agent.name);
+                var badge = agent.isBuiltin ? '<span style="font-size:9px;opacity:0.45;margin-left:3px">built-in</span>' : '';
+                el.innerHTML =
+                    '<div class="a-dot" style="background:hsl(' + h + ',60%,50%)"></div>' +
+                    '<span class="a-name">' + esc(agent.name) + badge + '</span>' +
+                    '<button class="a-del" data-action="delete-agent" data-id="' + esc(agent.id) + '" title="Delete">&times;</button>';
                 agentListEl.appendChild(el);
             });
         }
+        agentListEl.addEventListener('click', function(e) {
+            var del = e.target.closest('[data-action="delete-agent"]');
+            if (del) { e.stopPropagation(); vscode.postMessage({ command: 'deleteAgent', data: { id: del.dataset.id } }); return; }
+            var item = e.target.closest('.agent-item');
+            if (item && item.dataset.agentId) selectAgent(item.dataset.agentId);
+        });
 
-        window.addEventListener('message', event => {
-            const message = event.data;
-            switch (message.command) {
+        // ── Chat ───────────────────────────────────────────────────────────
+        function addMsg(text, sender) {
+            var wrap = document.createElement('div');
+            wrap.className = 'msg ' + sender;
+            var b = document.createElement('div');
+            b.className = 'bubble';
+            b.textContent = text;
+            wrap.appendChild(b);
+            chatMsgsEl.appendChild(wrap);
+            chatMsgsEl.scrollTop = chatMsgsEl.scrollHeight;
+            return b;
+        }
+        function setBusy(busy) {
+            var inp = document.getElementById('user-input');
+            var btn = document.getElementById('send-msg-btn');
+            inp.disabled = busy;
+            if (btn) { btn.disabled = busy; btn.textContent = busy ? '...' : 'Send'; }
+        }
+        function sendMessage() {
+            var inp = document.getElementById('user-input');
+            var text = inp.value.trim();
+            if (!activeAgentId || !text) return;
+            addMsg(text, 'user');
+            vscode.postMessage({ command: 'sendMessage', data: { agentId: activeAgentId, input: text } });
+            inp.value = '';
+        }
+
+        // ── Model Dropdown ─────────────────────────────────────────────────
+        function renderModels(models) {
+            var sel = document.getElementById('new-agent-model');
+            var prev = sel.value;
+            sel.innerHTML = '';
+            if (!models || !models.length) {
+                var o = document.createElement('option');
+                o.value = ''; o.disabled = true; o.selected = true;
+                o.textContent = 'No models -- configure a provider in Settings > Void';
+                sel.appendChild(o); return;
+            }
+            var byP = {};
+            models.forEach(function(m) { if (!byP[m.providerName]) byP[m.providerName] = []; byP[m.providerName].push(m); });
+            Object.entries(byP).forEach(function(e) {
+                var grp = document.createElement('optgroup'); grp.label = e[0];
+                e[1].forEach(function(m) {
+                    var o = document.createElement('option'); o.value = m.value;
+                    o.textContent = m.label || m.modelName;
+                    if (m.value === prev) o.selected = true;
+                    grp.appendChild(o);
+                });
+                sel.appendChild(grp);
+            });
+            if (!sel.value && sel.options.length) sel.options[0].selected = true;
+        }
+
+        // ── Settings Form ──────────────────────────────────────────────────
+        function hideSettingsMsg() {
+            var m = document.getElementById('settings-msg');
+            var e = document.getElementById('settings-err');
+            if (m) { m.style.display = 'none'; m.textContent = ''; }
+            if (e) { e.style.display = 'none'; e.textContent = ''; }
+        }
+        function showSettingsMsg(text) {
+            hideSettingsMsg();
+            var el = document.getElementById('settings-msg');
+            if (el) { el.textContent = text; el.style.display = 'inline'; }
+        }
+        function showSettingsErr(text) {
+            hideSettingsMsg();
+            var el = document.getElementById('settings-err');
+            if (el) { el.textContent = text; el.style.display = 'inline'; }
+        }
+        function saveAgentSettings() {
+            if (!activeAgentId) return;
+            var name  = document.getElementById('edit-agent-name').value.trim();
+            var desc  = document.getElementById('edit-agent-description').value.trim();
+            var instr = document.getElementById('edit-agent-instructions').value.trim();
+            var modelVal = document.getElementById('edit-agent-model').value;
+            var tools = Array.from(document.querySelectorAll('.edit-tool-check:checked')).map(function(cb) { return cb.value; });
+            if (!name) { showSettingsErr('Name is required.'); return; }
+            if (!/^[a-zA-Z0-9_-]+$/.test(name)) { showSettingsErr('Name must contain only letters, numbers, underscores, or hyphens.'); return; }
+            if (!instr) { showSettingsErr('System instructions are required.'); return; }
+            var modelObj = null;
+            if (modelVal) {
+                var parts = modelVal.split('::');
+                modelObj = { providerName: parts[0], modelName: parts[1] };
+            }
+            hideSettingsMsg();
+            var btn = document.getElementById('save-agent-btn');
+            btn.disabled = true; btn.textContent = 'Saving...';
+            vscode.postMessage({ command: 'updateAgent', data: {
+                id: activeAgentId,
+                updates: { name: name, description: desc, systemInstructions: instr, model: modelObj, allowedTools: tools }
+            }});
+        }
+
+        // ── Create Form ────────────────────────────────────────────────────
+        function showErr(msg) {
+            var el = document.getElementById('form-err');
+            if (msg) { el.textContent = msg; el.classList.add('show'); }
+            else { el.classList.remove('show'); }
+        }
+        function setCreateBusy(busy) {
+            var btn = document.getElementById('create-agent-btn');
+            btn.disabled = busy; btn.textContent = busy ? 'Creating...' : 'Create Agent';
+        }
+        function resetForm() {
+            document.getElementById('new-agent-name').value = '';
+            document.getElementById('new-agent-description').value = '';
+            document.getElementById('new-agent-instructions').value = '';
+            // Re-render grid to reset checkboxes to defaults
+            var cg = document.getElementById('create-tool-grid');
+            if (cg) cg.innerHTML = buildToolGridHtml('tool-check', ['readFile','writeFile','listDirectory','searchCode']);
+            showErr(null); setCreateBusy(false);
+        }
+        function createAgent() {
+            var name  = document.getElementById('new-agent-name').value.trim();
+            var model = document.getElementById('new-agent-model').value;
+            var instr = document.getElementById('new-agent-instructions').value.trim();
+            var tools = Array.from(document.querySelectorAll('.tool-check:checked')).map(function(cb) { return cb.value; });
+            showErr(null);
+            if (!name) { showErr('Name is required.'); return; }
+            if (!/^[a-zA-Z0-9_-]+$/.test(name)) { showErr('Name must contain only letters, numbers, underscores, or hyphens.'); return; }
+            if (!model) { showErr('Please select a model.'); return; }
+            if (!instr) { showErr('System instructions are required.'); return; }
+            var desc = document.getElementById('new-agent-description').value.trim();
+            setCreateBusy(true);
+            vscode.postMessage({ command: 'createAgent', data: { name: name, model: model, description: desc, instructions: instr, tools: tools } });
+        }
+
+        // ── Workflows ──────────────────────────────────────────────────────
+        function renderWfSidebar() {
+            var el = document.getElementById('workflow-list');
+            if (!currentWorkflows.length) {
+                el.innerHTML = '<div style="padding:8px 16px;font-size:11px;color:var(--fg-dim)">No workflows yet.</div>';
+                return;
+            }
+            el.innerHTML = '';
+            currentWorkflows.forEach(function(wf) {
+                var item = document.createElement('div');
+                item.className = 'wf-sidebar-item';
+                item.dataset.action = 'open-workflow'; item.dataset.id = wf.id;
+                item.innerHTML =
+                    '<div class="wf-bullet' + (wf.enabled ? '' : ' off') + '"></div>' +
+                    '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(wf.name) + '</span>' +
+                    '<span style="font-size:9px;opacity:0.5">' + ((wf.steps && wf.steps.length) || 0) + ' steps</span>';
+                el.appendChild(item);
+            });
+        }
+        function renderWfDefs() {
+            var el = document.getElementById('workflow-defs-list');
+            if (!currentWorkflows.length) {
+                el.innerHTML = '<div class="empty-list" style="grid-column:1/-1">No workflows found. Add JSON files to .inverse/workflows/</div>'; return;
+            }
+            el.innerHTML = currentWorkflows.map(function(wf) {
+                var runBtn = wf.enabled
+                    ? '<button class="btn btn-primary btn-sm" data-action="run-workflow" data-id="' + esc(wf.id) + '">Run</button>'
+                    : '<span style="font-size:10px;color:var(--fg-dim)">Disabled</span>';
+                var triggerLabel = { 'manual': 'Manual', 'file-save': 'On Save', 'on-commit': 'On Commit', 'schedule': 'Scheduled', 'terminal-command': 'Terminal' }[wf.trigger] || wf.trigger;
+                return (
+                    '<div class="wf-card">' +
+                        '<div class="wf-card-top">' +
+                            '<div class="wf-icon">&#9881;</div>' +
+                            '<span class="wf-card-name">' + esc(wf.name) + '</span>' +
+                            '<button class="a-del" style="margin-left:auto" data-action="delete-workflow" data-id="' + esc(wf.id) + '" title="Delete workflow">&times;</button>' +
+                        '</div>' +
+                        (wf.description ? '<div class="wf-card-desc">' + esc(wf.description) + '</div>' : '') +
+                        '<div class="wf-card-meta">' +
+                            '<span>' + ((wf.steps && wf.steps.length) || 0) + ' steps</span>' +
+                            '<span class="chip chip-' + esc(wf.trigger) + '" style="font-size:9px">' + esc(triggerLabel) + '</span>' +
+                        '</div>' +
+                        '<div class="wf-card-footer">' + runBtn + '</div>' +
+                    '</div>'
+                );
+            }).join('');
+        }
+        function renderRunCard(run, isActive) {
+            var elapsed = run.endedAt ? (Math.round((run.endedAt - run.startedAt) / 1000) + 's') : 'running...';
+            var stepsHtml = (run.steps || []).map(function(s) {
+                return '<div class="step-row">' + chip(s.status) + '<span class="step-name">' + esc(s.role || s.stepId) + '</span>' +
+                    (s.iterationsUsed ? '<span style="font-size:10px">' + s.iterationsUsed + 'x</span>' : '') + '</div>';
+            }).join('');
+            var last = (run.steps || []).find(function(s) { return s.outputLog && s.outputLog.length; });
+            var logHtml = last ? '<div class="log-box">' + esc(last.outputLog.slice(-5).join('\\n')) + '</div>' : '';
+            var cancelBtn = isActive ? '<button class="cancel-btn" data-action="cancel-run" data-id="' + esc(run.id) + '">Cancel</button>' : '';
+            var errHtml = run.error ? '<div style="font-size:11px;color:#f87171;margin-top:6px">' + esc(run.error) + '</div>' : '';
+            return (
+                '<div class="run-card">' +
+                    '<div class="run-card-head" data-action="toggle-run-card">' +
+                        chip(run.status) +
+                        '<span class="run-card-name">' + esc(run.workflowName || run.workflowId) + '</span>' +
+                        '<span class="run-card-time">' + relTime(run.startedAt) + '  ' + elapsed + '</span>' +
+                        cancelBtn +
+                    '</div>' +
+                    '<div class="run-card-body">' + stepsHtml + logHtml + errHtml + '</div>' +
+                '</div>'
+            );
+        }
+        function renderActiveRuns(runs) {
+            var el = document.getElementById('active-runs-list');
+            el.className = 'run-list';
+            el.innerHTML = runs.length ? runs.map(function(r) { return renderRunCard(r, true); }).join('') : '<div class="empty-list">No active runs</div>';
+        }
+        function renderHistoryRuns(runs) {
+            var el = document.getElementById('history-runs-list');
+            el.className = 'run-list';
+            el.innerHTML = runs.length ? runs.map(function(r) { return renderRunCard(r, false); }).join('') : '<div class="empty-list">No completed runs yet</div>';
+        }
+
+        // ── Workflow Builder ───────────────────────────────────────────────
+        var wfStepCount = 0;
+
+        function showWfErr(msg) {
+            var e = document.getElementById('wf-create-err');
+            var m = document.getElementById('wf-create-msg');
+            if (e) { e.textContent = msg || ''; e.style.display = msg ? 'inline' : 'none'; }
+            if (m) m.style.display = 'none';
+        }
+        function showWfMsg(msg) {
+            var e = document.getElementById('wf-create-err');
+            var m = document.getElementById('wf-create-msg');
+            if (m) { m.textContent = msg; m.style.display = 'inline'; }
+            if (e) e.style.display = 'none';
+        }
+        function resetWorkflowForm() {
+            document.getElementById('wf-name').value = '';
+            document.getElementById('wf-description').value = '';
+            document.getElementById('wf-trigger').value = 'manual';
+            document.getElementById('wf-glob-row').style.display = 'none';
+            document.getElementById('wf-schedule-row').style.display = 'none';
+            document.getElementById('wf-terminal-cmd-row').style.display = 'none';
+            document.getElementById('wf-trigger-command').value = '';
+            document.getElementById('wf-trigger-on-exit').value = 'failure';
+            document.getElementById('wf-cmd-interval-minutes').value = '5';
+            document.getElementById('wf-enabled').checked = true;
+            document.getElementById('wf-steps-list').innerHTML = '';
+            document.getElementById('wf-steps-empty').style.display = '';
+            wfStepCount = 0;
+            showWfErr(null);
+            var btn = document.getElementById('create-wf-btn');
+            if (btn) { btn.disabled = false; btn.textContent = 'Create Workflow'; }
+        }
+        function addWorkflowStep() {
+            var idx = wfStepCount++;
+            var list = document.getElementById('wf-steps-list');
+            var empty = document.getElementById('wf-steps-empty');
+            if (empty) empty.style.display = 'none';
+            var agentOptions = currentAgents.length
+                ? currentAgents.map(function(a) { return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>'; }).join('')
+                : '<option value="">— No agents defined —</option>';
+            var card = document.createElement('div');
+            card.className = 'step-card';
+            card.dataset.stepIdx = String(idx);
+            card.innerHTML =
+                '<div class="step-card-head">' +
+                    '<span class="step-num">Step ' + (idx + 1) + '</span>' +
+                    '<button class="btn btn-ghost btn-sm" data-action="remove-step" data-idx="' + idx + '">Remove</button>' +
+                '</div>' +
+                '<div class="step-fields">' +
+                    '<div class="field-group">' +
+                        '<label>Agent</label>' +
+                        '<select class="step-agent-sel">' + agentOptions + '</select>' +
+                    '</div>' +
+                    '<div class="field-group">' +
+                        '<label>Role</label>' +
+                        '<select class="step-role-sel">' +
+                            '<option value="executor">executor</option>' +
+                            '<option value="planner">planner</option>' +
+                            '<option value="validator">validator</option>' +
+                            '<option value="reviewer">reviewer</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div class="field-group">' +
+                        '<label>Max Iterations</label>' +
+                        '<input type="number" class="step-max-iter" value="20" min="1" max="100">' +
+                    '</div>' +
+                    '<div class="field-group step-tools-wrap">' +
+                        '<label>Allowed Tools</label>' +
+                        '<div class="step-tool-grid-' + idx + '">' + buildToolGridHtml('step-tool-check-' + idx, ['readFile','writeFile','listDirectory','searchCode']) + '</div>' +
+                    '</div>' +
+                '</div>';
+            list.appendChild(card);
+        }
+        function submitCreateWorkflow() {
+            var name    = document.getElementById('wf-name').value.trim();
+            var desc    = document.getElementById('wf-description').value.trim();
+            var trigger = document.getElementById('wf-trigger').value;
+            var glob    = document.getElementById('wf-glob').value.trim() || undefined;
+            var schedMins = parseInt(document.getElementById('wf-schedule-minutes').value, 10) || 60;
+            var trigCmd = document.getElementById('wf-trigger-command').value.trim() || undefined;
+            var trigOnExit = document.getElementById('wf-trigger-on-exit').value;
+            var cmdIntervalMins = parseInt(document.getElementById('wf-cmd-interval-minutes').value, 10) || 5;
+            var enabled = document.getElementById('wf-enabled').checked;
+
+            showWfErr(null);
+            if (!name) { showWfErr('Name is required.'); return; }
+            if (!/^[a-zA-Z0-9_-]+$/.test(name)) { showWfErr('Name must use only letters, numbers, hyphens, or underscores.'); return; }
+            if (trigger === 'terminal-command' && !trigCmd) { showWfErr('Enter the command to watch (e.g. npm run check).'); return; }
+
+            var stepCards = document.querySelectorAll('#wf-steps-list .step-card');
+            if (!stepCards.length) { showWfErr('Add at least one step.'); return; }
+            var steps = [];
+            var valid = true;
+            stepCards.forEach(function(card) {
+                var idx     = card.dataset.stepIdx;
+                var agentId = card.querySelector('.step-agent-sel').value;
+                var role    = card.querySelector('.step-role-sel').value;
+                var maxIter = parseInt(card.querySelector('.step-max-iter').value, 10) || 20;
+                var tools   = Array.from(card.querySelectorAll('.step-tool-check-' + idx + ':checked')).map(function(cb) { return cb.value; });
+                if (!agentId) { showWfErr('Each step must have an agent selected.'); valid = false; return; }
+                steps.push({ id: 'step-' + (steps.length + 1), agentId: agentId, role: role, allowedTools: tools, maxIterations: maxIter });
+            });
+            if (!valid) return;
+
+            var def = { id: name, name: name, description: desc, trigger: trigger, enabled: enabled, steps: steps };
+            if (trigger === 'file-save' && glob) def.triggerGlob = glob;
+            if (trigger === 'schedule') def.scheduleIntervalMinutes = schedMins;
+            if (trigger === 'terminal-command') {
+                def.triggerCommand = trigCmd;
+                def.triggerOnExit = trigOnExit;
+                def.scheduleIntervalMinutes = cmdIntervalMins;
+            }
+
+            var btn = document.getElementById('create-wf-btn');
+            btn.disabled = true; btn.textContent = 'Creating...';
+            vscode.postMessage({ command: 'createWorkflow', data: def });
+        }
+
+        // ── Extension Messages ─────────────────────────────────────────────
+        window.addEventListener('message', function(event) {
+            var msg = event.data;
+            switch (msg.command) {
                 case 'updateAgents':
-                    currentAgents = message.data || [];
+                    currentAgents = msg.data || [];
                     renderAgentList();
-                    if (activeAgentName && !currentAgents.find(a => a.name === activeAgentName)) {
-                        showView('empty');
-                    } else if (activeAgentName) {
-                        // refresh data
-                        const agent = currentAgents.find(a => a.name === activeAgentName);
-                        document.getElementById('chat-header-model').textContent = agent.model;
-                    }
+                    if (activeAgentId && !currentAgents.find(function(a) { return a.id === activeAgentId; })) showView('empty');
                     break;
-                case 'agentResponseStart':
-                    activeMessageBubble = addMessage('', 'agent');
+                case 'updateModels':
+                    renderModels(msg.data || []);
+                    syncEditModelDropdown();
                     break;
-                case 'agentResponseText':
+                case 'updateWorkflows':
+                    currentWorkflows = msg.data || [];
+                    renderWfSidebar(); renderWfDefs(); break;
+                case 'updateRuns':
+                    renderActiveRuns((msg.data && msg.data.active) || []);
+                    renderHistoryRuns((msg.data && msg.data.history) || []);
+                    break;
+                case 'agentRunStarted':
+                    activeMessageBubble = addMsg('Running...', 'agent'); setBusy(true); break;
+                case 'agentRunFinished':
                     if (activeMessageBubble) {
-                        activeMessageBubble.textContent = message.data;
-                        chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+                        var d = msg.data;
+                        if (d.status === 'done' && d.output) { activeMessageBubble.textContent = d.output; }
+                        else if (d.error) { activeMessageBubble.textContent = 'Error: ' + d.error; activeMessageBubble.style.color = '#f87171'; }
+                        else { activeMessageBubble.textContent = '(' + d.status + ')'; }
+                        chatMsgsEl.scrollTop = chatMsgsEl.scrollHeight;
+                        activeMessageBubble = null;
+                    }
+                    setBusy(false); break;
+                case 'agentResponseError':
+                    if (activeMessageBubble) {
+                        activeMessageBubble.textContent = 'Error: ' + msg.data;
+                        activeMessageBubble.style.color = '#f87171'; activeMessageBubble = null;
+                    } else { addMsg('Error: ' + msg.data, 'agent'); }
+                    setBusy(false); break;
+                case 'agentCreated':
+                    resetForm();
+                    setTimeout(function() { selectAgent(msg.data); }, 300); break;
+                case 'agentCreateError':
+                    showErr(msg.data); setCreateBusy(false); break;
+                case 'workflowCreated':
+                    showWfMsg('Workflow created.');
+                    setTimeout(function() { resetWorkflowForm(); switchSidebarTab('workflows'); }, 800);
+                    break;
+                case 'workflowCreateError':
+                    showWfErr(msg.data);
+                    var btn4 = document.getElementById('create-wf-btn');
+                    if (btn4) { btn4.disabled = false; btn4.textContent = 'Create Workflow'; }
+                    break;
+                case 'agentUpdated':
+                    showSettingsMsg('Saved.');
+                    var btn2 = document.getElementById('save-agent-btn');
+                    if (btn2) { btn2.disabled = false; btn2.textContent = 'Save Changes'; }
+                    // Refresh detail header with new name/model
+                    if (activeAgentId) {
+                        var upd = currentAgents.find(function(a) { return a.id === activeAgentId; });
+                        if (upd) {
+                            document.getElementById('detail-name').textContent = upd.name;
+                            document.getElementById('detail-model').textContent =
+                                upd.model ? (upd.model.providerName + ' / ' + upd.model.modelName) : 'no model';
+                        }
                     }
                     break;
-                 case 'agentResponseError':
-                    addMessage('Error: ' + message.data, 'agent');
-                    activeMessageBubble = null;
-                    break;
-                case 'agentResponseEnd':
-                    activeMessageBubble = null;
-                    break;
-                case 'agentCreated':
-                    currentAgents.push({name: message.data, model: 'Unknown'}); // Will get replaced by updateAgents soon
-                    selectAgent(message.data);
-                    // clear form
-                    document.getElementById('new-agent-name').value = '';
-                    document.getElementById('new-agent-instructions').value = '';
-                    document.querySelectorAll('.tool-check').forEach(cb => cb.checked = false);
+                case 'agentUpdateError':
+                    showSettingsErr(msg.data);
+                    var btn3 = document.getElementById('save-agent-btn');
+                    if (btn3) { btn3.disabled = false; btn3.textContent = 'Save Changes'; }
                     break;
             }
         });
 
-        function addMessage(text, sender) {
-            const msgEl = document.createElement('div');
-            msgEl.className = 'message ' + sender;
-            const bubbleEl = document.createElement('div');
-            bubbleEl.className = 'message-bubble';
-            bubbleEl.textContent = text;
-            msgEl.appendChild(bubbleEl);
-            chatMessagesEl.appendChild(msgEl);
-            chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-            return bubbleEl;
-        }
+        // ── Event Wiring ───────────────────────────────────────────────────
+        document.getElementById('stab-agents').addEventListener('click', function() { switchSidebarTab('agents'); });
+        document.getElementById('stab-workflows').addEventListener('click', function() { switchSidebarTab('workflows'); });
+        document.getElementById('new-agent-btn').addEventListener('click', function() { showView('create'); });
+        document.getElementById('show-create-btn').addEventListener('click', function() { showView('create'); });
+        document.getElementById('new-workflow-sidebar-btn').addEventListener('click', function() { resetWorkflowForm(); showView('create-workflow'); });
+        document.getElementById('cancel-create-btn').addEventListener('click', function() { resetForm(); showView('empty'); });
+        document.getElementById('create-agent-btn').addEventListener('click', createAgent);
+        document.getElementById('save-agent-btn').addEventListener('click', saveAgentSettings);
+        document.getElementById('send-msg-btn').addEventListener('click', sendMessage);
+        document.getElementById('user-input').addEventListener('keydown', function(e) { if (e.key === 'Enter') sendMessage(); });
+        document.getElementById('refresh-wf-btn').addEventListener('click', function() { vscode.postMessage({ command: 'refreshWorkflows' }); });
+        document.getElementById('new-workflow-btn').addEventListener('click', function() { resetWorkflowForm(); showView('create-workflow'); });
+        document.getElementById('cancel-wf-btn').addEventListener('click', function() { resetWorkflowForm(); showView('workflows'); });
+        document.getElementById('add-step-btn').addEventListener('click', addWorkflowStep);
+        document.getElementById('create-wf-btn').addEventListener('click', submitCreateWorkflow);
+        document.getElementById('wf-trigger').addEventListener('change', function() {
+            var v = this.value;
+            document.getElementById('wf-glob-row').style.display = v === 'file-save' ? '' : 'none';
+            document.getElementById('wf-schedule-row').style.display = v === 'schedule' ? '' : 'none';
+            document.getElementById('wf-terminal-cmd-row').style.display = v === 'terminal-command' ? 'flex' : 'none';
+        });
+        document.getElementById('agent-search').addEventListener('input', renderAgentList);
+        document.querySelectorAll('.tab').forEach(function(tab) {
+            tab.addEventListener('click', function() { switchTab(tab.dataset.tab); });
+        });
+        document.addEventListener('click', function(e) {
+            var t = e.target.closest('[data-action]');
+            if (!t) return;
+            var a = t.dataset.action;
+            if (a === 'nav') { showView(t.dataset.view); }
+            else if (a === 'open-workflow') { switchSidebarTab('workflows'); showView('workflows'); }
+            else if (a === 'run-workflow') { vscode.postMessage({ command: 'runWorkflow', data: { workflowId: t.dataset.id, input: '' } }); }
+            else if (a === 'cancel-run')   { vscode.postMessage({ command: 'cancelRun',   data: { runId: t.dataset.id } }); }
+            else if (a === 'toggle-run-card') {
+                var body = t.closest('.run-card').querySelector('.run-card-body');
+                if (body) body.classList.toggle('open');
+            }
+            else if (a === 'delete-workflow') {
+                vscode.postMessage({ command: 'deleteWorkflow', data: { id: t.dataset.id } });
+            }
+            else if (a === 'remove-step') {
+                var card = t.closest('.step-card');
+                if (card) {
+                    card.remove();
+                    var remaining = document.querySelectorAll('#wf-steps-list .step-card');
+                    if (!remaining.length) document.getElementById('wf-steps-empty').style.display = '';
+                    // Re-number visible steps
+                    remaining.forEach(function(c, i) { var s = c.querySelector('.step-num'); if (s) s.textContent = 'Step ' + (i + 1); });
+                }
+            }
+        });
 
-        function sendMessage() {
-            const inputEl = document.getElementById('user-input');
-            const input = inputEl.value.trim();
-            if (!activeAgentName) return;
-            if (!input) return;
-
-            addMessage(input, 'user');
-            vscode.postMessage({ command: 'sendMessage', data: { agentName: activeAgentName, input } });
-            inputEl.value = '';
-        }
-
-        function createAgent() {
-            const name = document.getElementById('new-agent-name').value.trim();
-            const model = document.getElementById('new-agent-model').value;
-            const instructions = document.getElementById('new-agent-instructions').value.trim();
-
-            const tools = [];
-            document.querySelectorAll('.tool-check:checked').forEach(cb => tools.push(cb.value));
-
-            if (!name || !instructions) return;
-
-            vscode.postMessage({
-                command: 'createAgent',
-                data: { name, model, instructions, tools }
-            });
-        }
-
-        // Request initial agents
+        // ── Bootstrap ──────────────────────────────────────────────────────
         vscode.postMessage({ command: 'refreshAgents' });
+        vscode.postMessage({ command: 'refreshModels' });
+        vscode.postMessage({ command: 'refreshWorkflows' });
     </script>
 </body>
 </html>`;

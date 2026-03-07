@@ -23,6 +23,7 @@ import { MetricsCollector } from './metrics/metricsCollector.js';
 import { CapabilitiesCollector } from './capabilities/capabilitiesCollector.js';
 import { EncryptionService } from './encryptionService.js';
 import { HistoryService } from './historyService.js';
+import { withInverseWriteAccess } from '../engine/utils/inverseFs.js';
 
 export interface IDashboardState {
 	metrics: {
@@ -388,14 +389,9 @@ export class ProjectAnalyzer extends Disposable {
 			return;
 		}
 
-		// Protection: Unlock .inverse for writing
-		await this.setReadOnly(false);
-		try {
+		await withInverseWriteAccess(this.inverseDir.fsPath, async () => {
 			await this.saveData('audit', resource, violations);
-		} finally {
-			// Protection: Re-lock
-			await this.setReadOnly(true);
-		}
+		});
 	}
 
 	public async clearAuditData(resource: URI): Promise<void> {
@@ -403,16 +399,11 @@ export class ProjectAnalyzer extends Disposable {
 		let relativePathStr = folder ? (relativePath(folder.uri, resource) || '') : (resource.path.split('/').pop() || 'unknown');
 		const targetUri = URI.joinPath(this.inverseDir, 'audit', relativePathStr + '.json');
 
-		// Protection: Unlock .inverse for writing
-		await this.setReadOnly(false);
-		try {
+		await withInverseWriteAccess(this.inverseDir.fsPath, async () => {
 			if (await this.fileService.exists(targetUri)) {
 				await this.fileService.del(targetUri);
 			}
-		} finally {
-			// Protection: Re-lock
-			await this.setReadOnly(true);
-		}
+		});
 	}
 
 	private async createDirectoryRecursively(dir: URI): Promise<void> {

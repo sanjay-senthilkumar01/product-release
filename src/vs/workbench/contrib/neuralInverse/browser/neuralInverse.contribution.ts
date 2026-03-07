@@ -17,12 +17,12 @@ import { IHostService } from '../../../services/host/browser/host.js';
 import { AgentManagerPart } from './agentManagerPart.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
-import '../common/agentRegistryService.js'; // Register service
+import './agentStoreService.js';            // Register agent store (replaces agentRegistryService)
+import './workflowAgentService.js';         // Register workflow engine
 import '../../neuralInverseUserProfile/browser/neuralInverseUserProfile.contribution.js'; // Register Profile UI
 import './fim/neuralInverseFIMService.js';
 import './context/input/astContextService.js';
 import './context/graph/dependencyGraph.js';
-// Register AST Service
 
 
 

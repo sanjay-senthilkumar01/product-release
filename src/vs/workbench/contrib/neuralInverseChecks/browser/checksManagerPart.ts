@@ -27,9 +27,11 @@ import { FailSafeDefaultsControl } from './failSafeDefaults/failSafeDefaultsCont
 import { FormalVerificationControl } from './formalVerification/formalVerificationControl.js';
 import { IGRCEngineService } from './engine/services/grcEngineService.js';
 import { IContractReasonService } from './engine/services/contractReasonService.js';
+import { IFrameworkRegistry } from './engine/framework/frameworkRegistry.js';
 import { ICheckResult, IImpactNode } from './engine/types/grcTypes.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { URI } from '../../../../base/common/uri.js';
+import { IVoidSettingsService } from '../../void/common/voidSettingsService.js';
 
 export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProvider {
 
@@ -60,7 +62,11 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
     private _sash: Sash | undefined;
     private _startHeight: number = 0;
     private _currentDomain: string | undefined = undefined;
-    private _currentViewMode: 'dashboard' | 'ignore' | 'impact' | 'nano' | 'chat' = 'dashboard';
+    private _currentViewMode: 'dashboard' | 'ignore' | 'impact' | 'nano' | 'chat' | 'frameworks' = 'dashboard';
+    private _frameworksImportOpen = false;
+    private _webviewInteractionLocked = false;
+    private _webviewInteractionTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+    private static readonly INTERACTION_LOCK_MS = 8000;
 
     constructor(
         @IThemeService themeService: IThemeService,
@@ -72,6 +78,8 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         @IGRCEngineService private readonly grcEngine: IGRCEngineService,
         @IContractReasonService private readonly contractReasonService: IContractReasonService,
         @IEditorService private readonly editorService: IEditorService,
+        @IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
+        @IFrameworkRegistry private readonly frameworkRegistry: IFrameworkRegistry,
     ) {
         super(ChecksManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
     }
@@ -373,7 +381,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
 
         // ── Sidebar Navigation ────────────────────────────────────────
-        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'impact' | 'audit' | 'ignore' | 'nano' | 'chat';
+        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'impact' | 'audit' | 'ignore' | 'nano' | 'chat' | 'frameworks';
         const DOMAIN_MAP: Partial<Record<ViewId, string>> = {
             security: 'security', compliance: 'compliance', policy: 'policy',
             architecture: 'architecture', 'data-integrity': 'data-integrity',
@@ -383,12 +391,16 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         };
         const sidebarItems: Partial<Record<ViewId, HTMLElement>> = {};
 
-        const refreshWebview = () => {
+        const refreshWebview = (force = false) => {
             if (!this.webviewElement) return;
+            // Block re-renders while user is actively interacting with the webview
+            if (!force && this._webviewInteractionLocked) return;
             if (this._currentViewMode === 'ignore') {
                 this.webviewElement.setHtml(this.getIgnoreHtml());
             } else if (this._currentViewMode === 'impact') {
                 this.webviewElement.setHtml(this._getImpactViewHtml());
+            } else if (this._currentViewMode === 'frameworks') {
+                this.webviewElement.setHtml(this._getFrameworksHtml());
             } else if (this._currentViewMode === 'dashboard') {
                 this.webviewElement.setHtml(this.getDashboardHtml(this._currentDomain));
             }
@@ -447,6 +459,13 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 this._currentViewMode = 'ignore';
                 this._currentDomain = undefined;
                 refreshWebview();
+            } else if (view === 'frameworks') {
+                checksContainer.style.display = 'block';
+                this._currentViewMode = 'frameworks';
+                this._currentDomain = undefined;
+                if (this.webviewElement) {
+                    this.webviewElement.setHtml(this._getFrameworksHtml());
+                }
             } else {
                 checksContainer.style.display = 'block';
                 this._currentViewMode = 'dashboard';
@@ -528,7 +547,8 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         createSidebarItem('Cross-File Impact', 'impact', '⊷');
         createSidebarItem('Audit & Evidence', 'audit', '⊜');
 
-        addSidebarLabel('Settings');
+        addSidebarLabel('Configuration');
+        createSidebarItem('Frameworks', 'frameworks', '⊞');
         createSidebarItem('Ignore Rules', 'ignore', '⊖');
 
         addSidebarLabel('Tools');
@@ -556,8 +576,18 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
         // Handle messages from the webview
         this._register(this.webviewElement.onMessage(async (event) => {
-            const msg = event.message as { type: string; json?: string; pattern?: string };
-            if (msg.type === 'importFramework' && msg.json) {
+            const msg = event.message as { type: string; json?: string; id?: string; pattern?: string };
+            if (msg.type === 'webviewInteraction') {
+                this._touchInteractionLock();
+            } else if (msg.type === 'frameworksImportToggled') {
+                this._frameworksImportOpen = (msg as any).open ?? false;
+            } else if (msg.type === 'removeFramework' && msg.id) {
+                await this.grcEngine.removeFramework(msg.id);
+                this._releaseInteractionLock();
+                if (this.webviewElement && this._currentViewMode === 'frameworks') {
+                    this.webviewElement.setHtml(this._getFrameworksHtml());
+                }
+            } else if (msg.type === 'importFramework' && msg.json) {
                 const result = await this.grcEngine.importFramework(msg.json);
                 if (this.webviewElement) {
                     this.webviewElement.postMessage({
@@ -566,7 +596,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                         errors: result.errors ?? [],
                         warnings: result.warnings ?? []
                     });
-                    if (result.valid) refreshWebview();
+                    if (result.valid) { this._releaseInteractionLock(); refreshWebview(true); }
                 }
             } else if (msg.type === 'toggleAI') {
                 this.contractReasonService.setEnabled(!this.contractReasonService.isEnabled);
@@ -621,6 +651,8 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         this._register(this.grcEngine.onDidCheckComplete(() => refreshWebview()));
         this._register(this.grcEngine.onDidRulesChange(() => refreshWebview()));
         this._register(this.contractReasonService.onDidEnabledChange(() => refreshWebview()));
+        this._register(this.voidSettingsService.onDidChangeState(() => refreshWebview()));
+        this._register(this.frameworkRegistry.onDidFrameworksChange(() => refreshWebview()));
 
         // Mount Void Sidebar
         // HACK: Override createElement to bypass "Not allowed to create elements in child window" error
@@ -718,6 +750,597 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         return parent;
     }
 
+    private _touchInteractionLock(): void {
+        this._webviewInteractionLocked = true;
+        if (this._webviewInteractionTimer !== undefined) {
+            clearTimeout(this._webviewInteractionTimer);
+        }
+        this._webviewInteractionTimer = setTimeout(() => {
+            this._webviewInteractionLocked = false;
+            this._webviewInteractionTimer = undefined;
+        }, ChecksManagerPart.INTERACTION_LOCK_MS);
+    }
+
+    private _releaseInteractionLock(): void {
+        this._webviewInteractionLocked = false;
+        if (this._webviewInteractionTimer !== undefined) {
+            clearTimeout(this._webviewInteractionTimer);
+            this._webviewInteractionTimer = undefined;
+        }
+    }
+
+    private _getFrameworksHtml(): string {
+        const frameworks = this.frameworkRegistry.getActiveFrameworks();
+        const allRules = this.grcEngine.getRules();
+        const totalRules = allRules.length;
+        const importOpen = this._frameworksImportOpen;
+        const totalDomains = [...new Set(allRules.map(r => r.domain).filter(Boolean))].length;
+        const loadedAt = new Date().toISOString().replace('T', ' ').substring(0, 16) + ' UTC';
+
+        const rowsHtml = frameworks.map((fw, idx) => {
+            const def = fw.definition.framework;
+            const fwRules = allRules.filter(r => r.frameworkId === def.id);
+            const domains = [...new Set(fwRules.map(r => r.domain).filter(Boolean))];
+            const errCount = fwRules.filter(r => r.severity === 'error' || r.severity === 'critical').length;
+            const warnCount = fwRules.filter(r => r.severity === 'warning').length;
+            const hasWarnings = fw.validation.warnings && fw.validation.warnings.length > 0;
+            const statusDot = hasWarnings ? 'dot-warn' : 'dot-ok';
+            const statusText = hasWarnings ? `${fw.validation.warnings!.length} warning${fw.validation.warnings!.length !== 1 ? 's' : ''}` : 'Valid';
+            const domainsText = domains.slice(0, 4).join(', ') + (domains.length > 4 ? ` +${domains.length - 4}` : '');
+            const warningRowsHtml = hasWarnings
+                ? fw.validation.warnings!.slice(0, 5).map(w =>
+                    `<div class="warn-row"><span class="warn-dot"></span><span class="warn-text">${this._esc(w)}</span></div>`
+                ).join('')
+                : '';
+            const warningSection = hasWarnings
+                ? `<tr class="expand-row" id="expand-${idx}" style="display:none"><td colspan="7"><div class="expand-body">${warningRowsHtml}</div></td></tr>`
+                : '';
+
+            return `<tr class="fw-row" onclick="toggleExpand(${idx}, ${hasWarnings})" data-id="${this._esc(def.id)}">
+    <td class="td-name">
+        <div class="fw-name">${this._esc(def.name)}</div>
+        <div class="fw-id">${this._esc(def.id)}</div>
+    </td>
+    <td class="td-ver mono">${this._esc(def.version ?? '—')}</td>
+    <td class="td-num">${fwRules.length}</td>
+    <td class="td-num err-val">${errCount > 0 ? errCount : '<span class="zero">0</span>'}</td>
+    <td class="td-num warn-val">${warnCount > 0 ? warnCount : '<span class="zero">0</span>'}</td>
+    <td class="td-domains mono-sm">${this._esc(domainsText || '—')}</td>
+    <td class="td-status"><span class="dot ${statusDot}"></span><span class="status-text">${this._esc(statusText)}</span></td>
+    <td class="td-actions">
+        ${hasWarnings ? `<span class="action-link" onclick="event.stopPropagation();toggleExpand(${idx}, true)">Warnings</span>` : ''}
+        <span class="action-link remove-link" onclick="event.stopPropagation();removeFramework('${this._jsesc(def.id)}')">Remove</span>
+    </td>
+</tr>${warningSection}`;
+        }).join('');
+
+        const emptyRow = frameworks.length === 0
+            ? `<tr><td colspan="8" class="empty-cell">No frameworks loaded. Import a framework to activate GRC enforcement.</td></tr>`
+            : '';
+
+        return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --bg:        var(--vscode-editor-background, #0d0d0d);
+    --bg-raised: var(--vscode-sideBar-background, #111);
+    --border:    var(--vscode-panel-border, rgba(255,255,255,0.08));
+    --border-med:rgba(255,255,255,0.12);
+    --fg:        var(--vscode-foreground, #e0e0e0);
+    --fg-muted:  rgba(255,255,255,0.38);
+    --fg-dim:    rgba(255,255,255,0.22);
+    --mono:      var(--vscode-editor-font-family, 'SF Mono','Menlo','Consolas',monospace);
+    --ok:        #4caf50;
+    --warn:      #ff9800;
+    --err:       #f44336;
+    --accent:    #5c6bc0;
+    --input-bg:  var(--vscode-input-background, rgba(255,255,255,0.05));
+    --input-bd:  var(--vscode-input-border, rgba(255,255,255,0.1));
+}
+
+body {
+    font-family: var(--vscode-font-family, -apple-system, 'Segoe UI', sans-serif);
+    font-size: 12px;
+    color: var(--fg);
+    background: var(--bg);
+    height: 100vh;
+    overflow-y: auto;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ── Page header ── */
+.page-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.page-heading {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.1px;
+    color: var(--fg);
+}
+.page-meta {
+    font-size: 11px;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+}
+.meta-sep { margin: 0 8px; opacity: 0.3; }
+
+/* ── Toolbar ── */
+.toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-raised);
+}
+.toolbar-left { display: flex; align-items: center; gap: 8px; }
+.section-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--fg-muted);
+}
+.count-badge {
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid var(--border-med);
+    border-radius: 2px;
+    padding: 1px 6px;
+    color: var(--fg-muted);
+}
+.btn-import {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 3px;
+    border: 1px solid var(--border-med);
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    letter-spacing: 0.1px;
+    transition: background 0.1s, border-color 0.1s;
+}
+.btn-import:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.2); }
+.btn-import.active { background: rgba(92,107,192,0.15); border-color: rgba(92,107,192,0.4); color: #9fa8da; }
+
+/* ── Import panel ── */
+.import-panel {
+    display: none;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-raised);
+}
+.import-panel.open { display: block; }
+.import-inner { padding: 16px 20px; }
+
+.import-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+.itab {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 5px 14px;
+    cursor: pointer;
+    color: var(--fg-muted);
+    border-bottom: 1px solid transparent;
+    margin-bottom: -1px;
+    user-select: none;
+    transition: color 0.1s;
+}
+.itab:hover { color: var(--fg); }
+.itab.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+#tab-paste { display: block; }
+#tab-schema { display: none; }
+
+textarea#fwJson {
+    width: 100%;
+    height: 120px;
+    resize: vertical;
+    background: var(--input-bg);
+    color: var(--fg);
+    border: 1px solid var(--input-bd);
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.55;
+    padding: 8px 10px;
+    outline: none;
+    display: block;
+}
+textarea#fwJson:focus { border-color: var(--accent); }
+textarea#fwJson::placeholder { color: var(--fg-dim); }
+
+.import-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.btn-submit {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(92,107,192,0.5);
+    background: rgba(92,107,192,0.18);
+    color: #9fa8da;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.btn-submit:hover { background: rgba(92,107,192,0.28); }
+.btn-cancel {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 3px;
+    border: 1px solid var(--border-med);
+    background: transparent;
+    color: var(--fg-muted);
+    cursor: pointer;
+}
+.btn-cancel:hover { color: var(--fg); }
+
+.fb { font-size: 11px; }
+.fb.ok  { color: var(--ok); }
+.fb.err { color: var(--err); }
+
+.schema-box {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    line-height: 1.6;
+    background: rgba(0,0,0,0.25);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 12px 14px;
+    color: rgba(255,255,255,0.5);
+    white-space: pre;
+    overflow-x: auto;
+}
+.schema-box .k { color: #9fa8da; }
+.schema-box .s { color: #80cbc4; }
+.schema-box .c { color: rgba(255,255,255,0.25); font-style: italic; }
+
+/* ── Frameworks table ── */
+.fw-table-wrap {
+    overflow-x: auto;
+}
+table.fw-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+table.fw-table thead tr {
+    border-bottom: 1px solid var(--border-med);
+}
+table.fw-table thead th {
+    padding: 8px 12px 7px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--fg-muted);
+    text-align: left;
+    white-space: nowrap;
+    background: var(--bg-raised);
+}
+th.th-r, td.td-num { text-align: right; }
+th.th-r { padding-right: 16px; }
+td.td-num { padding-right: 16px; font-variant-numeric: tabular-nums; }
+
+table.fw-table tbody tr.fw-row {
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.08s;
+}
+table.fw-table tbody tr.fw-row:hover { background: rgba(255,255,255,0.025); }
+table.fw-table tbody tr.fw-row:last-child { border-bottom: none; }
+
+td { padding: 9px 12px; vertical-align: middle; }
+.td-name { min-width: 200px; }
+.fw-name { font-size: 12px; font-weight: 500; color: var(--fg); line-height: 1.3; }
+.fw-id {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--fg-muted);
+    margin-top: 2px;
+    letter-spacing: 0.1px;
+}
+.td-ver { font-family: var(--mono); font-size: 11px; color: var(--fg-muted); white-space: nowrap; }
+.mono { font-family: var(--mono); }
+.mono-sm { font-family: var(--mono); font-size: 10.5px; color: var(--fg-muted); }
+
+.err-val { color: var(--err); }
+.warn-val { color: var(--warn); }
+.zero { color: var(--fg-dim); }
+
+.td-status { white-space: nowrap; }
+.dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+.dot-ok   { background: var(--ok); box-shadow: 0 0 4px rgba(76,175,80,0.4); }
+.dot-warn { background: var(--warn); box-shadow: 0 0 4px rgba(255,152,0,0.4); }
+.dot-err  { background: var(--err); box-shadow: 0 0 4px rgba(244,67,54,0.4); }
+.status-text { font-size: 11px; color: var(--fg-muted); vertical-align: middle; }
+
+.td-actions { white-space: nowrap; text-align: right; padding-right: 16px; }
+.action-link {
+    font-size: 11px;
+    color: var(--fg-dim);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 2px;
+    transition: color 0.1s, background 0.1s;
+    margin-left: 4px;
+    display: inline-block;
+}
+.action-link:hover { color: var(--fg); background: rgba(255,255,255,0.06); }
+.remove-link:hover { color: var(--err); background: rgba(244,67,54,0.08); }
+
+/* ── Expand row ── */
+tr.expand-row td { padding: 0; }
+.expand-body {
+    padding: 10px 12px 12px 28px;
+    background: rgba(0,0,0,0.2);
+    border-top: 1px solid var(--border);
+}
+.warn-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 3px 0;
+    font-size: 11px;
+    color: rgba(255,152,0,0.75);
+    line-height: 1.5;
+}
+.warn-dot {
+    display: inline-block;
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: var(--warn);
+    flex-shrink: 0;
+    margin-top: 5px;
+}
+.warn-text { opacity: 0.9; }
+
+.empty-cell {
+    padding: 32px 20px;
+    color: var(--fg-muted);
+    font-size: 12px;
+    text-align: center;
+}
+
+/* ── Confirm dialog ── */
+.overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 999;
+    align-items: center;
+    justify-content: center;
+}
+.overlay.visible { display: flex; }
+.dialog {
+    background: var(--bg-raised);
+    border: 1px solid var(--border-med);
+    border-radius: 4px;
+    width: 320px;
+    padding: 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+.dialog-title {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+.dialog-body {
+    font-size: 11px;
+    color: var(--fg-muted);
+    line-height: 1.55;
+    margin-bottom: 16px;
+}
+.dialog-body code {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    background: rgba(255,255,255,0.06);
+    padding: 1px 5px;
+    border-radius: 2px;
+    color: var(--fg);
+}
+.dialog-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.btn-dlg-cancel {
+    font-size: 11px; padding: 4px 12px; border-radius: 3px;
+    border: 1px solid var(--border-med); background: transparent;
+    color: var(--fg-muted); cursor: pointer;
+}
+.btn-dlg-cancel:hover { color: var(--fg); }
+.btn-dlg-remove {
+    font-size: 11px; padding: 4px 12px; border-radius: 3px;
+    border: 1px solid rgba(244,67,54,0.35); background: rgba(244,67,54,0.12);
+    color: #ef9a9a; cursor: pointer;
+}
+.btn-dlg-remove:hover { background: rgba(244,67,54,0.22); }
+</style>
+</head>
+<body>
+
+<div class="overlay" id="overlay">
+    <div class="dialog">
+        <div class="dialog-title">Remove Framework</div>
+        <div class="dialog-body" id="dlg-body">Remove <code id="dlg-id"></code>? The file will be deleted from <code>.inverse/frameworks/</code>. This cannot be undone.</div>
+        <div class="dialog-actions">
+            <button class="btn-dlg-cancel" onclick="cancelRemove()">Cancel</button>
+            <button class="btn-dlg-remove" onclick="confirmRemove()">Remove</button>
+        </div>
+    </div>
+</div>
+
+<div class="page-top">
+    <span class="page-heading">Compliance Frameworks</span>
+    <span class="page-meta">
+        ${frameworks.length} loaded<span class="meta-sep">·</span>${totalRules} rules<span class="meta-sep">·</span>${totalDomains} domains<span class="meta-sep">·</span>Last refreshed ${this._esc(loadedAt)}
+    </span>
+</div>
+
+<div class="toolbar">
+    <div class="toolbar-left">
+        <span class="section-label">Loaded</span>
+        <span class="count-badge">${frameworks.length}</span>
+    </div>
+    <button class="btn-import${importOpen ? ' active' : ''}" id="btn-import" onclick="toggleImport()">Import Framework</button>
+</div>
+
+<div class="import-panel${importOpen ? ' open' : ''}" id="import-panel">
+    <div class="import-inner">
+        <div class="import-tabs">
+            <span class="itab active" id="tab-paste-btn" onclick="switchTab('paste')">Paste JSON</span>
+            <span class="itab" id="tab-schema-btn" onclick="switchTab('schema')">Schema</span>
+        </div>
+        <div id="tab-paste">
+            <textarea id="fwJson" placeholder="Paste framework JSON  { &quot;framework&quot;: { &quot;id&quot;: &quot;...&quot;, &quot;name&quot;: &quot;...&quot;, &quot;version&quot;: &quot;...&quot; }, &quot;rules&quot;: [...] }"></textarea>
+            <div class="import-row">
+                <button class="btn-submit" onclick="submitImport()">Validate &amp; Import</button>
+                <button class="btn-cancel" onclick="toggleImport()">Cancel</button>
+                <span class="fb" id="fb" style="display:none"></span>
+            </div>
+        </div>
+        <div id="tab-schema">
+            <div class="schema-box"><span class="c">// Minimum required structure</span>
+<span class="k">{</span>
+  <span class="s">"framework"</span>: <span class="k">{</span>
+    <span class="s">"id"</span>:          <span class="s">"unique-id"</span>,          <span class="c">// used as filename, required</span>
+    <span class="s">"name"</span>:        <span class="s">"Framework Name"</span>,      <span class="c">// required</span>
+    <span class="s">"version"</span>:     <span class="s">"1.0.0"</span>,               <span class="c">// required</span>
+    <span class="s">"description"</span>: <span class="s">"..."</span>,                 <span class="c">// optional</span>
+    <span class="s">"authority"</span>:   <span class="s">"Issuing Body"</span>         <span class="c">// optional</span>
+  <span class="k">}</span>,
+  <span class="s">"rules"</span>: <span class="k">[{</span>
+    <span class="s">"id"</span>:          <span class="s">"RULE-001"</span>,
+    <span class="s">"name"</span>:        <span class="s">"Rule description"</span>,
+    <span class="s">"domain"</span>:      <span class="s">"security"</span>,             <span class="c">// security | compliance | architecture | ...</span>
+    <span class="s">"severity"</span>:    <span class="s">"error"</span>,                <span class="c">// error | warning | info</span>
+    <span class="s">"type"</span>:        <span class="s">"pattern"</span>,              <span class="c">// pattern | ast | custom</span>
+    <span class="s">"pattern"</span>:     <span class="s">"eval\\\\("</span>,
+    <span class="s">"message"</span>:     <span class="s">"eval() is forbidden"</span>,
+    <span class="s">"enabled"</span>:     true,
+    <span class="s">"languages"</span>:   <span class="k">[</span><span class="s">"typescript"</span>, <span class="s">"javascript"</span><span class="k">]</span>
+  <span class="k">}]</span>
+<span class="k">}</span></div>
+        </div>
+    </div>
+</div>
+
+<div class="fw-table-wrap">
+    <table class="fw-table">
+        <thead>
+            <tr>
+                <th>Framework</th>
+                <th>Version</th>
+                <th class="th-r">Rules</th>
+                <th class="th-r">Errors</th>
+                <th class="th-r">Warnings</th>
+                <th>Domains</th>
+                <th>Status</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            ${rowsHtml}
+            ${emptyRow}
+        </tbody>
+    </table>
+</div>
+
+<script>
+const vscode = acquireVsCodeApi();
+// Notify host on any interaction so it holds off re-rendering
+(function(){const _iv=()=>vscode.postMessage({type:'webviewInteraction'});document.addEventListener('click',_iv,true);document.addEventListener('input',_iv,true);document.addEventListener('keydown',_iv,true);})();
+let _pendingId = null;
+
+function toggleImport() {
+    const panel = document.getElementById('import-panel');
+    const btn = document.getElementById('btn-import');
+    const open = panel.classList.toggle('open');
+    btn.classList.toggle('active', open);
+    if (!open) { document.getElementById('fb').style.display = 'none'; }
+    vscode.postMessage({ type: 'frameworksImportToggled', open });
+}
+
+function switchTab(t) {
+    document.getElementById('tab-paste').style.display = t === 'paste' ? 'block' : 'none';
+    document.getElementById('tab-schema').style.display = t === 'schema' ? 'block' : 'none';
+    document.getElementById('tab-paste-btn').classList.toggle('active', t === 'paste');
+    document.getElementById('tab-schema-btn').classList.toggle('active', t === 'schema');
+}
+
+function submitImport() {
+    const json = document.getElementById('fwJson').value.trim();
+    const fb = document.getElementById('fb');
+    if (!json) { fb.textContent = 'Paste framework JSON first.'; fb.className = 'fb err'; fb.style.display = 'inline'; return; }
+    try { JSON.parse(json); } catch(e) { fb.textContent = 'Invalid JSON: ' + e.message; fb.className = 'fb err'; fb.style.display = 'inline'; return; }
+    fb.textContent = 'Validating...'; fb.className = 'fb'; fb.style.display = 'inline';
+    vscode.postMessage({ type: 'importFramework', json });
+}
+
+function toggleExpand(idx, hasWarnings) {
+    if (!hasWarnings) return;
+    const row = document.getElementById('expand-' + idx);
+    if (!row) return;
+    row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+function removeFramework(id) {
+    _pendingId = id;
+    document.getElementById('dlg-id').textContent = id;
+    document.getElementById('overlay').classList.add('visible');
+}
+function cancelRemove() { _pendingId = null; document.getElementById('overlay').classList.remove('visible'); }
+function confirmRemove() {
+    if (!_pendingId) return;
+    vscode.postMessage({ type: 'removeFramework', id: _pendingId });
+    document.getElementById('overlay').classList.remove('visible');
+    _pendingId = null;
+}
+
+window.addEventListener('message', e => {
+    const d = e.data;
+    if (d.type === 'importResult') {
+        const fb = document.getElementById('fb');
+        fb.style.display = 'inline';
+        if (d.valid) {
+            fb.textContent = 'Imported successfully' + (d.warnings?.length ? ' — ' + d.warnings.length + ' warning(s)' : '');
+            fb.className = 'fb ok';
+            document.getElementById('fwJson').value = '';
+        } else {
+            fb.textContent = d.errors?.[0] ?? 'Validation failed';
+            fb.className = 'fb err';
+        }
+    }
+});
+</script>
+</body>
+</html>`;
+    }
+
     private getDashboardHtml(domainFilter?: string): string {
         const frameworks = this.grcEngine.getActiveFrameworks();
         const domainSummary = this.grcEngine.getDomainSummary();
@@ -744,6 +1367,11 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         // Hybrid Intelligence state
         const aiEnabled = this.contractReasonService.isEnabled;
         const aiAvailable = this.contractReasonService.isAvailable;
+        const modelState = this.voidSettingsService.state;
+        const checksModel = modelState.modelSelectionOfFeature['Checks'] ?? modelState.modelSelectionOfFeature['Chat'];
+        const activeModelLabel = checksModel
+            ? `${checksModel.modelName} (${checksModel.providerName})`
+            : 'No model configured';
 
         // ── Language & source coverage ────────────────────────────────
         const langSet = new Set<string>();
@@ -1142,9 +1770,9 @@ ${totalViolations > 0 ? `
     <table>
         <tbody>
             <tr><td style="width:130px;color:var(--fg-muted)">Status</td><td><span class="badge-${aiEnabled ? (aiAvailable ? 'pass' : 'warn') : 'fail'}">${aiEnabled ? (aiAvailable ? 'ACTIVE' : 'PENDING') : 'OFFLINE'}</span></td></tr>
+            <tr><td style="color:var(--fg-muted)">Model</td><td style="font-family:monospace;font-size:11px">${this._esc(activeModelLabel)}</td></tr>
             <tr><td style="color:var(--fg-muted)">Mode</td><td>${aiEnabled ? 'Pattern checks + AI enrichment' : 'Pattern checks only'}</td></tr>
-            <tr><td style="color:var(--fg-muted)">Capabilities</td><td>${aiEnabled ? 'Context-aware explanations, concrete fixes, false positive detection, missed violations' : 'Disabled — enable to activate AI-enhanced analysis'}</td></tr>
-            <tr><td style="color:var(--fg-muted)">LLM Provider</td><td>${aiEnabled ? 'Uses configured Chat model' : 'N/A'}</td></tr>
+            <tr><td style="color:var(--fg-muted)">Capabilities</td><td>${aiEnabled ? 'Semantic analysis, missed violations, false positive detection, AI explanations' : 'Disabled — enable to activate AI-enhanced analysis'}</td></tr>
         </tbody>
     </table>
 </div>
@@ -1161,6 +1789,8 @@ ${this._buildImpactHtml(allResults)}
 
 <script>
 const vscode = acquireVsCodeApi();
+// Notify host on any interaction so it holds off re-rendering
+(function(){const _iv=()=>vscode.postMessage({type:'webviewInteraction'});document.addEventListener('click',_iv,true);document.addEventListener('input',_iv,true);document.addEventListener('keydown',_iv,true);})();
 
 function navigate(uri, line, col) {
     vscode.postMessage({ type: 'navigateToFile', uri, line, col });
@@ -1431,6 +2061,8 @@ ${statsHtml}
 ${bodyHtml}
 <script>
 const vscode = acquireVsCodeApi();
+// Notify host on any interaction so it holds off re-rendering
+(function(){const _iv=()=>vscode.postMessage({type:'webviewInteraction'});document.addEventListener('click',_iv,true);document.addEventListener('input',_iv,true);document.addEventListener('keydown',_iv,true);})();
 function navigate(uri, line, col) { vscode.postMessage({ type: 'navigateToFile', uri, line, col }); }
 function scanWorkspace() { vscode.postMessage({ type: 'scanWorkspace' }); }
 </script>
@@ -1626,6 +2258,8 @@ body {
 
 <script>
 const vscode = acquireVsCodeApi();
+// Notify host on any interaction so it holds off re-rendering
+(function(){const _iv=()=>vscode.postMessage({type:'webviewInteraction'});document.addEventListener('click',_iv,true);document.addEventListener('input',_iv,true);document.addEventListener('keydown',_iv,true);})();
 function getMode() {
     return document.querySelector('input[name="mode"]:checked')?.value || 'ignore';
 }

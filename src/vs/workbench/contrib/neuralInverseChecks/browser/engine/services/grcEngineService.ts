@@ -206,6 +206,9 @@ export interface IGRCEngineService {
 	 */
 	importFramework(json: string): Promise<IFrameworkValidationResult>;
 
+	/** Remove a framework by ID. */
+	removeFramework(id: string): Promise<void>;
+
 	/**
 	 * Set breaking change violations for a file, replacing any previous ones.
 	 *
@@ -531,7 +534,7 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 		}
 
 		// 2. Keep purely AI-discovered violations that aren't in the static results at all
-		const aiViolations = existingResults.filter(r => r.aiExplanation && !results.some(
+		const aiViolations = existingResults.filter(r => (r.checkSource === 'ai' || r.aiExplanation) && !results.some(
 			newR => newR.ruleId === r.ruleId && newR.line === r.line
 		));
 
@@ -617,7 +620,7 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 			}
 		}
 
-		const aiViolations = existingResults.filter(r => r.aiExplanation && !results.some(
+		const aiViolations = existingResults.filter(r => (r.checkSource === 'ai' || r.aiExplanation) && !results.some(
 			newR => newR.ruleId === r.ruleId && newR.line === r.line
 		));
 
@@ -1144,6 +1147,10 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 		return this.frameworkRegistry.importFramework(json);
 	}
 
+	public async removeFramework(id: string): Promise<void> {
+		return this.frameworkRegistry.removeFramework(id);
+	}
+
 	/**
 	 * Get violations that block commits.
 	 *
@@ -1511,44 +1518,51 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 			console.log('[GRCEngine] AI scan skipped — contract reason service unavailable');
 			return;
 		}
-		console.log('[GRCEngine] Starting periodic workspace AI scan...');
+		console.log('[GRCEngine] Starting workspace AI scan...');
 
 		// Phase 1: Collect all scannable files (fast, no AI calls)
-		const filesToScan: { uri: URI; content: string }[] = [];
+		const allFiles: { uri: URI; content: string }[] = [];
 		const folders = this._workspaceContextService.getWorkspace().folders;
 		for (const folder of folders) {
-			await this._collectFilesForAI(folder.uri, 0, filesToScan);
+			await this._collectFilesForAI(folder.uri, 0, allFiles);
 		}
-		console.log(`[GRCEngine] Collected ${filesToScan.length} file(s) for periodic AI scan`);
 
-		// Phase 2: Process files in periodic batches to avoid rate limits
-		const BATCH_SIZE = 5;
-		const BATCH_INTERVAL_MS = 4_000; // 4s cooldown between batches
+		// Phase 2: Prioritize files — process files with static violations first
+		// (AI enrichment is most valuable on files already flagged by patterns)
+		// Then process remaining files for discovery. Cap at 60 total AI-analyzed files
+		// per scan to avoid flooding the LLM provider.
+		const MAX_AI_FILES = 60;
+		const withViolations = allFiles.filter(f => (this._resultsByFile.get(f.uri.toString()) || []).length > 0);
+		const withoutViolations = allFiles.filter(f => (this._resultsByFile.get(f.uri.toString()) || []).length === 0);
+		const filesToScan = [...withViolations, ...withoutViolations].slice(0, MAX_AI_FILES);
+
+		console.log(`[GRCEngine] AI scan: ${filesToScan.length} files (${withViolations.length} with static violations, ${Math.max(0, filesToScan.length - withViolations.length)} additional)`);
+
+		// Phase 3: Process in small batches with cooldown to respect rate limits
+		const BATCH_SIZE = 3;
+		const BATCH_INTERVAL_MS = 5_000;
 		let processed = 0;
 		const contextFiles = this._contextFiles.size > 0 ? new Map(this._contextFiles) : undefined;
+		const allRules = this._configLoader.getRules();
 
 		for (let i = 0; i < filesToScan.length; i += BATCH_SIZE) {
 			const batch = filesToScan.slice(i, i + BATCH_SIZE);
 
-			// Process batch — each file goes through the rate limiter in contractReasonService
 			await Promise.all(batch.map(({ uri, content }) => {
-				const uriStr = uri.toString();
-				const cachedResults = this._resultsByFile.get(uriStr) || [];
-				const allRules = this._configLoader.getRules();
+				const cachedResults = this._resultsByFile.get(uri.toString()) || [];
 				const nanoContext = this.projectAnalyzerService.getContextForFile(uri);
 				return this.contractReasonService.analyzeFile(uri, content, cachedResults, allRules, nanoContext, contextFiles);
 			}));
 
 			processed += batch.length;
-			console.log(`[GRCEngine] AI scan progress: ${processed}/${filesToScan.length} files processed`);
+			console.log(`[GRCEngine] AI scan progress: ${processed}/${filesToScan.length}`);
 
-			// Wait between batches (unless this was the last batch)
 			if (i + BATCH_SIZE < filesToScan.length) {
 				await new Promise<void>(r => setTimeout(r, BATCH_INTERVAL_MS));
 			}
 		}
 
-		console.log(`[GRCEngine] Periodic AI scan complete: ${processed} file(s) processed`);
+		console.log(`[GRCEngine] AI scan complete: ${processed} file(s) processed`);
 	}
 
 	/**
