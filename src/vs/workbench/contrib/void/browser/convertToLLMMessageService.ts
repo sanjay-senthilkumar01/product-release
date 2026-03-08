@@ -7,7 +7,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
 import { getIsReasoningEnabledState, getReservedOutputTokenSpace, getModelCapabilities } from '../common/modelCapabilities.js';
-import { reParsedToolXMLString, chat_systemMessage } from '../common/prompt/prompts.js';
+import { reParsedToolXMLString, chat_systemMessage, buildGRCPostureBlock } from '../common/prompt/prompts.js';
 import { AnthropicLLMChatMessage, AnthropicReasoning, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, OpenAILLMChatMessage, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 import { IVoidSettingsService } from '../common/voidSettingsService.js';
 import { ChatMode, FeatureName, ModelSelection, ProviderName } from '../common/voidSettingsTypes.js';
@@ -19,6 +19,7 @@ import { EndOfLinePreference } from '../../../../editor/common/model.js';
 import { ToolName } from '../common/toolsServiceTypes.js';
 import { IMCPService } from '../common/mcpService.js';
 import { INeuralInverseAgentService } from './neuralInverseAgentService.js';
+import { IGRCEngineService } from '../../neuralInverseChecks/browser/engine/services/grcEngineService.js';
 
 export const EMPTY_MESSAGE = '(empty message)'
 
@@ -562,6 +563,52 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		return this._agentService
 	}
 
+	// Lazy-resolved GRC engine — may not be available in all configurations
+	private _grcEngine: IGRCEngineService | null | undefined
+	private _getGRCEngine(): IGRCEngineService | null {
+		if (this._grcEngine === undefined) {
+			try {
+				this._grcEngine = this.instantiationService.invokeFunction(a => a.get(IGRCEngineService))
+			} catch {
+				this._grcEngine = null
+			}
+		}
+		return this._grcEngine
+	}
+
+	private _buildGRCPosture(): string | undefined {
+		const engine = this._getGRCEngine();
+		if (!engine) return undefined;
+
+		const allResults = engine.getAllResults();
+		if (allResults.length === 0) return undefined;
+
+		const blocking = engine.getBlockingViolations();
+		const summary = engine.getDomainSummary();
+		const frameworks = engine.getActiveFrameworks();
+
+		const errors = allResults.filter(r => (r.severity ?? '').toLowerCase() === 'error').length;
+		const warnings = allResults.filter(r => (r.severity ?? '').toLowerCase() === 'warning').length;
+
+		return buildGRCPostureBlock({
+			total: allResults.length,
+			errors,
+			warnings,
+			blockingCount: blocking.length,
+			commitGated: blocking.length > 0,
+			frameworks: frameworks.map(f => f.name),
+			domainsWithIssues: summary
+				.filter(d => d.errorCount > 0 || d.warningCount > 0)
+				.map(d => ({ domain: d.domain, errors: d.errorCount, warnings: d.warningCount })),
+			topBlockingViolations: blocking.slice(0, 5).map(v => ({
+				ruleId: v.ruleId,
+				file: v.fileUri?.path.split('/').slice(-2).join('/') ?? 'unknown',
+				line: v.line ?? 0,
+				message: v.message,
+			})),
+		});
+	}
+
 	// Read .voidrules files from workspace folders
 	private _getVoidRulesFileContents(): string {
 		try {
@@ -620,7 +667,8 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const mcpTools = this.mcpService.getMCPTools()
 
 		const persistentTerminalIDs = this.terminalToolService.listPersistentTerminalIds()
-		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, allowedToolNames })
+		const grcPosture = (chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'agent') ? this._buildGRCPosture() : undefined;
+		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, allowedToolNames, grcPosture })
 		return systemMessage
 	}
 

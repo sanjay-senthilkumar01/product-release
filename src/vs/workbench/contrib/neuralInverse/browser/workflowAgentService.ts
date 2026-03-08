@@ -38,6 +38,9 @@ import { ALL_TERMINAL_TOOLS } from './tools/terminalTools.js';
 import { ALL_GIT_TOOLS } from './tools/gitTools.js';
 import { ALL_HTTP_TOOLS } from './tools/httpTools.js';
 import { createCommunicationTools } from './tools/communicationTools.js';
+import { createGRCTools } from './tools/grcTools.js';
+import { IGRCEngineService } from '../../neuralInverseChecks/browser/engine/services/grcEngineService.js';
+import { IPowerBusService } from '../../powerMode/browser/powerBusService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IAccessibilitySignalService } from '../../../../platform/accessibilitySignal/browser/accessibilitySignalService.js';
 import { IStatusbarService } from '../../../services/statusbar/browser/statusbar.js';
@@ -126,6 +129,8 @@ export class WorkflowAgentService extends Disposable implements IWorkflowAgentSe
 		@IOpenerService private readonly openerService: IOpenerService,
 		@ITextFileService private readonly textFileService: ITextFileService,
 		@ITerminalService private readonly terminalService: ITerminalService,
+		@IGRCEngineService private readonly grcEngine: IGRCEngineService,
+		@IPowerBusService private readonly powerBusService: IPowerBusService,
 	) {
 		super();
 
@@ -144,6 +149,13 @@ export class WorkflowAgentService extends Disposable implements IWorkflowAgentSe
 			this.openerService,
 		);
 		this._toolRegistry.registerMany(commTools);
+
+		// ── GRC tools ────────────────────────────────────────────────────────
+		const grcTools = createGRCTools(this.grcEngine);
+		this._toolRegistry.registerMany(grcTools);
+
+		// ── Register on PowerBus ─────────────────────────────────────────────
+		this.powerBusService.register('ni-agent-runner', ['send:query', 'receive:tool-result', 'broadcast'], 'NI Agent Runner');
 
 		// ── Workflow config loader ───────────────────────────────────────────
 		this._configLoader = this._register(
@@ -185,8 +197,8 @@ export class WorkflowAgentService extends Disposable implements IWorkflowAgentSe
 			this._triggerManager.refresh(this._configLoader.getWorkflows());
 		}));
 
-		const totalTools = ALL_FS_TOOLS.length + ALL_TERMINAL_TOOLS.length + ALL_GIT_TOOLS.length + ALL_HTTP_TOOLS.length + commTools.length;
-		console.log('[WorkflowAgentService] Initialized with', totalTools, 'tools');
+		const totalTools = ALL_FS_TOOLS.length + ALL_TERMINAL_TOOLS.length + ALL_GIT_TOOLS.length + ALL_HTTP_TOOLS.length + commTools.length + grcTools.length;
+		console.log('[WorkflowAgentService] Initialized with', totalTools, 'tools (including', grcTools.length, 'GRC tools)');
 	}
 
 	// ─── Workflow Registry ────────────────────────────────────────────────────

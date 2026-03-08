@@ -24,6 +24,8 @@ import {
 import { ChecksToolRegistry } from './checksToolRegistry.js';
 
 const MAX_STEPS = 15;
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 2000;
 
 // ─── Types shared with the LLM bridge ────────────────────────────────────────
 
@@ -151,69 +153,99 @@ export async function runChecksAgentLoop(input: {
 		let finishReason = 'unknown';
 		let usage: IChecksTokenUsage | undefined;
 
-		try {
-			const response = await callbacks.sendToLLM(request);
+		let lastError: Error | undefined;
+		let succeeded = false;
 
-			for await (const event of response.stream) {
-				if (abort.aborted) { return 'cancelled'; }
+		for (let retry = 0; retry <= MAX_RETRIES; retry++) {
+			if (abort.aborted) { return 'cancelled'; }
 
-				switch (event.type) {
-					case 'text-delta': {
-						if (!currentText) {
-							currentText = { type: 'text', id: nextId(), text: '' };
-							assistantMessage.parts.push(currentText);
-							callbacks.onPartCreated(currentText);
+			// Reset mutable state for this attempt
+			if (retry > 0) {
+				currentText = undefined;
+				toolCalls.length = 0;
+				finishReason = 'unknown';
+				usage = undefined;
+				await new Promise(r => setTimeout(r, RETRY_DELAY_MS * retry));
+			}
+
+			try {
+				const response = await callbacks.sendToLLM(request);
+
+				for await (const event of response.stream) {
+					if (abort.aborted) { return 'cancelled'; }
+
+					switch (event.type) {
+						case 'text-delta': {
+							if (!currentText) {
+								currentText = { type: 'text', id: nextId(), text: '' };
+								assistantMessage.parts.push(currentText);
+								callbacks.onPartCreated(currentText);
+							}
+							currentText.text += event.text;
+							callbacks.onTextDelta(currentText.id, event.text);
+							break;
 						}
-						currentText.text += event.text;
-						callbacks.onTextDelta(currentText.id, event.text);
-						break;
-					}
 
-					case 'text-done': {
-						if (currentText) {
-							currentText.text = event.text;
-							callbacks.onPartUpdated(currentText);
+						case 'text-done': {
+							if (currentText) {
+								currentText.text = event.text;
+								callbacks.onPartUpdated(currentText);
+							}
+							break;
 						}
-						break;
-					}
 
-					case 'tool-call': {
-						const toolPart: IChecksToolCallPart = {
-							type: 'tool',
-							id: nextId(),
-							callId: event.id,
-							toolName: event.name,
-							state: {
-								status: 'pending',
-								input: (() => { try { return JSON.parse(event.arguments); } catch { return {}; } })(),
-								time: { start: Date.now() },
-							},
-						};
-						assistantMessage.parts.push(toolPart);
-						callbacks.onPartCreated(toolPart);
-						toolCalls.push(toolPart);
-						break;
-					}
-
-					case 'finish': {
-						finishReason = event.finishReason;
-						if (event.usage) {
-							usage = { input: event.usage.inputTokens, output: event.usage.outputTokens };
+						case 'tool-call': {
+							const toolPart: IChecksToolCallPart = {
+								type: 'tool',
+								id: nextId(),
+								callId: event.id,
+								toolName: event.name,
+								state: {
+									status: 'pending',
+									input: (() => { try { return JSON.parse(event.arguments); } catch { return {}; } })(),
+									time: { start: Date.now() },
+								},
+							};
+							assistantMessage.parts.push(toolPart);
+							callbacks.onPartCreated(toolPart);
+							toolCalls.push(toolPart);
+							break;
 						}
-						break;
-					}
 
-					case 'error': {
-						throw event.error;
+						case 'finish': {
+							finishReason = event.finishReason;
+							if (event.usage) {
+								usage = { input: event.usage.inputTokens, output: event.usage.outputTokens };
+							}
+							break;
+						}
+
+						case 'error': {
+							throw event.error;
+						}
 					}
 				}
+
+				succeeded = true;
+				break; // stream completed — exit retry loop
+			} catch (e: any) {
+				lastError = e;
+				// Only retry on transient errors (not model config / validation errors)
+				const msg = (e.message ?? '').toLowerCase();
+				const isTransient = msg.includes('timeout') || msg.includes('connection')
+					|| msg.includes('rate') || msg.includes('503') || msg.includes('429')
+					|| msg.includes('network') || msg.includes('econnreset') || msg.includes('socket');
+				if (!isTransient || retry >= MAX_RETRIES) {
+					break; // non-transient or exhausted retries
+				}
 			}
-		} catch (e: any) {
-			// Emit error into the message
+		}
+
+		if (!succeeded && lastError) {
 			const errText: IChecksTextPart = {
 				type: 'text',
 				id: nextId(),
-				text: `\nError: ${e.message}`,
+				text: `\nError: ${lastError.message}`,
 			};
 			assistantMessage.parts.push(errText);
 			callbacks.onPartCreated(errText);
@@ -236,8 +268,18 @@ export async function runChecksAgentLoop(input: {
 			const tool = toolRegistry.get(toolPart.toolName);
 
 			if (!tool) {
+				// Don't silently fail — inject a corrective result that forces the model
+				// to reason about what tools it actually has and retry correctly.
+				const available = toolRegistry.getToolNames().join(', ');
 				toolPart.state.status = 'error';
-				toolPart.state.error = `Tool "${toolPart.toolName}" not found.`;
+				toolPart.state.error = [
+					`"${toolPart.toolName}" does not exist in this agent.`,
+					``,
+					`You have NO terminal, bash, or shell access.`,
+					`Your available tools are: ${available}`,
+					``,
+					`Reason through which of these tools answers the question, then call it.`,
+				].join('\n');
 				toolPart.state.time = { ...toolPart.state.time!, end: Date.now() };
 				callbacks.onPartUpdated(toolPart);
 				continue;

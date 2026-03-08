@@ -30,6 +30,10 @@ export const approvalTypeOfBuiltinToolName: Partial<{ [T in BuiltinToolName]?: '
 	'read_terminal': 'terminal',
 	'send_command_input': 'terminal',
 	'kill_persistent_terminal': 'terminal',
+	// Power Mode style tools
+	'bash': 'terminal',
+	'write': 'edits',
+	'edit': 'edits',
 }
 
 
@@ -46,6 +50,26 @@ export const toolApprovalTypes = new Set<ToolApprovalType>([
 
 // PARAMS OF TOOL CALL
 export type BuiltinToolCallParams = {
+	// --- Power Mode style tools ---
+	'bash': { command: string, description: string, timeout: number | null },
+	'read': { filePath: string, offset: number | null, limit: number | null },
+	'write': { filePath: string, content: string },
+	'edit': { filePath: string, oldString: string, newString: string },
+	'glob': { pattern: string, path: string | null },
+	'grep': { pattern: string, path: string | null, include: string | null },
+	'list': { dirPath: string | null },
+	'ask_powermode': { question: string },
+	// --- GRC compliance ---
+	'grc_violations': { domain: string | null, severity: string | null, file: string | null, limit: number },
+	'grc_domain_summary': {},
+	'grc_blocking_violations': {},
+	'grc_framework_rules': { frameworkId: string | null, domain: string | null },
+	'grc_impact_chain': { file: string, maxDepth: number },
+	'grc_rescan': {},
+	'grc_ai_scan': { files: string | null },
+	'ask_checksagent': { question: string },
+	'query_ni_agent': { agentId: string, input: string },
+	// ---
 	'read_file': { uri: URI, startLine: number | null, endLine: number | null, pageNumber: number },
 	'ls_dir': { uri: URI, pageNumber: number },
 	'get_dir_tree': { uri: URI },
@@ -72,6 +96,26 @@ export type BuiltinToolCallParams = {
 
 // RESULT OF TOOL CALL
 export type BuiltinToolResultType = {
+	// --- Power Mode style tools ---
+	'bash': { result: string },
+	'read': { result: string },
+	'write': { result: string },
+	'edit': { result: string },
+	'glob': { result: string },
+	'grep': { result: string },
+	'list': { result: string },
+	'ask_powermode': { result: string },
+	// --- GRC compliance ---
+	'grc_violations': { result: string },
+	'grc_domain_summary': { result: string },
+	'grc_blocking_violations': { result: string },
+	'grc_framework_rules': { result: string },
+	'grc_impact_chain': { result: string },
+	'grc_rescan': { result: string },
+	'grc_ai_scan': { result: string },
+	'ask_checksagent': { result: string },
+	'query_ni_agent': { result: string },
+	// ---
 	'read_file': { fileContents: string, totalFileLen: number, totalNumLines: number, hasNextPage: boolean },
 	'ls_dir': { children: ShallowDirectoryItem[] | null, hasNextPage: boolean, hasPrevPage: boolean, itemsRemaining: number },
 	'get_dir_tree': { str: string, },

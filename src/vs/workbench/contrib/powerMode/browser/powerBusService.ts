@@ -245,4 +245,4 @@ export class PowerBusService extends Disposable implements IPowerBusService {
 	}
 }
 
-registerSingleton(IPowerBusService, PowerBusService, InstantiationType.Delayed);
+registerSingleton(IPowerBusService, PowerBusService, InstantiationType.Eager);

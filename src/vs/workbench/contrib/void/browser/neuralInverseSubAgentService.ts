@@ -12,12 +12,14 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
-import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 
 import { IChatThreadService } from './chatThreadServiceInterface.js';
 import { INeuralInverseAgentService } from './neuralInverseAgentService.js';
 import { INeuralInverseAgentConfigService } from './neuralInverseAgentConfigService.js';
+import { IChecksAgentService } from '../../neuralInverseChecks/browser/checksAgent/checksAgentService.js';
+import { IPowerModeService } from '../../powerMode/browser/powerModeService.js';
 
 import {
 	SubAgentTask,
@@ -87,9 +89,29 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 		@IChatThreadService private readonly _chatThreadService: IChatThreadService,
 		@INeuralInverseAgentService private readonly _agentService: INeuralInverseAgentService,
 		@INeuralInverseAgentConfigService private readonly _configService: INeuralInverseAgentConfigService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
 		this._registerCompletionListener();
+	}
+
+	// Lazy-resolved delegated services
+	private _checksAgent: IChecksAgentService | null | undefined;
+	private _getChecksAgent(): IChecksAgentService | null {
+		if (this._checksAgent === undefined) {
+			try { this._checksAgent = this._instantiationService.invokeFunction(a => a.get(IChecksAgentService)); }
+			catch { this._checksAgent = null; }
+		}
+		return this._checksAgent;
+	}
+
+	private _powerMode: IPowerModeService | null | undefined;
+	private _getPowerMode(): IPowerModeService | null {
+		if (this._powerMode === undefined) {
+			try { this._powerMode = this._instantiationService.invokeFunction(a => a.get(IPowerModeService)); }
+			catch { this._powerMode = null; }
+		}
+		return this._powerMode;
 	}
 
 
@@ -99,6 +121,11 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 
 		const maxConcurrent = this._configService.config.constraints.maxConcurrentSubAgents
 			?? MAX_CONCURRENT_SUB_AGENTS;
+
+		// Delegated roles bypass the queue — they run via external services, not chat threads
+		if (request.role === 'checks-agent' || request.role === 'power-mode') {
+			return this._startDelegatedSubAgent(parentTask.id, request);
+		}
 
 		// If at capacity, queue
 		if (this.runningCount >= maxConcurrent) {
@@ -145,6 +172,57 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 
 	// ---- Internal ----
 
+	/**
+	 * Start a delegated sub-agent that runs via an external service (Checks Agent or Power Mode).
+	 * These don't consume a chat thread — they call the service's answerQuery() directly and
+	 * run the full agent loop inside that service, then report results back.
+	 */
+	private _startDelegatedSubAgent(parentTaskId: string, request: SubAgentSpawnRequest): SubAgentTask {
+		const subAgent = this._createSubAgentTask(parentTaskId, request, 'running');
+		subAgent.threadId = `delegated-${request.role}-${subAgent.id}`;
+
+		const runDelegated = async () => {
+			try {
+				let result: string;
+				if (request.role === 'checks-agent') {
+					const checksAgent = this._getChecksAgent();
+					if (!checksAgent) throw new Error('Checks Agent service not available');
+					result = await checksAgent.answerQuery(request.goal);
+				} else {
+					const powerMode = this._getPowerMode();
+					if (!powerMode) throw new Error('Power Mode service not available');
+					result = await powerMode.answerQuery(request.goal);
+				}
+
+				subAgent.status = 'completed';
+				subAgent.result = result;
+			} catch (err: any) {
+				subAgent.status = 'failed';
+				subAgent.error = err.message ?? 'Unknown error';
+			}
+			subAgent.completedAt = new Date().toISOString();
+
+			this._onDidChangeSubAgent.fire({
+				subAgentId: subAgent.id,
+				status: subAgent.status,
+			});
+
+			// Record result into parent agent context
+			this._agentService.recordContext({
+				type: subAgent.status === 'completed' ? 'search_result' : 'error',
+				summary: `Sub-agent [${request.role}] ${subAgent.status}: ${subAgent.result?.substring(0, 500) || subAgent.error || '(no output)'}`,
+				importance: request.role === 'checks-agent' ? 6 : 4,
+			});
+
+			this._drainQueue();
+		};
+
+		// Fire and forget — runs in parallel
+		runDelegated();
+
+		return subAgent;
+	}
+
 	private _startSubAgent(parentTaskId: string, request: SubAgentSpawnRequest): SubAgentTask {
 		const subAgent = this._createSubAgentTask(parentTaskId, request, 'running');
 
@@ -187,6 +265,9 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 			explorer: 'You are a read-only research sub-agent. Your job is to explore the codebase, find relevant files, and report findings. You CANNOT edit files or run commands.',
 			editor: `You are a code editing sub-agent. Your job is to make targeted code changes.${request.scopedFiles?.length ? ` You are scoped to these files: ${request.scopedFiles.join(', ')}` : ''}`,
 			verifier: 'You are a verification sub-agent. Your job is to run tests, check lint errors, and verify that changes are correct. Report pass/fail results clearly.',
+			compliance: `You are a GRC compliance sub-agent powered by the Checks Agent. Your job is to:\n1. Trigger \`grc_rescan\` to re-evaluate files after code changes\n2. Use \`grc_ai_scan\` for deep AI-powered compliance analysis\n3. Check \`grc_blocking_violations\` and report any blockers\n4. Use \`ask_checksagent\` to reason about complex compliance questions\n5. Use \`grc_impact_chain\` to assess blast radius of changes\n6. Report a clear compliance verdict: PASS (no blockers), WARN (warnings only), or FAIL (blocking violations)${request.scopedFiles?.length ? `\nFocus on these files: ${request.scopedFiles.join(', ')}` : ''}`,
+			'checks-agent': `You are a delegated Checks Agent sub-agent. The Checks Agent runs its own full multi-tool GRC analysis loop internally. You will receive a compliance question or task and the Checks Agent service will handle tool execution, reasoning, and analysis autonomously. Report your compliance findings clearly.`,
+			'power-mode': `You are a delegated Power Mode sub-agent. Power Mode runs its own full multi-tool coding agent loop internally (bash, read, write, edit, glob, grep). You will receive a research or execution task and Power Mode will handle it autonomously. Report your findings clearly.`,
 		};
 
 		return `[NI Sub-Agent: ${request.role.toUpperCase()}]\n${roleDescriptions[request.role]}`;

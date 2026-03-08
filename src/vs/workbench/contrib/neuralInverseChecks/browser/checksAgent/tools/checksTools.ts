@@ -12,21 +12,28 @@
  * All tools are READ-ONLY except `run_workspace_scan` which triggers evaluation.
  */
 
+import { URI } from '../../../../../../base/common/uri.js';
+import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { ISearchService, ITextQuery, QueryType, IFileQuery } from '../../../../../services/search/common/search.js';
 import { IGRCEngineService } from '../../engine/services/grcEngineService.js';
 import { IExternalToolService } from '../../engine/services/externalToolService.js';
 import { IContractReasonService } from '../../engine/services/contractReasonService.js';
 import { IChecksAgentService } from '../checksAgentService.js';
+import { IInvariantDefinition } from '../../engine/types/invariantTypes.js';
 import { defineChecksTool } from '../checksToolRegistry.js';
 import { IChecksTool } from '../checksAgentTypes.js';
 
 /**
- * Build and return all 11 GRC tools, each bound to the live engine instances.
+ * Build and return all GRC + file access tools, each bound to the live engine instances.
  */
 export function buildChecksTools(
 	grcEngine: IGRCEngineService,
 	externalToolService: IExternalToolService,
 	contractReasonService: IContractReasonService,
 	checksAgentService: IChecksAgentService,
+	fileService: IFileService,
+	searchService: ISearchService,
+	workingDirectory: string,
 ): IChecksTool[] {
 	return [
 
@@ -150,47 +157,83 @@ export function buildChecksTools(
 			'get_impact_chain',
 			'Get the cross-file impact tree for a file. Shows which other files depend on (import) this file, recursively. Useful for understanding blast radius of a change.',
 			[
-				{ name: 'file', type: 'string', description: 'File path or basename to analyze (e.g. "authService.ts" or full path).', required: true },
+				{ name: 'file', type: 'string', description: 'File path or basename to analyze (e.g. "authService.ts", "auth-token-validator.js", or a full path).', required: true },
 			],
 			async (args) => {
 				const { file } = args as { file: string };
 
-				// Search by basename if not a full path
+				// The import map stores keys WITHOUT extensions (e.g. "/path/auth-token-validator").
+				// Normalize the input the same way so lookups work regardless of whether the
+				// caller passes "auth-token-validator.js", "auth-token-validator", or a full path.
+				const fileNoExt = file.replace(/\.[^/.]+$/, '');
+				const fileBasename = fileNoExt.split('/').pop() ?? '';
+				const fileBasenameWithExt = file.split('/').pop() ?? '';
+
 				const importedByMap = grcEngine.getImportedByMap();
 				let matchedKey: string | undefined;
 
 				for (const key of importedByMap.keys()) {
-					const basename = key.split('/').pop() ?? '';
-					if (key === file || basename === file || key.endsWith('/' + file)) {
+					const keyBasename = key.split('/').pop() ?? '';
+					if (
+						key === file ||
+						key === fileNoExt ||
+						keyBasename === fileBasename ||
+						keyBasename === fileBasenameWithExt.replace(/\.[^/.]+$/, '') ||
+						key.endsWith('/' + fileNoExt) ||
+						key.endsWith('/' + file)
+					) {
 						matchedKey = key;
 						break;
 					}
 				}
 
 				if (!matchedKey) {
-					return `No import data found for "${file}". The file may not have been scanned yet, or it may not be imported by other files.`;
-				}
-
-				// Build the URI and get the impact chain
-				const allResults = grcEngine.getAllResults();
-				const matchingResult = allResults.find(r =>
-					r.fileUri?.path.endsWith(matchedKey!) ||
-					r.fileUri?.path.split('/').pop() === file
-				);
-
-				if (matchingResult?.fileUri) {
-					const chain = grcEngine.getImpactChain(matchingResult.fileUri);
-					if (chain) {
-						return JSON.stringify(chain, null, 2);
+					const mapSize = importedByMap.size;
+					if (mapSize === 0) {
+						return `Import graph is empty — workspace has not been scanned yet. Run /scan first, then retry.`;
 					}
+					return `"${file}" is not imported by any other file in the workspace (checked ${mapSize} tracked dependencies). It may be a top-level entry point, or the workspace scan hasn't run yet.`;
 				}
 
-				// Fallback: show raw importedBy data
-				const importedBy = importedByMap.get(matchedKey) ?? [];
+				// Reconstruct a URI for getImpactChain — use the importedBy importer paths
+				// to find a concrete file URI we can pass to the engine.
+				const importers = importedByMap.get(matchedKey) ?? [];
+				let targetUri: URI | undefined;
+
+				// Try to get a URI from results cache (most reliable)
+				const allResults = grcEngine.getAllResults();
+				const fromResults = allResults.find(r => {
+					const p = r.fileUri?.path ?? '';
+					return p.replace(/\.[^/.]+$/, '').endsWith(matchedKey!.split('/').slice(-2).join('/'));
+				});
+				if (fromResults?.fileUri) {
+					targetUri = fromResults.fileUri;
+				}
+
+				// Fallback: build URI directly from the matched key (may not have extension)
+				if (!targetUri) {
+					targetUri = URI.file(matchedKey);
+				}
+
+				const chain = grcEngine.getImpactChain(targetUri);
+				if (chain && (chain.dependents.length > 0 || importers.length > 0)) {
+					// Enrich with raw importer count in case chain is shallower than reality
+					return JSON.stringify({
+						...chain,
+						totalImporters: importers.length,
+						note: importers.length > (chain.dependents?.length ?? 0)
+							? `${importers.length} files import this module (showing top ${chain.dependents?.length ?? 0} in tree)`
+							: undefined,
+					}, null, 2);
+				}
+
+				// Fallback: return raw importedBy data when getImpactChain returns nothing
 				return JSON.stringify({
 					file: matchedKey,
-					importedByCount: importedBy.length,
-					importedBy: importedBy.slice(0, 20),
+					importedByCount: importers.length,
+					importedBy: importers.slice(0, 30).map(u => {
+						try { return URI.parse(u).path; } catch { return u; }
+					}),
 				}, null, 2);
 			}
 		),
@@ -402,25 +445,251 @@ export function buildChecksTools(
 			}
 		),
 
-		// ── 11. request_code_context ──────────────────────────────────────────
+		// ── 11. read ──────────────────────────────────────────────────────────
 		defineChecksTool(
-			'request_code_context',
-			'Request a code snippet from Power Mode via the agent bus. Use this when you need to see the actual source code around a violation to give a more precise compliance explanation. Budget-capped to 50 lines. Requires Power Mode to be running.',
+			'read',
+			'Read a source file directly. Use this before asking Power Mode — you can read code yourself. Returns contents with line numbers.',
 			[
-				{ name: 'file', type: 'string', description: 'Absolute file path or workspace-relative path (e.g. "src/auth/authService.ts").', required: true },
-				{ name: 'startLine', type: 'number', description: 'First line to include (1-based).', required: true },
-				{ name: 'endLine', type: 'number', description: 'Last line to include (1-based). Capped at startLine + 49.', required: true },
+				{ name: 'filePath', type: 'string', description: 'Absolute file path. If relative, resolved against workspace root.', required: true },
+				{ name: 'offset', type: 'number', description: 'Line to start from (1-indexed). Omit to start from beginning.', required: false },
+				{ name: 'limit', type: 'number', description: 'Max lines to return (default 200).', required: false },
 			],
 			async (args) => {
-				const { file, startLine, endLine } = args as { file: string; startLine: number; endLine: number };
-				if (!file || typeof startLine !== 'number' || typeof endLine !== 'number') {
-					return 'Invalid args: file, startLine, and endLine are required.';
+				let filePath = (args.filePath as string) || '';
+				if (!filePath.startsWith('/')) { filePath = workingDirectory + '/' + filePath; }
+				const offset = Math.max(1, (args.offset as number) ?? 1);
+				const limit = Math.min(500, (args.limit as number) ?? 200);
+				try {
+					const content = await fileService.readFile(URI.file(filePath));
+					const lines = content.value.toString().split('\n');
+					const slice = lines.slice(offset - 1, offset - 1 + limit);
+					const out = slice.map((l, i) => `${offset + i}: ${l}`).join('\n');
+					const truncated = lines.length > offset - 1 + limit ? `\n[... ${lines.length - (offset - 1 + limit)} more lines]` : '';
+					return out + truncated || '(empty file)';
+				} catch (e: any) {
+					return `Error reading file: ${e.message}`;
+				}
+			}
+		),
+
+		// ── 12. grep ──────────────────────────────────────────────────────────
+		defineChecksTool(
+			'grep',
+			'Search for a pattern across workspace files. Returns file paths with matching lines. Use this to find all imports of a module, all usages of a function, etc. Supports regex.',
+			[
+				{ name: 'pattern', type: 'string', description: 'Text or regex pattern to search for.', required: true },
+				{ name: 'include', type: 'string', description: 'File glob to limit search (e.g. "**/*.ts", "src/**/*.js"). Omit to search all files.', required: false },
+				{ name: 'path', type: 'string', description: 'Directory to search in. Defaults to workspace root.', required: false },
+			],
+			async (args) => {
+				const pattern = (args.pattern as string) || '';
+				const include = (args.include as string) || undefined;
+				const searchPath = (args.path as string) || workingDirectory;
+				if (!pattern) { return 'pattern is required.'; }
+				try {
+					const query: ITextQuery = {
+						type: QueryType.Text,
+						contentPattern: { pattern, isRegExp: true, isCaseSensitive: false },
+						folderQueries: [{ folder: URI.file(searchPath) }],
+						includePattern: include ? { [include]: true } : undefined,
+						excludePattern: { '**/node_modules': true, '**/.git': true },
+						maxResults: 100,
+					};
+					const matches: string[] = [];
+					await searchService.textSearch(query, undefined, (item) => {
+						if ('resource' in item) {
+							const fileMatch = item as { resource: { fsPath: string }; results?: Array<{ rangeLocations?: Array<{ source: { startLineNumber: number } }>; previewText?: string }> };
+							const file = fileMatch.resource.fsPath;
+							for (const result of (fileMatch.results ?? [])) {
+								const line = (result.rangeLocations?.[0]?.source.startLineNumber ?? 0) + 1;
+								const preview = (result.previewText ?? '').trim().substring(0, 120);
+								matches.push(`${file}:${line}: ${preview}`);
+							}
+						}
+					});
+					return matches.length > 0
+						? `${matches.length} match(es):\n${matches.join('\n')}`
+						: 'No matches found.';
+				} catch (e: any) {
+					return `Search error: ${e.message}`;
+				}
+			}
+		),
+
+		// ── 13. glob ──────────────────────────────────────────────────────────
+		defineChecksTool(
+			'glob',
+			'Find files by name or glob pattern. Use to locate files before reading them.',
+			[
+				{ name: 'pattern', type: 'string', description: 'Glob pattern (e.g. "**/*.js", "src/auth/**", "**/auth*").', required: true },
+				{ name: 'path', type: 'string', description: 'Directory to search in. Defaults to workspace root.', required: false },
+			],
+			async (args) => {
+				const pattern = (args.pattern as string) || '';
+				const searchPath = (args.path as string) || workingDirectory;
+				if (!pattern) { return 'pattern is required.'; }
+				try {
+					const query: IFileQuery = {
+						type: QueryType.File,
+						folderQueries: [{ folder: URI.file(searchPath) }],
+						filePattern: pattern,
+						maxResults: 100,
+					};
+					const results = await searchService.fileSearch(query);
+					const files = results.results.map((r: any) => r.resource.fsPath);
+					return files.length > 0
+						? `${files.length} file(s):\n${files.join('\n')}`
+						: 'No files matched.';
+				} catch (e: any) {
+					return `Glob error: ${e.message}`;
+				}
+			}
+		),
+
+		// ── 15. list_invariants ───────────────────────────────────────────────
+		defineChecksTool(
+			'list_invariants',
+			'List all formal invariants defined in .inverse/invariants.json. Shows each invariant\'s ID, name, expression, scope, severity, and current pass/fail status.',
+			[],
+			async (_args) => {
+				const invariants = grcEngine.getInvariants();
+				if (invariants.length === 0) {
+					return 'No invariants defined. Use add_invariant to create one, or create .inverse/invariants.json manually.';
+				}
+				const violations = grcEngine.getResultsForDomain('formal-verification');
+				const rows = invariants.map(inv => {
+					const invViolations = violations.filter(v => v.ruleId === inv.id);
+					return {
+						id: inv.id,
+						name: inv.name,
+						expression: inv.expression,
+						scope: inv.scope,
+						severity: inv.severity,
+						enabled: inv.enabled !== false,
+						variables: inv.variables ?? [],
+						targetCalls: inv.targetCalls ?? [],
+						status: invViolations.length === 0 ? 'passing' : `${invViolations.length} violation(s)`,
+					};
+				});
+				return JSON.stringify({ count: rows.length, invariants: rows }, null, 2);
+			}
+		),
+
+		// ── 16. add_invariant ─────────────────────────────────────────────────
+		defineChecksTool(
+			'add_invariant',
+			'Add a new formal invariant to .inverse/invariants.json. Invariants are statically checked against TypeScript/JavaScript code. Scope "always" tracks variable assignments, "before-call" requires a guard before target function calls, "after-call" requires a check after target calls.',
+			[
+				{ name: 'id', type: 'string', description: 'Unique invariant ID, e.g. "INV-001". Must be unique across all invariants.', required: true },
+				{ name: 'name', type: 'string', description: 'Human-readable name, e.g. "Non-negative balance".', required: true },
+				{ name: 'expression', type: 'string', description: 'The invariant expression, e.g. "balance >= 0", "isAuthenticated == true", "retryCount <= 3". Format: <variable> <op> <value> where op is >=, <=, ==, !=, >, <.', required: true },
+				{ name: 'scope', type: 'string', description: 'When the invariant must hold: "always" (track all assignments), "before-call" (guard must be true before target calls), "after-call" (condition checked after target calls).', required: true },
+				{ name: 'severity', type: 'string', description: 'Violation severity: "error", "warning", or "info". Default "warning".', required: false },
+				{ name: 'variables', type: 'string', description: 'Comma-separated variable names to track (for "always" scope). Leave blank to use the variable in expression.', required: false },
+				{ name: 'targetCalls', type: 'string', description: 'Comma-separated function names to guard (for "before-call"/"after-call" scope).', required: false },
+			],
+			async (args) => {
+				const { id, name, expression, scope, severity = 'warning', variables, targetCalls } = args as {
+					id: string; name: string; expression: string;
+					scope: string; severity?: string;
+					variables?: string; targetCalls?: string;
+				};
+
+				if (!id || !name || !expression || !scope) {
+					return 'Invalid args: id, name, expression, and scope are all required.';
+				}
+				if (!['always', 'before-call', 'after-call'].includes(scope)) {
+					return 'Invalid scope. Must be "always", "before-call", or "after-call".';
+				}
+
+				// Check for duplicate ID
+				const existing = grcEngine.getInvariants().find(i => i.id === id);
+				if (existing) {
+					return `Invariant "${id}" already exists. Use delete_invariant first if you want to replace it.`;
+				}
+
+				const invariant: IInvariantDefinition = {
+					id,
+					name,
+					expression,
+					scope: scope as IInvariantDefinition['scope'],
+					severity,
+					enabled: true,
+					variables: variables ? variables.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+					targetCalls: targetCalls ? targetCalls.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+				};
+
+				try {
+					await grcEngine.saveInvariant(invariant);
+					return `Invariant "${id}" (${name}) added. Expression: "${expression}", Scope: ${scope}. The engine will check this on the next file evaluation.`;
+				} catch (e: any) {
+					return `Failed to save invariant: ${e.message}`;
+				}
+			}
+		),
+
+		// ── 17. delete_invariant ──────────────────────────────────────────────
+		defineChecksTool(
+			'delete_invariant',
+			'Delete a formal invariant by ID from .inverse/invariants.json.',
+			[
+				{ name: 'id', type: 'string', description: 'The invariant ID to delete (e.g. "INV-001").', required: true },
+			],
+			async (args) => {
+				const { id } = args as { id: string };
+				if (!id) { return 'Invalid args: id is required.'; }
+				const existing = grcEngine.getInvariants().find(i => i.id === id);
+				if (!existing) {
+					return `Invariant "${id}" not found. Use list_invariants to see available invariants.`;
 				}
 				try {
-					const result = await checksAgentService.requestCodeContext(file, startLine, endLine);
-					return result || 'No code context returned.';
+					await grcEngine.deleteInvariant(id);
+					return `Invariant "${id}" (${existing.name}) deleted.`;
 				} catch (e: any) {
-					return `Failed to request code context: ${e.message}`;
+					return `Failed to delete invariant: ${e.message}`;
+				}
+			}
+		),
+
+		// ── 18. toggle_invariant ──────────────────────────────────────────────
+		defineChecksTool(
+			'toggle_invariant',
+			'Enable or disable a formal invariant by ID without deleting it.',
+			[
+				{ name: 'id', type: 'string', description: 'The invariant ID to toggle (e.g. "INV-001").', required: true },
+				{ name: 'enabled', type: 'boolean', description: 'true to enable, false to disable.', required: true },
+			],
+			async (args) => {
+				const { id, enabled } = args as { id: string; enabled: boolean };
+				if (!id || enabled === undefined) { return 'Invalid args: id and enabled are required.'; }
+				const existing = grcEngine.getInvariants().find(i => i.id === id);
+				if (!existing) {
+					return `Invariant "${id}" not found. Use list_invariants to see available invariants.`;
+				}
+				try {
+					await grcEngine.toggleInvariant(id, enabled);
+					return `Invariant "${id}" (${existing.name}) ${enabled ? 'enabled' : 'disabled'}.`;
+				} catch (e: any) {
+					return `Failed to toggle invariant: ${e.message}`;
+				}
+			}
+		),
+
+		// ── 14. ask_power_mode ────────────────────────────────────────────────
+		defineChecksTool(
+			'ask_power_mode',
+			'Ask Power Mode (the coding agent) a reasoning question about code. Use this when you need Power Mode\'s judgment — e.g. "does this pattern create a race condition?" or "is this a real CSRF risk given the context?". Do NOT use this just to read files or search — use read/grep/glob for that.',
+			[
+				{ name: 'question', type: 'string', description: 'The question to ask Power Mode. Be specific — include file names, violation IDs, or line numbers when relevant.', required: true },
+			],
+			async (args) => {
+				const { question } = args as { question: string };
+				if (!question) { return 'Invalid args: question (string) is required.'; }
+				try {
+					const result = await checksAgentService.askPowerMode(question);
+					return result || 'Power Mode returned no answer.';
+				} catch (e: any) {
+					return `Failed to reach Power Mode: ${e.message}`;
 				}
 			}
 		),

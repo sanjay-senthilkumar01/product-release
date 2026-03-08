@@ -422,12 +422,12 @@ Rules:
 					contentPattern: {
 						pattern,
 						isRegExp: true,
-						isCaseSensitive: true,
+						isCaseSensitive: false,
 					},
 					folderQueries: [{ folder: folderUri }],
 					includePattern: include ? { [include]: true } : undefined,
 					excludePattern: { '**/node_modules': true, '**/.git': true },
-					maxResults: 100,
+					maxResults: 200,
 				};
 
 				const matches: string[] = [];

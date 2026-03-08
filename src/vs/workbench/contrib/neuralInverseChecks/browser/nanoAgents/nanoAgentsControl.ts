@@ -12,6 +12,7 @@ import { ICommandService } from '../../../../../platform/commands/common/command
 import { IVoidSettingsService } from '../../../void/common/voidSettingsService.js';
 import { NeuralInverseChat } from '../../../neuralInverseChat/browser/neuralInverseChat.js';
 import { IGRCEngineService } from '../engine/services/grcEngineService.js';
+import { IContractReasonService } from '../engine/services/contractReasonService.js';
 
 export class NanoAgentsControl extends Disposable {
 	private readonly container: HTMLElement;
@@ -46,7 +47,8 @@ export class NanoAgentsControl extends Disposable {
 		@IFileService private readonly fileService: IFileService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
-		@IGRCEngineService private readonly grcEngine: IGRCEngineService
+		@IGRCEngineService private readonly grcEngine: IGRCEngineService,
+		@IContractReasonService private readonly contractReasonService: IContractReasonService,
 	) {
 		super();
 		this.container = document.createElement('div');
@@ -130,7 +132,40 @@ export class NanoAgentsControl extends Disposable {
 					this.voidSettingsService.setGlobalSetting('chatMode', 'agent');
 					await this.commandService.executeCommand('void.openSidebar');
 					break;
+				case 'getScanTrackerState':
+					this.webviewElement?.postMessage({
+						command: 'scanTrackerState',
+						state: this.contractReasonService.getScanTrackerState(),
+					});
+					break;
+				case 'triggerAIScan':
+					this.grcEngine.scanWorkspaceWithAI().catch(e =>
+						console.error('[NanoAgentsControl] Manual AI scan failed:', e)
+					);
+					break;
+				case 'startPeriodicScan':
+					this.grcEngine.startPeriodicAIScan(e.message.intervalMs || 120_000);
+					this.webviewElement?.postMessage({
+						command: 'scanTrackerState',
+						state: this.contractReasonService.getScanTrackerState(),
+					});
+					break;
+				case 'stopPeriodicScan':
+					this.grcEngine.stopPeriodicAIScan();
+					this.webviewElement?.postMessage({
+						command: 'scanTrackerState',
+						state: this.contractReasonService.getScanTrackerState(),
+					});
+					break;
+				case 'resetScanTracker':
+					this.contractReasonService.scanTrackerReset();
+					break;
 			}
+		}));
+
+		// Forward scan tracker updates to the webview in real-time
+		this._register(this.contractReasonService.onDidScanTrackerUpdate((state) => {
+			this.webviewElement?.postMessage({ command: 'scanTrackerState', state });
 		}));
 
 		this._register(this.webviewElement);
@@ -357,12 +392,67 @@ export class NanoAgentsControl extends Disposable {
 				.file-item { padding: 4px 0; cursor: pointer; color: var(--vscode-textLink-foreground); display: flex; align-items: center; }
 				.file-item:hover { text-decoration: underline; }
 
+				/* AI Scan Tracker */
+				.scan-filter {
+					padding: 4px 10px;
+					border-radius: 12px;
+					font-size: 0.8em;
+					cursor: pointer;
+					background: var(--vscode-badge-background);
+					color: var(--vscode-badge-foreground);
+					opacity: 0.6;
+					transition: opacity 0.2s;
+				}
+				.scan-filter:hover { opacity: 0.85; }
+				.scan-filter.active { opacity: 1; font-weight: 600; }
+
+				.scan-entry {
+					display: flex;
+					align-items: center;
+					padding: 6px 8px;
+					border-bottom: 1px solid var(--vscode-panel-border);
+					font-size: 0.88em;
+					gap: 8px;
+				}
+				.scan-entry:hover { background: var(--vscode-list-hoverBackground); }
+				.scan-entry .se-icon { width: 16px; text-align: center; flex-shrink: 0; }
+				.scan-entry .se-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family); }
+				.scan-entry .se-detail { font-size: 0.82em; opacity: 0.6; flex-shrink: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+				.scan-entry .se-risk { font-size: 0.74em; font-weight: 600; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; min-width: 24px; text-align: center; }
+				.scan-entry .se-time { font-size: 0.78em; opacity: 0.5; flex-shrink: 0; }
+
+				.risk-high { background: rgba(244,71,71,0.2); color: #f44747; }
+				.risk-med  { background: rgba(204,167,0,0.2); color: #cca700; }
+				.risk-low  { background: rgba(137,209,133,0.15); color: #89d185; }
+
+				.live-badge {
+					display: inline-block;
+					background: rgba(14,112,192,0.2);
+					color: var(--vscode-progressBar-background, #0e70c0);
+					padding: 1px 7px;
+					border-radius: 8px;
+					font-size: 0.76em;
+					font-weight: 600;
+					margin-left: 6px;
+				}
+
+				.se-status-scanned .se-icon { color: var(--vscode-charts-green, #89d185); }
+				.se-status-skipped .se-icon { color: var(--vscode-charts-yellow, #cca700); }
+				.se-status-error .se-icon { color: var(--vscode-errorForeground, #f48771); }
+				.se-status-scanning .se-icon { color: var(--vscode-progressBar-background, #0e70c0); }
+				.se-status-pending .se-icon { opacity: 0.4; }
+
+				@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+				.se-status-scanning .se-icon { animation: pulse 1.2s ease-in-out infinite; }
+				.live-badge { animation: pulse 1.8s ease-in-out infinite; }
+
 				${chatCss}
 			</style>
 		</head>
 		<body>
 			<div class="tabs">
 				<div class="tab active" onclick="showTab('dashboard')">Dashboard</div>
+				<div class="tab" onclick="showTab('ai-scan')">AI Scan</div>
 				<div class="tab" onclick="showTab('chat')">Chat</div>
 				<div class="tab" onclick="showTab('inspect')">Inspect</div>
 				<div class="tab" onclick="showTab('control')">Control</div>
@@ -418,6 +508,59 @@ export class NanoAgentsControl extends Disposable {
 				</div>
 			</div>
 
+			<div id="ai-scan" class="content">
+				<h1>AI Scan Tracker<span id="live-badge" class="live-badge" style="display:none;">Live</span></h1>
+
+				<!-- Scan Controls -->
+				<div class="card">
+					<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+						<button onclick="triggerAIScan()" id="btn-scan">Scan Workspace</button>
+						<button onclick="togglePeriodicScan()" id="btn-periodic" style="background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);">Start Periodic Scan</button>
+						<button onclick="resetTracker()" style="background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);font-size:0.85em;">Reset</button>
+					</div>
+					<div id="periodic-info" style="margin-top:8px;font-size:0.85em;opacity:0.7;display:none;">
+						Periodic scan active — interval: <span id="periodic-interval">2m</span>
+					</div>
+				</div>
+
+				<!-- Progress Summary -->
+				<div class="card" id="scan-summary">
+					<div class="stat-row"><span class="stat-label">Status</span><span class="stat-value" id="scan-status">Idle</span></div>
+					<div class="stat-row"><span class="stat-label">Total Files</span><span class="stat-value" id="scan-total">0</span></div>
+					<div class="stat-row"><span class="stat-label">Scanned (AI)</span><span class="stat-value" id="scan-scanned" style="color:var(--vscode-charts-green)">0</span></div>
+					<div class="stat-row"><span class="stat-label">Skipped (cached)</span><span class="stat-value" id="scan-skipped" style="color:var(--vscode-charts-yellow)">0</span></div>
+					<div class="stat-row"><span class="stat-label">Errors</span><span class="stat-value" id="scan-errors" style="color:var(--vscode-errorForeground)">0</span></div>
+					<div class="stat-row"><span class="stat-label">In-flight</span><span class="stat-value" id="scan-inflight">0</span></div>
+					<div class="stat-row"><span class="stat-label">Last Completed</span><span class="stat-value" id="scan-last">—</span></div>
+				</div>
+
+				<!-- Progress Bar -->
+				<div style="margin-bottom:16px;">
+					<div style="height:4px;background:var(--vscode-widget-border);border-radius:2px;overflow:hidden;">
+						<div id="scan-progress-bar" style="height:100%;width:0%;background:var(--vscode-progressBar-background);transition:width 0.3s;"></div>
+					</div>
+				</div>
+
+				<!-- Filter Tabs + Sort -->
+				<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;">
+					<span class="scan-filter active" onclick="filterScanEntries('all')" data-filter="all">All</span>
+					<span class="scan-filter" onclick="filterScanEntries('scanned')" data-filter="scanned">Scanned</span>
+					<span class="scan-filter" onclick="filterScanEntries('skipped')" data-filter="skipped">Skipped</span>
+					<span class="scan-filter" onclick="filterScanEntries('error')" data-filter="error">Errors</span>
+					<span class="scan-filter" onclick="filterScanEntries('scanning')" data-filter="scanning">In-flight</span>
+				</div>
+				<div style="display:flex;gap:4px;margin-bottom:12px;align-items:center;">
+					<span style="font-size:0.8em;opacity:0.6;">Sort:</span>
+					<span class="scan-filter active" onclick="sortScanEntries('risk')" data-sort="risk">Risk</span>
+					<span class="scan-filter" onclick="sortScanEntries('violations')" data-sort="violations">Violations</span>
+					<span class="scan-filter" onclick="sortScanEntries('time')" data-sort="time">Recent</span>
+					<span class="scan-filter" onclick="sortScanEntries('name')" data-sort="name">Name</span>
+				</div>
+
+				<!-- File List -->
+				<div id="scan-file-list" style="max-height:400px;overflow-y:auto;"></div>
+			</div>
+
 			<div id="chat" class="content">
 				${chatHtml}
 			</div>
@@ -447,12 +590,140 @@ export class NanoAgentsControl extends Disposable {
 
 					if (id === 'history') refreshHistory();
 					if (id === 'dashboard') refreshDashboard();
+					if (id === 'ai-scan') refreshScanTracker();
 				}
 
 				// ... existing dashboard functions ...
 				function refreshDashboard() { vscode.postMessage({ command: 'getAnalysisState' }); }
 				function triggerAnalysis() { vscode.postMessage({ command: 'analyzeProject' }); }
 				function refreshHistory() {	document.getElementById('history-list').innerText = 'Loading checkpoints...'; vscode.postMessage({ command: 'getHistory' }); }
+
+				// ─── AI Scan Tracker ──────────────────────────────
+				let _scanState = null;
+				let _scanFilter = 'all';
+				let _scanSort = 'risk';
+
+				function triggerAIScan() { vscode.postMessage({ command: 'triggerAIScan' }); }
+				function resetTracker() { vscode.postMessage({ command: 'resetScanTracker' }); }
+				function refreshScanTracker() { vscode.postMessage({ command: 'getScanTrackerState' }); }
+
+				function togglePeriodicScan() {
+					if (_scanState && _scanState.periodicScanActive) {
+						vscode.postMessage({ command: 'stopPeriodicScan' });
+					} else {
+						vscode.postMessage({ command: 'startPeriodicScan', intervalMs: 120000 });
+					}
+				}
+
+				function filterScanEntries(filter) {
+					_scanFilter = filter;
+					document.querySelectorAll('[data-filter]').forEach(f => f.classList.toggle('active', f.dataset.filter === filter));
+					renderScanFileList();
+				}
+
+				function sortScanEntries(sort) {
+					_scanSort = sort;
+					document.querySelectorAll('[data-sort]').forEach(f => f.classList.toggle('active', f.dataset.sort === sort));
+					renderScanFileList();
+				}
+
+				function renderScanTracker(state) {
+					_scanState = state;
+					const isLive = state.isScanning && !state.periodicScanActive;
+					const liveBadge = document.getElementById('live-badge');
+					if (liveBadge) liveBadge.style.display = isLive ? 'inline-block' : 'none';
+
+					document.getElementById('scan-status').textContent = state.isScanning ? 'Scanning...' : 'Idle';
+					document.getElementById('scan-status').style.color = state.isScanning ? 'var(--vscode-progressBar-background)' : '';
+					document.getElementById('scan-total').textContent = state.totalFiles;
+					document.getElementById('scan-scanned').textContent = state.scannedCount;
+					document.getElementById('scan-skipped').textContent = state.skippedCount;
+					document.getElementById('scan-errors').textContent = state.errorCount;
+					document.getElementById('scan-inflight').textContent = state.scanningCount;
+					document.getElementById('scan-last').textContent = state.lastScanCompleted ? new Date(state.lastScanCompleted).toLocaleTimeString() : '—';
+
+					// Progress bar
+					const done = state.scannedCount + state.skippedCount + state.errorCount;
+					const pct = state.totalFiles > 0 ? Math.round((done / state.totalFiles) * 100) : 0;
+					document.getElementById('scan-progress-bar').style.width = pct + '%';
+
+					// Periodic scan button
+					const btnP = document.getElementById('btn-periodic');
+					const pInfo = document.getElementById('periodic-info');
+					if (state.periodicScanActive) {
+						btnP.textContent = 'Stop Periodic Scan';
+						btnP.style.background = 'var(--vscode-inputValidation-warningBackground)';
+						pInfo.style.display = 'block';
+						document.getElementById('periodic-interval').textContent = (state.periodicScanIntervalMs / 1000) + 's';
+					} else {
+						btnP.textContent = 'Start Periodic Scan';
+						btnP.style.background = 'var(--vscode-button-secondaryBackground)';
+						pInfo.style.display = 'none';
+					}
+
+					// Disable scan button while scanning
+					document.getElementById('btn-scan').disabled = state.isScanning;
+
+					renderScanFileList();
+				}
+
+				function renderScanFileList() {
+					const container = document.getElementById('scan-file-list');
+					if (!_scanState || _scanState.entries.length === 0) {
+						container.innerHTML = '<div style="padding:16px;text-align:center;opacity:0.5;">No files tracked yet. Click "Scan Workspace" to start.</div>';
+						return;
+					}
+
+					const statusIcons = { scanned: '●', skipped: '○', error: '✕', scanning: '◉', pending: '◌' };
+					let entries = _scanState.entries.slice();
+
+					// Filter
+					if (_scanFilter !== 'all') {
+						entries = entries.filter(e => e.status === _scanFilter);
+					}
+
+					// Sort
+					if (_scanSort === 'risk') {
+						entries.sort((a, b) => (b.riskScore || 0) - (a.riskScore || 0) || b.timestamp - a.timestamp);
+					} else if (_scanSort === 'violations') {
+						entries.sort((a, b) => (b.violationCount || 0) - (a.violationCount || 0) || b.timestamp - a.timestamp);
+					} else if (_scanSort === 'time') {
+						entries.sort((a, b) => b.timestamp - a.timestamp);
+					} else if (_scanSort === 'name') {
+						entries.sort((a, b) => a.fileName.localeCompare(b.fileName));
+					} else {
+						// Default: in-flight first
+						const order = { scanning: 0, pending: 1, error: 2, scanned: 3, skipped: 4 };
+						entries.sort((a, b) => (order[a.status] ?? 5) - (order[b.status] ?? 5) || b.timestamp - a.timestamp);
+					}
+
+					let html = '';
+					for (const e of entries) {
+						const icon = statusIcons[e.status] || '?';
+						let detail = '';
+						if (e.status === 'scanned' && e.violationCount !== undefined) {
+							detail = e.violationCount > 0 ? e.violationCount + ' violation(s)' : 'clean';
+						} else if (e.status === 'skipped' && e.skipReason) {
+							detail = e.skipReason;
+						} else if (e.status === 'error' && e.errorMessage) {
+							detail = e.errorMessage;
+						} else if (e.status === 'scanning') {
+							detail = 'analyzing...';
+						}
+						const rs = e.riskScore || 0;
+						const riskCls = rs > 50 ? 'risk-high' : rs > 25 ? 'risk-med' : 'risk-low';
+						const riskLabel = rs > 0 ? rs : '';
+						const time = new Date(e.timestamp).toLocaleTimeString();
+						html += '<div class="scan-entry se-status-' + e.status + '">'
+							+ '<span class="se-icon">' + icon + '</span>'
+							+ '<span class="se-name" title="' + e.fileUri + '">' + e.fileName + '</span>'
+							+ '<span class="se-detail" title="' + detail + '">' + detail + '</span>'
+							+ (riskLabel ? '<span class="se-risk ' + riskCls + '" title="Risk score: ' + rs + '">' + rs + '</span>' : '<span class="se-risk"></span>')
+							+ '<span class="se-time">' + time + '</span>'
+							+ '</div>';
+					}
+					container.innerHTML = html;
+				}
 				function toggleFiles(hash) {
 					const el = document.getElementById('files-' + hash);
 					if (el.style.display === 'block') { el.style.display = 'none'; }
@@ -513,6 +784,7 @@ export class NanoAgentsControl extends Disposable {
 						else { message.data.forEach(file => { const d = document.createElement('div'); d.className = 'file-item'; d.innerText = file; d.onclick = () => openDiff(message.hash, file); container.appendChild(d); }); }
 					}
 					else if (message.command === 'analysisComplete') { refreshDashboard(); }
+					else if (message.command === 'scanTrackerState') { renderScanTracker(message.state); }
 					else if (message.command === 'init') { refreshDashboard(); }
 					else if (message.command === 'prefillQuestion') {
 						// Switch to chat tab and fill the input

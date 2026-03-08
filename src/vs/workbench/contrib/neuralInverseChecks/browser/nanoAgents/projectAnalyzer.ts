@@ -360,7 +360,21 @@ export class ProjectAnalyzer extends Disposable {
 		}
 
 		const encryptedContent = await this.encryptionService.encrypt(content);
-		await this.fileService.writeFile(targetUri, VSBuffer.fromString(encryptedContent));
+		try {
+			await this.fileService.writeFile(targetUri, VSBuffer.fromString(encryptedContent));
+		} catch (writeErr: any) {
+			// EACCES: .inverse dir may still be locked — re-chmod and retry once
+			const isPermError = writeErr?.code === 'EACCES' || writeErr?.code === 'NoPermissions'
+				|| (writeErr?.message && writeErr.message.includes('EACCES'));
+			if (isPermError) {
+				console.warn(`[ProjectAnalyzer] EACCES writing ${targetUri.path} — re-chmod and retry`);
+				await withInverseWriteAccess(this.inverseDir.fsPath, async () => {
+					await this.fileService.writeFile(targetUri, VSBuffer.fromString(encryptedContent));
+				});
+			} else {
+				throw writeErr;
+			}
+		}
 	}
 
 	public async loadAuditData(resource: URI): Promise<any[]> {
@@ -407,36 +421,43 @@ export class ProjectAnalyzer extends Disposable {
 	}
 
 	private async createDirectoryRecursively(dir: URI): Promise<void> {
-		// Optimization: Check if it exists first?
-		// Use fileService.exists or resolve.
-		// A simple way is to try creating it. If it fails, check if parent exists.
-		// Detailed implementation of mkdirp using IFileService:
-
 		try {
 			await this.fileService.createFolder(dir);
 			return; // Success
 		} catch (error: any) {
-			// If error is because parent doesn't exist, we recurse.
-			// VS Code FileService error codes are not always easy to match,
-			// checking if error implies missing parent or just calling parent create anyway.
-
 			// If it already exists, we are good.
 			try {
 				const stat = await this.fileService.resolve(dir);
 				if (stat.isDirectory) return;
-			} catch (e) {
-				// Doesn't exist
+			} catch (_e) {
+				// Doesn't exist — continue
 			}
 
-			// Parent might be missing
+			// EACCES: .inverse is write-locked. Re-chmod and retry.
+			const isPermError = error?.code === 'EACCES' || error?.code === 'NoPermissions'
+				|| (error?.message && error.message.includes('EACCES'));
+			if (isPermError) {
+				console.warn(`[ProjectAnalyzer] EACCES creating dir ${dir.path} — re-chmod and retry`);
+				await withInverseWriteAccess(this.inverseDir.fsPath, async () => {
+					// After chmod, create parent chain then target
+					const parent = dirname(dir);
+					if (parent.path !== dir.path) {
+						try { await this.fileService.createFolder(parent); } catch (_e) { /* may exist */ }
+					}
+					await this.fileService.createFolder(dir);
+				});
+				return;
+			}
+
+			// Parent might be missing (non-perm error)
 			const parent = dirname(dir);
-			if (parent.path !== dir.path) { // Avoid infinite loop at root
+			if (parent.path !== dir.path) {
 				await this.createDirectoryRecursively(parent);
 
 				// Retry creation
 				try {
 					await this.fileService.createFolder(dir);
-				} catch (e) {
+				} catch (_e) {
 					// Ignore if it races and exists now
 				}
 			}

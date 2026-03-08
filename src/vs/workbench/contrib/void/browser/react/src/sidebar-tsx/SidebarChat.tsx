@@ -254,6 +254,8 @@ const nameOfChatMode: Record<ChatMode, string> = {
 	'copilot': 'Copilot',
 	'agent': 'Agent',
 	'gather': 'Gather',
+	'power': 'Power Mode',
+	'checks': 'Checks',
 }
 
 const detailOfChatMode: Record<ChatMode, string> = {
@@ -263,6 +265,8 @@ const detailOfChatMode: Record<ChatMode, string> = {
 	'copilot': 'Executes changes directly. Best for coding, refactoring, or fixing bugs.',
 	'agent': 'Acts autonomously via the NI Agent panel. Best for end-to-end task completion.',
 	'gather': 'Retrieves required data across tools.',
+	'power': 'Full coding agent with bash, read, write, and all tools. For complex multi-step tasks.',
+	'checks': 'GRC compliance specialist. Queries violations, frameworks, and blocking issues.',
 }
 
 
@@ -1457,6 +1461,29 @@ const titleOfBuiltinToolName = {
 	'update_agent_status': { done: `Updated task`, proposed: 'Update task', running: loadingTitleWrapper('Updating task') },
 	'generate_document': { done: `Created artifact`, proposed: 'Create artifact', running: loadingTitleWrapper('Creating artifact') },
 
+	// Power Mode tools
+	'bash': { done: 'Ran command', proposed: 'Run command', running: loadingTitleWrapper('Running command') },
+	'read': { done: 'Read file', proposed: 'Read file', running: loadingTitleWrapper('Reading file') },
+	'write': { done: 'Wrote file', proposed: 'Write file', running: loadingTitleWrapper('Writing file') },
+	'edit': { done: 'Edited file', proposed: 'Edit file', running: loadingTitleWrapper('Editing file') },
+	'glob': { done: 'Found files', proposed: 'Find files', running: loadingTitleWrapper('Finding files') },
+	'grep': { done: 'Searched', proposed: 'Search', running: loadingTitleWrapper('Searching') },
+	'list': { done: 'Listed directory', proposed: 'List directory', running: loadingTitleWrapper('Listing directory') },
+
+	// Agent communication
+	'ask_checksagent': { done: 'Checks Agent responded', proposed: 'Ask Checks Agent', running: loadingTitleWrapper('Consulting Checks Agent') },
+	'ask_powermode': { done: 'Power Mode responded', proposed: 'Ask Power Mode', running: loadingTitleWrapper('Consulting Power Mode') },
+	'query_ni_agent': { done: 'Agent run complete', proposed: 'Run NI Agent', running: loadingTitleWrapper('Running NI Agent') },
+
+	// GRC compliance tools
+	'grc_violations': { done: 'Retrieved violations', proposed: 'Get violations', running: loadingTitleWrapper('Getting violations') },
+	'grc_domain_summary': { done: 'Retrieved domain summary', proposed: 'Get domain summary', running: loadingTitleWrapper('Getting domain summary') },
+	'grc_blocking_violations': { done: 'Retrieved blocking violations', proposed: 'Get blocking violations', running: loadingTitleWrapper('Getting blocking violations') },
+	'grc_framework_rules': { done: 'Retrieved framework rules', proposed: 'Get framework rules', running: loadingTitleWrapper('Getting framework rules') },
+	'grc_impact_chain': { done: 'Retrieved impact chain', proposed: 'Get impact chain', running: loadingTitleWrapper('Getting impact chain') },
+	'grc_rescan': { done: 'Workspace rescanned', proposed: 'Rescan workspace', running: loadingTitleWrapper('Rescanning workspace') },
+	'grc_ai_scan': { done: 'AI compliance scan complete', proposed: 'Run AI compliance scan', running: loadingTitleWrapper('Running AI compliance scan') },
+
 } as const satisfies Record<BuiltinToolName, { done: any, proposed: any, running: any }>
 
 
@@ -1627,6 +1654,62 @@ const toolNameToDesc = (toolName: BuiltinToolName, _toolParams: BuiltinToolCallP
 			return {
 				desc1: toolParams.title,
 			}
+		},
+		// Power Mode tools
+		'bash': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['bash']
+			return { desc1: `"${(toolParams.command ?? '').substring(0, 60)}"` }
+		},
+		'read': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['read']
+			return { desc1: getBasename(toolParams.filePath) }
+		},
+		'write': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['write']
+			return { desc1: getBasename(toolParams.filePath) }
+		},
+		'edit': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['edit']
+			return { desc1: getBasename(toolParams.filePath) }
+		},
+		'glob': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['glob']
+			return { desc1: `"${toolParams.pattern}"` }
+		},
+		'grep': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['grep']
+			return { desc1: `"${toolParams.pattern}"` }
+		},
+		'list': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['list']
+			return { desc1: toolParams.dirPath ?? '/' }
+		},
+		// Agent communication
+		'ask_checksagent': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['ask_checksagent']
+			return { desc1: `"${(toolParams.question ?? '').substring(0, 80)}"` }
+		},
+		'ask_powermode': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['ask_powermode']
+			return { desc1: `"${(toolParams.question ?? '').substring(0, 80)}"` }
+		},
+		'query_ni_agent': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['query_ni_agent']
+			return { desc1: toolParams.agentId === 'list' ? 'list agents' : `agent: ${toolParams.agentId}` }
+		},
+		// GRC compliance
+		'grc_violations': () => { return { desc1: '' } },
+		'grc_domain_summary': () => { return { desc1: '' } },
+		'grc_blocking_violations': () => { return { desc1: '' } },
+		'grc_framework_rules': () => { return { desc1: '' } },
+		'grc_impact_chain': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['grc_impact_chain']
+			return { desc1: getBasename(toolParams.file) }
+		},
+		'grc_rescan': () => { return { desc1: '' } },
+		'grc_ai_scan': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['grc_ai_scan']
+			return { desc1: toolParams.files ?? 'full workspace' }
 		},
 	}
 
@@ -2651,7 +2734,403 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			return <ToolHeaderWrapper {...componentParams} />
 		},
 	},
+
+	// ── Agent Communication Thought Blocks ──────────────────────────────────
+
+	'ask_checksagent': {
+		resultWrapper: ({ toolMessage }) => {
+			const title = getTitle(toolMessage)
+			const question = toolMessage.params?.question ?? ''
+			const isRunning = toolMessage.type === 'running_now'
+			const isSuccess = toolMessage.type === 'success'
+			const isError = toolMessage.type === 'tool_error'
+
+			return <AgentThoughtBlock
+				agentName="Checks Agent"
+				agentTag="GRC"
+				tagColor="#e0a84e"
+				title={title}
+				question={question}
+				answer={isSuccess ? toolMessage.result?.result : isError ? toolMessage.result : undefined}
+				isRunning={isRunning}
+				isError={isError}
+			/>
+		},
+	},
+	'ask_powermode': {
+		resultWrapper: ({ toolMessage }) => {
+			const title = getTitle(toolMessage)
+			const question = toolMessage.params?.question ?? ''
+			const isRunning = toolMessage.type === 'running_now'
+			const isSuccess = toolMessage.type === 'success'
+			const isError = toolMessage.type === 'tool_error'
+
+			return <AgentThoughtBlock
+				agentName="Power Mode"
+				agentTag="Coding"
+				tagColor="#6ba3e8"
+				title={title}
+				question={question}
+				answer={isSuccess ? toolMessage.result?.result : isError ? toolMessage.result : undefined}
+				isRunning={isRunning}
+				isError={isError}
+			/>
+		},
+	},
+	'query_ni_agent': {
+		resultWrapper: ({ toolMessage }) => {
+			const title = getTitle(toolMessage)
+			const agentId = (toolMessage.params as BuiltinToolCallParams['query_ni_agent'])?.agentId ?? ''
+			const isRunning = toolMessage.type === 'running_now'
+			const isSuccess = toolMessage.type === 'success'
+			const isError = toolMessage.type === 'tool_error'
+
+			return <AgentThoughtBlock
+				agentName={agentId === 'list' ? 'NI Agent Catalogue' : `NI Agent: ${agentId}`}
+				agentTag="Agent"
+				tagColor="#a78bfa"
+				title={title}
+				question={agentId === 'list' ? 'list available agents' : (toolMessage.params as BuiltinToolCallParams['query_ni_agent'])?.input ?? ''}
+				answer={isSuccess ? toolMessage.result?.result : isError ? toolMessage.result : undefined}
+				isRunning={isRunning}
+				isError={isError}
+			/>
+		},
+	},
+
+	// ── GRC Compliance Tools ────────────────────────────────────────────────
+
+	'grc_violations': {
+		resultWrapper: ({ toolMessage }) => {
+			const title = getTitle(toolMessage)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1: '', isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`json\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'grc_domain_summary': {
+		resultWrapper: ({ toolMessage }) => {
+			const title = getTitle(toolMessage)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1: '', isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`json\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'grc_blocking_violations': {
+		resultWrapper: ({ toolMessage }) => {
+			const title = getTitle(toolMessage)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1: '', isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`json\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'grc_framework_rules': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`json\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'grc_impact_chain': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'grc_rescan': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={toolMessage.result.result} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'grc_ai_scan': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={toolMessage.result.result} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+
+	// ── Power Mode Style Tools ──────────────────────────────────────────────
+
+	'bash': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={true} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'read': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'write': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'edit': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'glob': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={true} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'grep': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={true} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
+	'list': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const title = getTitle(toolMessage)
+			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
+			const isError = toolMessage.type === 'tool_error'
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={true} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		},
+	},
 };
+
+// ── Agent Communication Thought Block ─────────────────────────────────────
+
+const AgentThoughtBlock = ({
+	agentName,
+	agentTag,
+	tagColor,
+	title,
+	question,
+	answer,
+	isRunning,
+	isError,
+}: {
+	agentName: string
+	agentTag: string
+	tagColor: string
+	title: React.ReactNode
+	question: string
+	answer?: string
+	isRunning: boolean
+	isError: boolean
+}) => {
+	const [isOpen, setIsOpen] = useState(isRunning)
+
+	useEffect(() => {
+		if (isRunning) setIsOpen(true)
+	}, [isRunning])
+
+	const hasError = isError || (answer ?? '').startsWith('[') && (answer ?? '').includes('error')
+
+	return <div className="my-1 rounded-md border border-void-border-3 overflow-hidden">
+		{/* Header — agent connection bar */}
+		<div
+			className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer select-none hover:bg-void-bg-2 transition-colors"
+			onClick={() => setIsOpen(!isOpen)}
+		>
+			{/* Connection indicator */}
+			<div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isRunning ? 'animate-pulse bg-yellow-400' : hasError ? 'bg-red-400' : 'bg-green-400'}`} />
+
+			{/* Agent tag */}
+			<span
+				className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded"
+				style={{ backgroundColor: `${tagColor}20`, color: tagColor }}
+			>
+				{agentTag}
+			</span>
+
+			{/* Title */}
+			<span className="text-[12px] text-void-fg-2 flex-1 truncate">{title}</span>
+
+			{/* Chevron */}
+			<ChevronRight className={`w-3 h-3 flex-shrink-0 transition-transform duration-200 text-void-fg-4 ${isOpen ? 'rotate-90' : ''}`} />
+		</div>
+
+		{/* Body — question & response preview */}
+		<div className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? 'opacity-100' : 'max-h-0 opacity-0'}`}>
+			<div className="px-2.5 pb-2 border-t border-void-border-4">
+				{/* Question */}
+				<div className="mt-2 mb-1.5">
+					<div className="flex items-center gap-1 mb-0.5">
+						<ArrowRight className="w-2.5 h-2.5 text-void-fg-4" />
+						<span className="text-[10px] font-medium text-void-fg-4 uppercase tracking-wider">Question</span>
+					</div>
+					<div className="text-[12px] text-void-fg-3 pl-3.5 leading-relaxed">
+						{question.length > 200 ? question.substring(0, 200) + '...' : question}
+					</div>
+				</div>
+
+				{/* Response / Loading */}
+				{isRunning && !answer && (
+					<div className="flex items-center gap-1.5 pl-3.5 mt-1.5">
+						<div className="w-3 h-3 border border-void-fg-4 border-t-transparent rounded-full animate-spin" />
+						<span className="text-[11px] text-void-fg-4 italic">
+							{agentName} is thinking...
+						</span>
+					</div>
+				)}
+
+				{answer && (
+					<div className="mt-1.5">
+						<div className="flex items-center gap-1 mb-0.5">
+							<ArrowRight className="w-2.5 h-2.5 text-void-fg-4 rotate-180" />
+							<span className="text-[10px] font-medium text-void-fg-4 uppercase tracking-wider">
+								{hasError ? 'Error' : 'Response'}
+							</span>
+						</div>
+						<div className={`text-[12px] pl-3.5 leading-relaxed max-h-[200px] overflow-y-auto ${hasError ? 'text-red-400' : 'text-void-fg-3'}`}>
+							<SmallProseWrapper>
+								<ChatMarkdownRender
+									string={answer.length > 1000 ? answer.substring(0, 1000) + '\n\n*...truncated*' : answer}
+									chatMessageLocation={undefined}
+									isApplyEnabled={false}
+									isLinkDetectionEnabled={true}
+								/>
+							</SmallProseWrapper>
+						</div>
+					</div>
+				)}
+			</div>
+		</div>
+	</div>
+}
 
 
 const Checkpoint = ({ message, threadId, messageIdx, isCheckpointGhost, threadIsRunning }: { message: CheckpointEntry, threadId: string; messageIdx: number, isCheckpointGhost: boolean, threadIsRunning: boolean }) => {

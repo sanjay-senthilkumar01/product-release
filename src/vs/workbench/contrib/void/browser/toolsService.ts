@@ -5,7 +5,7 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js'
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js'
 import { QueryBuilder } from '../../../services/search/common/queryBuilder.js'
-import { ISearchService } from '../../../services/search/common/search.js'
+import { ISearchService, IFileQuery, ITextQuery, QueryType } from '../../../services/search/common/search.js'
 import { IEditCodeService } from './editCodeServiceInterface.js'
 import { ITerminalToolService } from './terminalToolService.js'
 import { LintErrorItem, BuiltinToolCallParams, BuiltinToolResultType, BuiltinToolName } from '../common/toolsServiceTypes.js'
@@ -25,6 +25,11 @@ import { IEditorService, SIDE_GROUP } from '../../../services/editor/common/edit
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IGRCEngineService } from '../../neuralInverseChecks/browser/engine/services/grcEngineService.js';
+import { IChecksAgentService } from '../../neuralInverseChecks/browser/checksAgent/checksAgentService.js';
+import { IExternalCommandExecutor } from '../../neuralInverseChecks/browser/engine/services/externalCommandExecutor.js';
+import { IPowerModeService } from '../../powerMode/browser/powerModeService.js';
+import { IWorkflowAgentService } from '../../neuralInverse/browser/workflowAgentService.js';
 
 
 // tool use for AI
@@ -163,10 +168,111 @@ export class ToolsService implements IToolsService {
 		@IEditorService private readonly editorService: IEditorService,
 		@IProductService private readonly productService: IProductService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@IGRCEngineService private readonly grcEngine: IGRCEngineService,
+		@IChecksAgentService private readonly checksAgent: IChecksAgentService,
+		@IExternalCommandExecutor private readonly commandExecutor: IExternalCommandExecutor,
+		@IPowerModeService private readonly powerMode: IPowerModeService,
 	) {
 		const queryBuilder = instantiationService.createInstance(QueryBuilder);
 
+		const workspaceDir = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? '/';
+		const MAX_PM_OUTPUT = 50 * 1024; // 50KB
+
+		// Lazy-resolved to avoid circular DI (neuralInverse → void → neuralInverse)
+		let _workflowAgent: IWorkflowAgentService | null | undefined;
+		const getWorkflowAgent = (): IWorkflowAgentService | null => {
+			if (_workflowAgent === undefined) {
+				try { _workflowAgent = instantiationService.invokeFunction(a => a.get(IWorkflowAgentService)); }
+				catch { _workflowAgent = null; }
+			}
+			return _workflowAgent;
+		};
+
 		this.validateParams = {
+			// --- Power Mode style tools ---
+			bash: (params: RawToolParamsObj) => {
+				const command = validateStr('command', params.command)
+				const description = validateStr('description', params.description)
+				const timeout = validateNumber(params.timeout, { default: null })
+				return { command, description, timeout }
+			},
+			read: (params: RawToolParamsObj) => {
+				const filePath = validateStr('file_path', params.file_path)
+				const offset = validateNumber(params.offset, { default: null })
+				const limit = validateNumber(params.limit, { default: null })
+				return { filePath, offset, limit }
+			},
+			write: (params: RawToolParamsObj) => {
+				const filePath = validateStr('file_path', params.file_path)
+				const content = validateStr('content', params.content)
+				return { filePath, content }
+			},
+			edit: (params: RawToolParamsObj) => {
+				const filePath = validateStr('file_path', params.file_path)
+				const oldString = validateStr('old_string', params.old_string)
+				const newString = validateStr('new_string', params.new_string)
+				return { filePath, oldString, newString }
+			},
+			glob: (params: RawToolParamsObj) => {
+				const pattern = validateStr('pattern', params.pattern)
+				const path = validateOptionalStr('path', params.path)
+				return { pattern, path }
+			},
+			grep: (params: RawToolParamsObj) => {
+				const pattern = validateStr('pattern', params.pattern)
+				const path = validateOptionalStr('path', params.path)
+				const include = validateOptionalStr('include', params.include)
+				return { pattern, path, include }
+			},
+			list: (params: RawToolParamsObj) => {
+				const dirPath = validateOptionalStr('dir_path', params.dir_path)
+				return { dirPath }
+			},
+			// --- GRC compliance ---
+			grc_violations: (params: RawToolParamsObj) => {
+				const domain = validateOptionalStr('domain', params.domain)
+				const severity = validateOptionalStr('severity', params.severity)
+				const file = validateOptionalStr('file', params.file)
+				const limit = validateNumber(params.limit, { default: 30 }) ?? 30
+				return { domain, severity, file, limit }
+			},
+			grc_domain_summary: (_params: RawToolParamsObj) => {
+				return {}
+			},
+			grc_blocking_violations: (_params: RawToolParamsObj) => {
+				return {}
+			},
+			grc_framework_rules: (params: RawToolParamsObj) => {
+				const frameworkId = validateOptionalStr('framework_id', params.framework_id)
+				const domain = validateOptionalStr('domain', params.domain)
+				return { frameworkId, domain }
+			},
+			grc_rescan: (_params: RawToolParamsObj) => {
+				return {}
+			},
+			grc_ai_scan: (params: RawToolParamsObj) => {
+				const files = validateOptionalStr('files', params.files)
+				return { files }
+			},
+			grc_impact_chain: (params: RawToolParamsObj) => {
+				const file = validateStr('file', params.file)
+				const maxDepth = validateNumber(params.max_depth, { default: 3 }) ?? 3
+				return { file, maxDepth }
+			},
+			ask_checksagent: (params: RawToolParamsObj) => {
+				const question = validateStr('question', params.question)
+				return { question }
+			},
+			ask_powermode: (params: RawToolParamsObj) => {
+				const question = validateStr('question', params.question)
+				return { question }
+			},
+			query_ni_agent: (params: RawToolParamsObj) => {
+				const agentId = validateStr('agent_id', params.agent_id)
+				const input = isFalsy(params.input) ? '' : validateStr('input', params.input)
+				return { agentId, input }
+			},
+			// ---
 			read_file: (params: RawToolParamsObj) => {
 				const { uri: uriStr, start_line: startLineUnknown, end_line: endLineUnknown, page_number: pageNumberUnknown } = params
 				const uri = validateURI(uriStr)
@@ -352,6 +458,266 @@ export class ToolsService implements IToolsService {
 
 
 		this.callTool = {
+			// --- Power Mode style tools ---
+			bash: async ({ command, description, timeout }) => {
+				const jobId = `void_bash_${Date.now()}`
+				const fullCommand = `cd ${JSON.stringify(workspaceDir)} && ${command}`
+				try {
+					const output = await this.commandExecutor.execute(jobId, fullCommand, timeout ?? 120000, MAX_PM_OUTPUT)
+					const truncated = output.length > MAX_PM_OUTPUT ? output.substring(0, MAX_PM_OUTPUT) + '\n[Output truncated at 50KB]' : output
+					return { result: { result: truncated } }
+				} catch (err: any) {
+					return { result: { result: `Error: ${err.message}${err.stderr ? '\n' + err.stderr : ''}` } }
+				}
+			},
+			read: async ({ filePath, offset, limit: readLimit }) => {
+				const normalizedPath = filePath.startsWith('/') ? filePath : `${workspaceDir}/${filePath}`
+				const uri = URI.file(normalizedPath)
+				try {
+					const stat = await fileService.stat(uri)
+					if (stat.isDirectory) {
+						const resolved = await fileService.resolve(uri)
+						const entries = (resolved.children ?? []).map(c => `${c.isDirectory ? 'd' : '-'} ${c.name}`).sort().join('\n')
+						return { result: { result: entries || '(empty directory)' } }
+					}
+					const content = await fileService.readFile(uri)
+					const text = content.value.toString()
+					const allLines = text.split('\n')
+					const startIdx = Math.max(0, (offset ?? 1) - 1)
+					const maxLines = readLimit ?? 2000
+					const selectedLines = allLines.slice(startIdx, startIdx + maxLines)
+					const numbered = selectedLines.map((line, i) => {
+						const num = String(startIdx + i + 1).padStart(6, ' ')
+						return `${num}\t${line.length > 2000 ? line.substring(0, 2000) + '...' : line}`
+					}).join('\n')
+					const out = numbered.length > MAX_PM_OUTPUT ? numbered.substring(0, MAX_PM_OUTPUT) + '\n[Output truncated]' : numbered
+					return { result: { result: out } }
+				} catch (err: any) {
+					return { result: { result: `Error: ${err.message}` } }
+				}
+			},
+			write: async ({ filePath, content }) => {
+				const normalizedPath = filePath.startsWith('/') ? filePath : `${workspaceDir}/${filePath}`
+				const uri = URI.file(normalizedPath)
+				try {
+					await fileService.writeFile(uri, VSBuffer.fromString(content))
+					return { result: { result: `Successfully wrote ${content.split('\n').length} lines to ${normalizedPath}` } }
+				} catch (err: any) {
+					return { result: { result: `Error writing file: ${err.message}` } }
+				}
+			},
+			edit: async ({ filePath, oldString, newString }) => {
+				const normalizedPath = filePath.startsWith('/') ? filePath : `${workspaceDir}/${filePath}`
+				const uri = URI.file(normalizedPath)
+				try {
+					const content = await fileService.readFile(uri)
+					const text = content.value.toString()
+					const count = text.split(oldString).length - 1
+					if (count === 0) {
+						return { result: { result: `Error: old_string not found in ${normalizedPath}` } }
+					}
+					if (count > 1) {
+						return { result: { result: `Error: old_string found ${count} times in ${normalizedPath} — must be unique. Add more context.` } }
+					}
+					const newText = text.replace(oldString, newString)
+					await fileService.writeFile(uri, VSBuffer.fromString(newText))
+					return { result: { result: `Successfully edited ${normalizedPath}` } }
+				} catch (err: any) {
+					return { result: { result: `Error: ${err.message}` } }
+				}
+			},
+			glob: async ({ pattern, path: searchPath }) => {
+				const folderUri = URI.file(searchPath ?? workspaceDir)
+				try {
+					const query: IFileQuery = {
+						type: QueryType.File,
+						folderQueries: [{ folder: folderUri }],
+						filePattern: pattern,
+						maxResults: 100,
+					}
+					const results = await searchService.fileSearch(query)
+					const files = results.results.map(r => r.resource.fsPath).join('\n')
+					return { result: { result: files || 'No matches found.' } }
+				} catch (err: any) {
+					return { result: { result: `Error: ${err.message}` } }
+				}
+			},
+			grep: async ({ pattern, path: searchPath, include }) => {
+				const folderUri = URI.file(searchPath ?? workspaceDir)
+				try {
+					const query: ITextQuery = {
+						type: QueryType.Text,
+						contentPattern: { pattern, isRegExp: true, isCaseSensitive: false },
+						folderQueries: [{ folder: folderUri }],
+						includePattern: include ? { [include]: true } : undefined,
+						excludePattern: { '**/node_modules': true, '**/.git': true },
+						maxResults: 200,
+					}
+					const matches: string[] = []
+					await searchService.textSearch(query, undefined, (item) => {
+						if ('resource' in item) {
+							const fm = item as { resource: { fsPath: string }; results?: Array<{ rangeLocations?: Array<{ source: { startLineNumber: number } }>; previewText?: string }> }
+							const file = fm.resource.fsPath
+							for (const res of fm.results ?? []) {
+								const line = res.rangeLocations?.[0]?.source.startLineNumber ?? 0
+								matches.push(`${file}:${line}: ${(res.previewText ?? '').trim()}`)
+							}
+						}
+					})
+					const output = matches.join('\n') || 'No matches found.'
+					return { result: { result: output.length > MAX_PM_OUTPUT ? output.substring(0, MAX_PM_OUTPUT) + '\n[Output truncated]' : output } }
+				} catch (err: any) {
+					return { result: { result: `Error: ${err.message}` } }
+				}
+			},
+			list: async ({ dirPath }) => {
+				const uri = URI.file(dirPath ?? workspaceDir)
+				try {
+					const resolved = await fileService.resolve(uri)
+					const entries = (resolved.children ?? []).map(c => `${c.isDirectory ? 'd' : '-'} ${c.name}`).sort().join('\n')
+					return { result: { result: entries || '(empty directory)' } }
+				} catch (err: any) {
+					return { result: { result: `Error: ${err.message}` } }
+				}
+			},
+			// --- GRC compliance ---
+			grc_violations: async ({ domain, severity, file, limit }) => {
+				let results = grcEngine.getAllResults()
+				if (domain) { results = results.filter(r => r.domain === domain) }
+				if (severity) { results = results.filter(r => (r.severity ?? '').toLowerCase() === severity.toLowerCase()) }
+				if (file) { results = results.filter(r => r.fileUri?.path.includes(file)) }
+				results = results.slice(0, limit)
+
+				if (results.length === 0) {
+					return { result: { result: 'No violations found matching the specified filters.' } }
+				}
+				const lines = results.map(r => {
+					const loc = r.fileUri ? `${r.fileUri.path.split('/').slice(-2).join('/')}:${r.line ?? '?'}` : 'unknown'
+					return `[${(r.severity ?? 'info').toUpperCase()}] ${r.ruleId} — ${r.message}\n  File: ${loc}\n  Domain: ${r.domain ?? 'general'}`
+				})
+				return { result: { result: `${results.length} violation(s):\n\n${lines.join('\n\n')}` } }
+			},
+			grc_domain_summary: async (_params) => {
+				const summary = grcEngine.getDomainSummary()
+				if (summary.length === 0) {
+					return { result: { result: 'No domains with violations. Compliance posture is clean.' } }
+				}
+				const total = summary.reduce((acc, d) => acc + d.errorCount + d.warningCount, 0)
+				const lines = summary.map(d => `  ${d.domain.padEnd(20)} errors: ${d.errorCount}, warnings: ${d.warningCount}`)
+				return { result: { result: `Domain summary (${total} total violations):\n\n${lines.join('\n')}` } }
+			},
+			grc_blocking_violations: async (_params) => {
+				const blocking = grcEngine.getBlockingViolations()
+				if (blocking.length === 0) {
+					return { result: { result: 'No blocking violations. Commits are not gated.' } }
+				}
+				const lines = blocking.map(r => {
+					const loc = r.fileUri ? `${r.fileUri.path.split('/').slice(-2).join('/')}:${r.line ?? '?'}` : 'unknown'
+					return `[BLOCKING] ${r.ruleId} — ${r.message}\n  File: ${loc}\n  Domain: ${r.domain ?? 'general'}`
+				})
+				return { result: { result: `COMMIT IS GATED — ${blocking.length} blocking violation(s):\n\n${lines.join('\n\n')}` } }
+			},
+			grc_framework_rules: async ({ frameworkId, domain }) => {
+				const frameworks = grcEngine.getActiveFrameworks()
+				let rules = grcEngine.getRules()
+				if (frameworkId) { rules = rules.filter(r => r.frameworkId === frameworkId) }
+				if (domain) { rules = rules.filter(r => r.domain === domain) }
+
+				const frameworkList = frameworks.map(f => `  ${f.id}: ${f.name} (v${f.version})`).join('\n')
+				if (rules.length === 0) {
+					return { result: { result: `Active frameworks:\n${frameworkList}\n\nNo rules found for the specified filters.` } }
+				}
+				const ruleLines = rules.slice(0, 50).map(r =>
+					`  [${r.domain ?? 'general'}] ${r.id}: ${r.message}${r.blockingBehavior?.blocksCommit ? ' (BLOCKING)' : ''}`
+				)
+				const header = frameworks.length > 0 ? `Active frameworks:\n${frameworkList}\n\n` : ''
+				return { result: { result: `${header}Rules (${rules.length} total, showing up to 50):\n\n${ruleLines.join('\n')}` } }
+			},
+			grc_rescan: async (_params) => {
+				try {
+					await this.grcEngine.scanWorkspace();
+					const allResults = this.grcEngine.getAllResults();
+					const blocking = this.grcEngine.getBlockingViolations();
+					return { result: { result: `Workspace rescan complete. ${allResults.length} total violation(s), ${blocking.length} blocking.${blocking.length > 0 ? ' COMMIT IS GATED.' : ' Commits are clear.'}` } }
+				} catch (err: any) {
+					return { result: { result: `GRC rescan failed: ${err.message}` } }
+				}
+			},
+			grc_ai_scan: async ({ files }) => {
+				try {
+					await this.grcEngine.scanWorkspaceWithAI();
+					const allResults = this.grcEngine.getAllResults();
+					const blocking = this.grcEngine.getBlockingViolations();
+					const scopeNote = files ? ` (scoped to: ${files})` : '';
+					return { result: { result: `AI compliance scan complete${scopeNote}. ${allResults.length} total violation(s), ${blocking.length} blocking.${blocking.length > 0 ? ' COMMIT IS GATED.' : ' Commits are clear.'}` } }
+				} catch (err: any) {
+					return { result: { result: `AI scan failed: ${err.message}` } }
+				}
+			},
+			grc_impact_chain: async ({ file, maxDepth }) => {
+				const fileUri = file.includes('://') ? URI.parse(file) : URI.file(file)
+				const impact = grcEngine.getImpactChain(fileUri, maxDepth)
+				if (!impact) {
+					return { result: { result: `No impact chain found for: ${file}\nThis file may not be tracked in the import graph yet.` } }
+				}
+				type ImpactNode = NonNullable<typeof impact>
+				const renderTree = (node: ImpactNode, indent = 0): string => {
+					const prefix = '  '.repeat(indent)
+					const label = node.fileUri.split('/').slice(-2).join('/')
+					let out = `${prefix}${label}`
+					if (node.dependents.length > 0) {
+						out += ` (imported by ${node.dependents.length} file${node.dependents.length !== 1 ? 's' : ''})`
+						for (const dep of node.dependents) { out += '\n' + renderTree(dep, indent + 1) }
+					}
+					return out
+				}
+				const countDescendants = (node: ImpactNode): number => {
+					let count = node.dependents.length
+					for (const dep of node.dependents) { count += countDescendants(dep) }
+					return count
+				}
+				const total = countDescendants(impact)
+				return { result: { result: `Impact chain for ${file.split('/').slice(-2).join('/')} (${total} dependent file(s) affected):\n\n${renderTree(impact)}` } }
+			},
+			ask_checksagent: async ({ question }) => {
+				try {
+					const answer = await this.checksAgent.answerQuery(question)
+					return { result: { result: answer } }
+				} catch (e: any) {
+					return { result: { result: `[Checks Agent connection error: ${e.message ?? 'unknown'}]` } }
+				}
+			},
+			ask_powermode: async ({ question }) => {
+				try {
+					const answer = await this.powerMode.answerQuery(question)
+					return { result: { result: answer } }
+				} catch (e: any) {
+					return { result: { result: `[Power Mode connection error: ${e.message ?? 'unknown'}]` } }
+				}
+			},
+			query_ni_agent: async ({ agentId, input }) => {
+				const wf = getWorkflowAgent();
+				if (!wf) {
+					return { result: { result: '[query_ni_agent] WorkflowAgentService not available.' } };
+				}
+				// Discovery mode — list available agents + workflows
+				if (agentId === 'list') {
+					const workflows = wf.getWorkflows().map(w => `workflow:${w.id} — ${w.name}: ${w.description}`).join('\n');
+					const runHistory = wf.getRunHistory(5).map(r => `[${r.status}] ${r.workflowName}`).join(', ') || 'none';
+					return { result: { result: `Available workflows:\n${workflows || '(none defined in .inverse/workflows/)'}\n\nRecent runs: ${runHistory}` } };
+				}
+				try {
+					const run = await wf.runAgent(agentId, input);
+					const output = run.finalOutput ?? run.steps.slice(-1)[0]?.finalOutput ?? `Run completed with status: ${run.status}`;
+					if (run.status === 'failed') {
+						return { result: { result: `[Agent "${agentId}" failed] ${run.error ?? output}` } };
+					}
+					return { result: { result: output } };
+				} catch (e: any) {
+					return { result: { result: `[query_ni_agent error: ${e.message ?? 'unknown'}]` } };
+				}
+			},
+			// ---
 			read_file: async ({ uri, startLine, endLine, pageNumber }) => {
 				await voidModelService.initializeModel(uri)
 				const { model } = await voidModelService.getModelSafe(uri)
@@ -525,10 +891,18 @@ export class ToolsService implements IToolsService {
 			},
 			// ---
 			run_command: async ({ command, cwd, terminalId }) => {
+				const commitGateMsg = this._checkCommitGate(command);
+				if (commitGateMsg) {
+					return { result: Promise.resolve({ resolveReason: { type: 'done' as const, exitCode: 1 }, result: commitGateMsg }) }
+				}
 				const { resPromise, interrupt } = await this.terminalToolService.runCommand(command, { type: 'temporary', cwd, terminalId })
 				return { result: resPromise, interruptTool: interrupt }
 			},
 			run_persistent_command: async ({ command, persistentTerminalId }) => {
+				const commitGateMsg = this._checkCommitGate(command);
+				if (commitGateMsg) {
+					return { result: Promise.resolve({ resolveReason: { type: 'done' as const, exitCode: 1 }, result: commitGateMsg }) }
+				}
 				const { resPromise, interrupt } = await this.terminalToolService.runCommand(command, { type: 'persistent', persistentTerminalId })
 				return { result: resPromise, interruptTool: interrupt }
 			},
@@ -610,6 +984,26 @@ export class ToolsService implements IToolsService {
 
 		// given to the LLM after the call for successful tool calls
 		this.stringOfResult = {
+			// --- Power Mode style tools ---
+			bash: (_params, result) => result.result,
+			read: (_params, result) => result.result,
+			write: (_params, result) => result.result,
+			edit: (_params, result) => result.result,
+			glob: (_params, result) => result.result,
+			grep: (_params, result) => result.result,
+			list: (_params, result) => result.result,
+			// --- GRC compliance ---
+			grc_violations: (_params, result) => result.result,
+			grc_domain_summary: (_params, result) => result.result,
+			grc_blocking_violations: (_params, result) => result.result,
+			grc_framework_rules: (_params, result) => result.result,
+			grc_impact_chain: (_params, result) => result.result,
+			grc_rescan: (_params, result) => result.result,
+			grc_ai_scan: (_params, result) => result.result,
+			ask_checksagent: (_params, result) => result.result,
+			ask_powermode: (_params, result) => result.result,
+			query_ni_agent: (_params, result) => result.result,
+			// ---
 			read_file: (params, result) => {
 				return `${params.uri.fsPath}\n\`\`\`\n${result.fileContents}\n\`\`\`${nextPageStr(result.hasNextPage)}${result.hasNextPage ? `\nMore info because truncated: this file has ${result.totalNumLines} lines, or ${result.totalFileLen} characters.` : ''}`
 			},
@@ -653,8 +1047,9 @@ export class ToolsService implements IToolsService {
 						(result.lintErrors ? ` Lint errors found after change:\n${stringifyLintErrors(result.lintErrors)}.\nIf this is related to a change made while calling this tool, you might want to fix the error.`
 							: ` No lint errors found.`)
 						: '')
+				const grcString = this._getFileGRCViolations(params.uri);
 
-				return `Change successfully made to ${params.uri.fsPath}.${lintErrsString}`
+				return `Change successfully made to ${params.uri.fsPath}.${lintErrsString}${grcString}`
 			},
 			multi_replace_file_content: (params, result) => {
 				const lintErrsString = (
@@ -662,8 +1057,9 @@ export class ToolsService implements IToolsService {
 						(result.lintErrors ? ` Lint errors found after change:\n${stringifyLintErrors(result.lintErrors)}.\nIf this is related to a change made while calling this tool, you might want to fix the error.`
 							: ` No lint errors found.`)
 						: '')
+				const grcString = this._getFileGRCViolations(params.uri);
 
-				return `Change successfully made to ${params.uri.fsPath}.${lintErrsString}`
+				return `Change successfully made to ${params.uri.fsPath}.${lintErrsString}${grcString}`
 			},
 			rewrite_file: (params, result) => {
 				const lintErrsString = (
@@ -671,8 +1067,9 @@ export class ToolsService implements IToolsService {
 						(result.lintErrors ? ` Lint errors found after change:\n${stringifyLintErrors(result.lintErrors)}.\nIf this is related to a change made while calling this tool, you might want to fix the error.`
 							: ` No lint errors found.`)
 						: '')
+				const grcString = this._getFileGRCViolations(params.uri);
 
-				return `Change successfully made to ${params.uri.fsPath}.${lintErrsString}`
+				return `Change successfully made to ${params.uri.fsPath}.${lintErrsString}${grcString}`
 			},
 			run_command: (params, result) => {
 				const { resolveReason, result: result_, } = result
@@ -726,6 +1123,39 @@ export class ToolsService implements IToolsService {
 
 	}
 
+
+	private _getFileGRCViolations(uri: URI): string {
+		try {
+			const allResults = this.grcEngine.getAllResults();
+			const fileViolations = allResults.filter(r =>
+				r.fileUri && r.fileUri.path === uri.path &&
+				((r.severity ?? '').toLowerCase() === 'error' || r.blockingBehavior?.blocksCommit)
+			);
+			if (fileViolations.length === 0) return '';
+			const lines = fileViolations.map(r => {
+				const sev = r.blockingBehavior?.blocksCommit ? 'BLOCKING' : (r.severity ?? 'error').toUpperCase();
+				return `[${sev}] ${r.ruleId} — ${r.message} (line ${r.line ?? '?'})`;
+			});
+			return `\n GRC violations in this file:\n${lines.join('\n')}\nFix blocking violations before committing.`;
+		} catch {
+			return '';
+		}
+	}
+
+	private _checkCommitGate(command: string): string | null {
+		if (!/\bgit\s+commit\b/.test(command)) return null;
+		try {
+			const blocking = this.grcEngine.getBlockingViolations();
+			if (blocking.length === 0) return null;
+			const lines = blocking.slice(0, 10).map(r => {
+				const loc = r.fileUri ? `${r.fileUri.path.split('/').slice(-2).join('/')}:${r.line ?? '?'}` : 'unknown';
+				return `  - [BLOCKING] ${r.ruleId} in ${loc} — ${r.message}`;
+			});
+			return `COMMIT BLOCKED — ${blocking.length} blocking GRC violation(s) must be resolved first:\n${lines.join('\n')}\n\nFix these violations before committing. Use \`grc_blocking_violations\` for full details.`;
+		} catch {
+			return null;
+		}
+	}
 
 	private _getLintErrors(uri: URI): { lintErrors: LintErrorItem[] | null } {
 		const lintErrors = this.markerService

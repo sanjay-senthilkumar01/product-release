@@ -34,6 +34,7 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IGRCConfig, IGRCRule, DEFAULT_GRC_CONFIG } from '../types/grcTypes.js';
+import { IInvariantDefinition } from '../types/invariantTypes.js';
 import { BUILTIN_RULES } from './builtinRules.js';
 import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
 import { InvariantConfigLoader } from './invariantConfigLoader.js';
@@ -332,6 +333,25 @@ export class GRCConfigLoader extends Disposable {
 	 */
 	public async reload(): Promise<void> {
 		await this._loadConfig();
+	}
+
+
+	// ─── Invariant Management (pass-through) ──────────────────────────
+
+	public getInvariants(): IInvariantDefinition[] {
+		return this._invariantLoader.getInvariants();
+	}
+
+	public async saveInvariant(invariant: IInvariantDefinition): Promise<void> {
+		await this._invariantLoader.saveInvariant(invariant);
+	}
+
+	public async deleteInvariant(id: string): Promise<void> {
+		await this._invariantLoader.deleteInvariant(id);
+	}
+
+	public async toggleInvariant(id: string, enabled: boolean): Promise<void> {
+		await this._invariantLoader.toggleInvariant(id, enabled);
 	}
 
 	// ─── Write Methods (for UI console) ──────────────────────────────

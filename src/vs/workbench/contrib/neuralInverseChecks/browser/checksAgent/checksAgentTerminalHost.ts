@@ -9,13 +9,13 @@
  * Adapted from PowerModeTerminalHost. Uses VS Code's ITerminalService.createDetachedTerminal()
  * to render a real xterm instance in the Checks Manager window.
  *
- * GRC color palette:
- *   Brand (teal):  #4ec9a0   — compliance/safe/passing
- *   Tool (amber):  #fbbf24   — enforcement/audit trail
- *   Error (red):   #f87171
- *   Text (white):  #e0e8f0
- *   Muted (gray):  #8a9ab0
- *   Dark:          #4a5a6e
+ * Color palette:
+ *   Brand (blue):  #64b4ff   — accent/success
+ *   Tool (amber):  #e6aa50   — enforcement/audit trail
+ *   Error (red):   #f06464
+ *   Text (white):  #d2dae6
+ *   Muted (gray):  #8291a5
+ *   Dark:          #465264
  */
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
@@ -30,16 +30,15 @@ import { ChecksAgentUIEvent } from './checksAgentTypes.js';
 const ESC = '\x1b[';
 const RESET = `${ESC}0m`;
 const BOLD = `${ESC}1m`;
-const DIM = `${ESC}2m`;
 
-// GRC-specific palette (24-bit true color)
-const TEAL   = `${ESC}38;2;78;201;160m`;    // #4ec9a0  brand / success
-const AMBER  = `${ESC}38;2;251;191;36m`;    // #fbbf24  tools / audit
-const RED    = `${ESC}38;2;248;113;113m`;   // #f87171  errors
-const WHITE  = `${ESC}38;2;224;232;240m`;   // #e0e8f0  main text
-const GRAY   = `${ESC}38;2;138;154;176m`;   // #8a9ab0  muted
-const DARK   = `${ESC}38;2;74;90;110m`;     // #4a5a6e  very muted
-const BLUE   = `${ESC}38;2;130;160;220m`;   // #82a0dc  box borders
+// Checks Agent palette (24-bit true color)
+const TEAL   = `${ESC}38;2;100;180;255m`;   // #64b4ff  brand / accent (soft blue)
+const AMBER  = `${ESC}38;2;230;170;80m`;    // #e6aa50  tools / audit
+const RED    = `${ESC}38;2;240;100;100m`;   // #f06464  errors
+const WHITE  = `${ESC}38;2;210;218;230m`;   // #d2dae6  main text
+const GRAY   = `${ESC}38;2;130;145;165m`;   // #8291a5  muted
+const DARK   = `${ESC}38;2;70;82;100m`;     // #465264  very muted
+const BLUE   = `${ESC}38;2;90;120;170m`;    // #5a78aa  box borders
 
 function line(text: string = ''): string { return text + '\r\n'; }
 
@@ -60,18 +59,18 @@ const ICON_LINES = [
 ];
 
 const LOGO_LINES = [
-	'  ███╗   ██╗███████╗██╗   ██╗██████╗  █████╗ ██╗',
-	'  ████╗  ██║██╔════╝██║   ██║██╔══██╗██╔══██╗██║',
-	'  ██╔██╗ ██║█████╗  ██║   ██║██████╔╝███████║██║',
-	'  ██║╚██╗██║██╔══╝  ██║   ██║██╔══██╗██╔══██║██║',
-	'  ██║ ╚████║███████╗╚██████╔╝██║  ██║██║  ██║███████╗',
-	'  ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝',
-	'  ██████╗██╗  ██╗███████╗ ██████╗██╗  ██╗███████╗',
+	'   ██████╗██╗  ██╗███████╗ ██████╗██╗  ██╗███████╗',
 	'  ██╔════╝██║  ██║██╔════╝██╔════╝██║ ██╔╝██╔════╝',
 	'  ██║     ███████║█████╗  ██║     █████╔╝ ███████╗',
 	'  ██║     ██╔══██║██╔══╝  ██║     ██╔═██╗ ╚════██║',
 	'  ╚██████╗██║  ██║███████╗╚██████╗██║  ██╗███████║',
 	'   ╚═════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝',
+	'   █████╗  ██████╗ ███████╗███╗   ██╗████████╗',
+	'  ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝',
+	'  ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║',
+	'  ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║',
+	'  ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║',
+	'  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝',
 ];
 
 // ── Slash commands ─────────────────────────────────────────────────────
@@ -109,7 +108,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 	private _thinkingFrame = 0;
 	private _streamingCursor = false;
 	private readonly _drawnRunningTools = new Set<string>();
-	// Agent-link animation (for request_code_context ↔ power-mode)
+	// Agent-link animation (for ask_power_mode — queries to Power Mode)
 	private _agentLinkInterval: ReturnType<typeof setInterval> | undefined;
 	private _agentLinkFrame = 0;
 
@@ -131,7 +130,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 
 		const colorProvider: IXtermColorProvider = {
 			getBackgroundColor(_theme: IColorTheme): Color | undefined {
-				return new Color(new RGBA(14, 22, 32, 255)); // #0e1620 — near-black GRC background
+				return new Color(new RGBA(22, 27, 36, 255)); // #161b24 — dark neutral background
 			}
 		};
 
@@ -180,12 +179,11 @@ export class ChecksAgentTerminalHost extends Disposable {
 		}
 		this._currentSessionId = session.id;
 
-		// Replay existing messages
-		for (const msg of session.messages) {
-			if (msg.role === 'user') {
-				const text = msg.parts.find(p => p.type === 'text')?.text ?? '';
-				if (text) { this._drawUserMessage(text); }
-			}
+		// Show a compact restore indicator if there is prior history (don't replay the full conversation)
+		if (session.messages.length > 0) {
+			const userCount = session.messages.filter(m => m.role === 'user').length;
+			this._write(line(`  ${GRAY}── ${userCount} message${userCount !== 1 ? 's' : ''} in session history  ${DARK}(/clear to reset)${RESET}`));
+			this._write(line());
 		}
 	}
 
@@ -207,7 +205,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 		const boxWidth = Math.min(this._cols - 4, 100);
 		const leftW = 28;
 		const hLine = '─'.repeat(boxWidth);
-		const titleLabel = ' Neural Inverse Checks Agent ';
+		const titleLabel = ' Checks Agent ';
 		const titlePad = Math.floor((boxWidth - titleLabel.length) / 2);
 
 		this._write(line(`  ${BLUE}┌${'─'.repeat(titlePad)}${RESET}${WHITE}${BOLD}${titleLabel}${RESET}${BLUE}${'─'.repeat(Math.max(0, boxWidth - titlePad - titleLabel.length))}┐${RESET}`));
@@ -246,14 +244,8 @@ export class ChecksAgentTerminalHost extends Disposable {
 		this._drawnRunningTools.clear();
 		this._streamingCursor = false;
 
-		const w = Math.min(this._cols - 4, 100);
-		const hint = ` / commands · Esc stop `;
-		const dashes = Math.max(4, w - hint.length);
-		const left = Math.floor(dashes / 2);
-		const right = Math.ceil(dashes / 2);
 		this._write(line());
-		this._write(line(`  ${BLUE}╭${'─'.repeat(left)}${DARK}${hint}${BLUE}${'─'.repeat(right)}╮${RESET}`));
-		this._write(`  ${BLUE}│${RESET} ${TEAL}${BOLD}❯ ${RESET}`);
+		this._write(`  ${TEAL}${BOLD}❯ ${RESET}`);
 	}
 
 	// ── Slash menu ─────────────────────────────────────────────────────
@@ -512,9 +504,8 @@ export class ChecksAgentTerminalHost extends Disposable {
 
 	private _drawUserMessage(text: string): void {
 		this._write(`\r${ESC}2K`);
-		const BG = `\x1b[48;2;20;38;60m`; // dark blue bg for user messages
 		for (const l of text.split('\n')) {
-			this._write(line(`  ${BG} ${WHITE}${BOLD}${l} ${RESET}`));
+			this._write(line(`  ${WHITE}${BOLD}${l}${RESET}`));
 		}
 	}
 
@@ -543,8 +534,8 @@ export class ChecksAgentTerminalHost extends Disposable {
 		this._stopAgentLink();
 		this._endStreaming();
 		const fileHint = file ? ` ${String(file).split('/').pop()}` : '';
-		// Static header line showing the channel
-		this._write(line(`  ${BLUE}◈ agent-link${RESET}  ${TEAL}checks${RESET} ${DARK}⟶${RESET} ${AMBER}${targetAgent}${RESET}${DARK}${fileHint}${RESET}`));
+		// Static header line showing the agent-to-agent channel
+		this._write(line(`  ${BLUE}◈ agent-bus${RESET}  ${TEAL}checks-agent${RESET} ${DARK}⟶${RESET} ${AMBER}${targetAgent}${RESET}${DARK}${fileHint}${RESET}`));
 		// Animated "signal" line
 		this._agentLinkFrame = 0;
 		const frames = [
@@ -559,6 +550,36 @@ export class ChecksAgentTerminalHost extends Disposable {
 		}, 280);
 	}
 
+	// ── Agent-link response preview ─────────────────────────────────────
+
+	private _drawAgentLinkOutput(output: string): void {
+		const MAX_PREVIEW = 25;
+		const allLines = output.split('\n');
+		const isTimeout = output.startsWith('[Code context request timed out');
+		const isDenied = output.startsWith('[Error]') || output.includes('denied');
+
+		if (isTimeout || isDenied) {
+			this._write(line(`  ${DARK}  └ ${RED}${output.substring(0, 80)}${RESET}`));
+			return;
+		}
+
+		const boxW = Math.min(this._cols - 6, 80);
+		const label = ' power-mode → checks ';
+		const fillLen = Math.max(4, boxW - label.length);
+		const fill = '─'.repeat(fillLen);
+		const bottom = '─'.repeat(fillLen + label.length);
+		this._write(line(`  ${BLUE}└─${RESET}${DARK}${label}${BLUE}${fill}┐${RESET}`));
+
+		const show = allLines.slice(0, MAX_PREVIEW);
+		for (const l of show) {
+			const truncated = l.length > boxW - 2 ? l.substring(0, boxW - 5) + '…' : l;
+			this._write(line(`  ${BLUE}│${RESET} ${DARK}${truncated}${RESET}`));
+		}
+		if (allLines.length > MAX_PREVIEW) {
+			this._write(line(`  ${BLUE}│${RESET} ${DARK}⋯ +${allLines.length - MAX_PREVIEW} lines${RESET}`));
+		}
+		this._write(line(`  ${BLUE}└${bottom}┘${RESET}`));
+	}
 	private _stopAgentLink(): void {
 		if (this._agentLinkInterval !== undefined) {
 			clearInterval(this._agentLinkInterval);
@@ -755,10 +776,10 @@ export class ChecksAgentTerminalHost extends Disposable {
 						break;
 					case 'tool': {
 						const st = part.state;
-						const isBusTool = part.toolName === 'request_code_context';
+						const isBusTool = part.toolName === 'ask_power_mode';
 						if (st.status === 'running') {
 							if (isBusTool) {
-								this._drawAgentLink('power-mode', st.input?.file);
+								this._drawAgentLink('power-mode', st.input?.question);
 							} else {
 								this._drawToolStart(part.id, part.toolName, st.title || part.toolName);
 							}
@@ -767,7 +788,8 @@ export class ChecksAgentTerminalHost extends Disposable {
 								this._stopAgentLink();
 								const dur = st.time?.end && st.time?.start
 									? ((st.time.end - st.time.start) / 1000).toFixed(2) + 's' : '';
-								this._write(line(`  ${TEAL}✓ agent-link${RESET} ${AMBER}power-mode${RESET} ${DARK}${dur}${RESET}`));
+								this._write(line(`  ${TEAL}✓ agent-bus${RESET} ${AMBER}power-mode${RESET} ${DARK}→ checks-agent${RESET}  ${DARK}${dur}${RESET}`));
+								if (st.output) { this._drawAgentLinkOutput(st.output); }
 							} else {
 								const dur = st.time?.end && st.time?.start
 									? ((st.time.end - st.time.start) / 1000).toFixed(2) + 's' : '';
@@ -777,7 +799,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 						} else if (st.status === 'error') {
 							if (isBusTool) {
 								this._stopAgentLink();
-								this._write(line(`  ${RED}✗ agent-link${RESET} ${AMBER}power-mode${RESET} ${RED}${st.error || 'timed out'}${RESET}`));
+								this._write(line(`  ${RED}✗ agent-bus${RESET} ${AMBER}power-mode${RESET} ${RED}${st.error || 'timed out'}${RESET}`));
 							} else {
 								this._drawToolError(part.toolName, st.error || 'unknown error');
 							}

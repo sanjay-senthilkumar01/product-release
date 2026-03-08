@@ -178,6 +178,156 @@ export const builtinTools: {
 		params: Partial<{ [paramName in keyof SnakeCaseKeys<BuiltinToolCallParams[T]>]: { description: string } }>
 	}
 } = {
+	// --- Power Mode style tools ---
+
+	bash: {
+		name: 'bash',
+		description: `Execute a bash command in the working directory. Use for builds, tests, git operations, and anything the other tools can't do. Output is capped at 50KB.`,
+		params: {
+			command: { description: 'The bash command to execute.' },
+			description: { description: 'Brief description of what this command does.' },
+			timeout: { description: 'Optional timeout in milliseconds (default: 120000).' },
+		},
+	},
+
+	read: {
+		name: 'read',
+		description: `Read a file from the filesystem with line numbers. Use offset and limit to read specific sections of large files.`,
+		params: {
+			file_path: { description: 'Absolute path to the file to read.' },
+			offset: { description: 'Optional. Line number to start reading from (1-indexed).' },
+			limit: { description: 'Optional. Maximum number of lines to read.' },
+		},
+	},
+
+	write: {
+		name: 'write',
+		description: `Write content to a file. Creates the file if it does not exist, overwrites if it does. Use for creating new files or full rewrites. For targeted edits, use edit instead.`,
+		params: {
+			file_path: { description: 'Absolute path to the file to write.' },
+			content: { description: 'The content to write to the file.' },
+		},
+	},
+
+	edit: {
+		name: 'edit',
+		description: `Edit a file by replacing a specific string with new content. old_string must match EXACTLY (including whitespace and indentation) and must be unique in the file.`,
+		params: {
+			file_path: { description: 'Absolute path to the file to edit.' },
+			old_string: { description: 'The exact string to replace (must be unique in the file).' },
+			new_string: { description: 'The replacement string.' },
+		},
+	},
+
+	glob: {
+		name: 'glob',
+		description: `Find files by glob pattern. Returns up to 100 matching file paths. Supports patterns like *.ts, src/**/*.tsx.`,
+		params: {
+			pattern: { description: 'Glob pattern to match files.' },
+			path: { description: 'Optional. Directory to search in. Defaults to workspace root.' },
+		},
+	},
+
+	grep: {
+		name: 'grep',
+		description: `Search file contents for a pattern. Supports regex. Returns file paths with matching lines. Automatically excludes node_modules and .git.`,
+		params: {
+			pattern: { description: 'Search pattern (regex supported).' },
+			path: { description: 'Optional. Directory to search in. Defaults to workspace root.' },
+			include: { description: 'Optional. File pattern to include (e.g. *.ts).' },
+		},
+	},
+
+	list: {
+		name: 'list',
+		description: `List contents of a directory. Returns file names with type indicators (d for directory, - for file).`,
+		params: {
+			dir_path: { description: 'Optional. Directory path to list. Defaults to workspace root.' },
+		},
+	},
+
+	// --- GRC compliance ---
+
+	grc_violations: {
+		name: 'grc_violations',
+		description: 'Returns current GRC violations from the live compliance engine. Use to inspect what rules are being violated. Filter by domain (e.g. security, privacy, data-integrity), severity (error or warning), or file path.',
+		params: {
+			domain: { description: 'Optional. Filter by compliance domain (e.g. security, privacy, data-integrity).' },
+			severity: { description: 'Optional. Filter by severity: error or warning.' },
+			file: { description: 'Optional. Filter by file path substring.' },
+			limit: { description: 'Optional. Maximum violations to return (default 30).' },
+		},
+	},
+
+	grc_domain_summary: {
+		name: 'grc_domain_summary',
+		description: 'Returns a per-domain breakdown of GRC violation counts. Use for a high-level compliance health overview.',
+		params: {},
+	},
+
+	grc_blocking_violations: {
+		name: 'grc_blocking_violations',
+		description: 'Returns violations that block commits. Check this before preparing a commit or merge request. If any blocking violations exist they must be resolved first.',
+		params: {},
+	},
+
+	grc_framework_rules: {
+		name: 'grc_framework_rules',
+		description: 'Returns compliance rules loaded from active frameworks (SOC2, HIPAA, custom, etc.). Use to understand what the compliance requirements are before writing code.',
+		params: {
+			framework_id: { description: 'Optional. Filter rules by framework ID.' },
+			domain: { description: 'Optional. Filter rules by compliance domain.' },
+		},
+	},
+
+	grc_impact_chain: {
+		name: 'grc_impact_chain',
+		description: 'Returns the cross-file impact tree for a given file showing which files depend on it. Use before refactoring shared modules to understand the blast radius.',
+		params: {
+			file: { description: 'Full path to the file to analyze.' },
+			max_depth: { description: 'Optional. Maximum depth of the impact tree (default 3).' },
+		},
+	},
+
+	grc_rescan: {
+		name: 'grc_rescan',
+		description: 'Triggers a full GRC workspace rescan. Re-evaluates all open files against all enabled rules using static analysis. Use after making code changes to refresh the violation cache. Returns a summary of findings.',
+		params: {},
+	},
+
+	grc_ai_scan: {
+		name: 'grc_ai_scan',
+		description: 'Triggers an AI-powered deep compliance scan across workspace files. Uses the Contract Reason Service to analyze files against framework contracts via LLM. More thorough than grc_rescan but slower. Optionally scope to specific files.',
+		params: {
+			files: { description: 'Optional. Comma-separated file paths to scope the AI scan to. If omitted, scans the full workspace.' },
+		},
+	},
+
+	ask_checksagent: {
+		name: 'ask_checksagent',
+		description: 'Ask the Checks Agent a natural-language compliance question. The Checks Agent is a GRC specialist with full access to all compliance tools. Use when you need interpretation of a violation, remediation guidance, cross-domain compliance feedback, or confirmation that a planned change is compliant.',
+		params: {
+			question: { description: 'The compliance question to ask the Checks Agent.' },
+		},
+	},
+
+	ask_powermode: {
+		name: 'ask_powermode',
+		description: 'Ask Power Mode to research or execute a task using its full tool suite (bash, read, write, edit, glob, grep). Use this to delegate subtasks to a parallel agent: "find all usages of X", "check if Y builds", "what does Z file do?". Power Mode returns its answer as text. You can call ask_checksagent and ask_powermode in parallel to fan out work across agents simultaneously.',
+		params: {
+			question: { description: 'The question or task to send to Power Mode.' },
+		},
+	},
+
+	query_ni_agent: {
+		name: 'query_ni_agent',
+		description: 'Run a named Neural Inverse agent from the .inverse/agents/ catalogue. Each agent has a specialized role (code-reviewer, test-generator, dependency-auditor, release-manager, docs-generator, or any user-defined agent). The agent runs its own LLM+tool loop and returns the result. Use agentId: "list" to discover available agents without running any. Agents have access to filesystem, terminal, git, http, and GRC tools.',
+		params: {
+			agent_id: { description: 'The agent ID to run (e.g. "code-reviewer", "test-generator"). Use "list" to get the available agent catalogue.' },
+			input: { description: 'The task or question to send to the agent.' },
+		},
+	},
+
 	// --- context-gathering (read/search/list) ---
 
 	read_file: {
@@ -468,7 +618,39 @@ const systemToolsXMLPrompt = (chatMode: ChatMode, mcpTools: InternalToolInfo[] |
 // ======================================================== chat (normal, gather, agent) ========================================================
 
 
-export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, allowedToolNames }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, allowedToolNames?: string[] }) => {
+// ─── GRC Posture Block (for Void coding agent) ──────────────────────────────
+
+export function buildGRCPostureBlock(data: {
+	total: number;
+	errors: number;
+	warnings: number;
+	blockingCount: number;
+	commitGated: boolean;
+	frameworks: string[];
+	domainsWithIssues: { domain: string; errors: number; warnings: number }[];
+	topBlockingViolations: { ruleId: string; file: string; line: number; message: string }[];
+}): string {
+	const lines = [
+		`<grc_posture>`,
+		`  Source: GRC Engine (live, in-memory cache)`,
+		`  Total violations: ${data.total} (${data.errors} errors, ${data.warnings} warnings)`,
+		`  Blocking violations: ${data.blockingCount}${data.commitGated ? ' — COMMIT IS GATED' : ''}`,
+		`  Active frameworks: ${data.frameworks.join(', ') || 'none'}`,
+	];
+	if (data.domainsWithIssues.length) {
+		lines.push(`  Domains with issues: ${data.domainsWithIssues.map(x => `${x.domain}(${x.errors}e,${x.warnings}w)`).join(', ')}`);
+	}
+	if (data.topBlockingViolations.length) {
+		lines.push(`  Top blocking violations:`);
+		for (const v of data.topBlockingViolations) {
+			lines.push(`    - ${v.ruleId} in ${v.file}:${v.line} — ${v.message}`);
+		}
+	}
+	lines.push(`</grc_posture>`);
+	return lines.join('\n');
+}
+
+export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, allowedToolNames, grcPosture }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, allowedToolNames?: string[], grcPosture?: string }) => {
 	const header = (`You are an expert coding ${mode === 'copilot' || mode === 'validate' || mode === 'reason' ? 'agent' : 'assistant'} whose job is \
 ${(mode === 'copilot' || mode === 'validate') ? `to help the user develop, run, and make changes to their codebase.`
 			: (mode === 'reason') ? `to analyze, design, and plan changes to the user's codebase.`
@@ -541,6 +723,36 @@ CRITICAL: Do NOT place your tool calls inside the <thought> block! Tool calls mu
 		details.push(`You are in Reason mode. Your goal is to PLAN and DESIGN. Do not output code to be applied yet. Think through the architecture and requirements.`)
 	}
 
+	if (mode === 'copilot' || mode === 'validate' || mode === 'agent') {
+		details.push(`**GRC Compliance & Multi-Agent Tools** — You are operating in a compliance-enforced environment with access to specialist agents.
+
+**Compliance workflow:**
+- Before starting any task, review the \`<grc_posture>\` block (if present) to understand current compliance state.
+- After editing files, check the tool result for GRC violations and fix any blocking violations before proceeding.
+- Before committing, ensure there are no blocking violations — \`git commit\` is automatically gated when blocking violations exist.
+- Use \`grc_impact_chain\` before refactoring to understand which files depend on the one you're changing.
+
+**Tool selection — use the right tool for the job:**
+- **Direct GRC tools** (\`grc_violations\`, \`grc_blocking_violations\`, \`grc_domain_summary\`, \`grc_framework_rules\`, \`grc_impact_chain\`) — fast, synchronous cache reads. Use these first.
+- **\`grc_rescan\`** — triggers a full static workspace rescan. Call after editing files to refresh the violation cache.
+- **\`grc_ai_scan\`** — triggers deep AI-powered compliance analysis (LLM-based). Slower but more thorough. Use after significant changes.
+- **\`ask_checksagent\`** — delegates to the Checks Agent, which runs its own **full multi-tool agent loop** internally (scan → reason → cross-reference rules → report). Use when you need reasoning or interpretation: "is this change compliant?", "how do I fix this?", "which pattern satisfies this rule?". This is a true sub-agent — it executes autonomously and returns a complete answer.
+- **\`ask_powermode\`** — delegates to Power Mode, which runs its own **full coding agent loop** internally (bash, read, write, edit, glob, grep). Use to delegate execution subtasks in parallel: "find all callers of X", "does this build?", "run the tests". Also a true sub-agent.
+- **\`query_ni_agent\`** — runs a named Neural Inverse agent from the .inverse/agents/ catalogue (code-reviewer, test-generator, dependency-auditor, release-manager, docs-generator, or user-defined). Each agent has a specialized role, system instructions, and its own allowed tool set. Use \`agentId: "list"\` to discover available agents. These agents are persistent, reusable, and configurable via the Agent Control Center.
+
+**Parallel sub-agent execution** — \`ask_checksagent\`, \`ask_powermode\`, and \`query_ni_agent\` run as independent sub-agents tracked by the system. You can call them in the same response and they execute simultaneously:
+- While editing a file → call \`grc_rescan\` + \`ask_checksagent "verify compliance of my changes to auth.ts"\` in parallel.
+- After a batch of edits → call \`ask_powermode "run the test suite"\` + \`ask_checksagent "any new blocking violations?"\` in parallel.
+- Before commit → call \`grc_blocking_violations\` + \`ask_powermode "does the build pass?"\` in parallel.
+
+**Sub-execution loop pattern** (for agentic mode):
+1. Edit files
+2. In parallel: \`grc_rescan\` (refresh cache) + \`ask_checksagent "check <files> for compliance"\`
+3. If violations found: fix them, repeat from step 1
+4. If clean: \`ask_powermode "run tests"\`
+5. If tests pass + no blocking violations: commit`)
+	}
+
 	if (mode === 'copilot' || mode === 'validate' || mode === 'reason' || mode === 'agent') {
 		details.push(`**Agentic Workflow**: You must follow this methodology for complex tasks:
 
@@ -583,6 +795,7 @@ ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 	const ansStrs: string[] = []
 	ansStrs.push(header)
 	ansStrs.push(sysInfo)
+	if (grcPosture) ansStrs.push(grcPosture)
 	if (toolDefinitions) ansStrs.push(toolDefinitions)
 	ansStrs.push(importantDetails)
 	ansStrs.push(fsInfo)

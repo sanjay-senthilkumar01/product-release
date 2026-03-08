@@ -23,6 +23,7 @@ import { registerSingleton, InstantiationType } from '../../../../../platform/in
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { ISearchService } from '../../../../services/search/common/search.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ILLMMessageService } from '../../../void/common/sendLLMMessageService.js';
 import { IVoidSettingsService, ModelOption } from '../../../void/common/voidSettingsService.js';
@@ -32,13 +33,15 @@ import { IExternalToolService } from '../engine/services/externalToolService.js'
 import { IContractReasonService } from '../engine/services/contractReasonService.js';
 import { ICheckResult, IDomainSummary, IGRCRule } from '../engine/types/grcTypes.js';
 import { IExternalJob } from '../engine/types/externalJobTypes.js';
-import { IPowerBusService } from '../../powerMode/browser/powerBusService.js';
+import { IPowerBusService } from '../../../powerMode/browser/powerBusService.js';
+import type { IAgentBusMessage } from '../../../powerMode/common/powerBusTypes.js';
 import { buildChecksSystemPrompt } from './checksSystemPrompt.js';
 import { ChecksContextBuilder } from './checksContextBuilder.js';
 import {
 	IChecksSession,
 	IChecksMessage,
 	IChecksMessagePart,
+	IChecksTextPart,
 	ChecksSessionStatus,
 	ChecksAgentUIEvent,
 } from './checksAgentTypes.js';
@@ -104,11 +107,18 @@ export interface IChecksAgentService {
 	setModel(selection: ModelSelection): void;
 
 	/**
-	 * Request a code snippet from Power Mode via the agent bus.
-	 * Goes through Power Mode's permission gate. Budget-capped to avoid context bloat.
-	 * Returns empty string if bus unavailable or request times out.
+	 * Ask Power Mode a natural-language question via the agent bus.
+	 * Power Mode's LLM processes the question using its own tools and replies.
+	 * Returns Power Mode's answer, or a timeout message if no reply within 60s.
 	 */
-	requestCodeContext(file: string, startLine: number, endLine: number): Promise<string>;
+	askPowerMode(question: string): Promise<string>;
+
+	/**
+	 * Answer a natural-language compliance question using the Checks Agent's own LLM loop.
+	 * Silent — no UI events, no streaming to webview.
+	 * Used by Power Mode and void coding agents via the ask_checksagent tool.
+	 */
+	answerQuery(question: string): Promise<string>;
 
 	/** Prefill the input with a question (called from dashboard) */
 	prefill(text: string): void;
@@ -133,29 +143,38 @@ export class ChecksAgentService extends Disposable implements IChecksAgentServic
 	private _idCounter = 0;
 	/** Checks Agent's own model selection — null means fall back to Chat */
 	private _checksModelSelection: ModelSelection | null = null;
-	/** Pending bus tool-requests: message ID → resolver */
+	/** Pending ask-power-mode queries: message ID → resolver */
 	private readonly _pendingBusRequests = new Map<string, (result: string) => void>();
+	/** Debounce state for GRC posture broadcasts — only send when values change */
+	private _lastBroadcastBlocking = -1;
+	private _lastBroadcastTotal = -1;
+	private _broadcastDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorkspaceContextService private readonly workspaceContext: IWorkspaceContextService,
 		@IFileService fileService: IFileService,
+		@ISearchService searchService: ISearchService,
 		@ILLMMessageService llmMessageService: ILLMMessageService,
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IGRCEngineService private readonly grcEngine: IGRCEngineService,
 		@IExternalToolService private readonly externalToolService: IExternalToolService,
-		@IContractReasonService private readonly contractReasonService: IContractReasonService,
+		@IContractReasonService contractReasonService: IContractReasonService,
 		@IPowerBusService private readonly powerBus: IPowerBusService,
 	) {
 		super();
+		const directory = this.workspaceContext.getWorkspace().folders[0]?.uri.fsPath ?? '/';
 		this._llmBridge = new ChecksAgentLLMBridge(llmMessageService, voidSettingsService);
 		this._contextBuilder = new ChecksContextBuilder(fileService);
 		this._toolRegistry = new ChecksToolRegistry();
 		this._toolRegistry.registerMany(
-			buildChecksTools(grcEngine, externalToolService, contractReasonService, this)
+			buildChecksTools(grcEngine, externalToolService, contractReasonService, this, fileService, searchService, directory)
 		);
 		this._restoreSession();
 		this._registerOnBus();
+
+		// Pre-warm context cache so the first user message doesn't block on filesystem I/O
+		if (directory) { this._contextBuilder.build(directory).catch(() => { /* ignore */ }); }
 	}
 
 	// ─── Agent Bus ────────────────────────────────────────────────────────────
@@ -165,11 +184,11 @@ export class ChecksAgentService extends Disposable implements IChecksAgentServic
 		this.powerBus.register('checks-agent', ['send:query', 'send:tool-request', 'receive:all'], 'Checks Agent');
 
 		// Subscribe to incoming messages
-		this._register(this.powerBus.onMessage(msg => {
+		this._register(this.powerBus.onMessage((msg: IAgentBusMessage) => {
 			if (msg.to !== 'checks-agent' && msg.to !== '*') { return; }
 
-			if (msg.type === 'tool-result' && msg.replyTo) {
-				// Route tool result back to waiting requestCodeContext() call
+			// Route Power Mode's response back to the waiting askPowerMode() call
+			if (msg.type === 'response' && msg.from === 'power-mode' && msg.replyTo) {
 				const resolve = this._pendingBusRequests.get(msg.replyTo);
 				if (resolve) {
 					this._pendingBusRequests.delete(msg.replyTo);
@@ -183,39 +202,89 @@ export class ChecksAgentService extends Disposable implements IChecksAgentServic
 			}
 		}));
 
-		// Broadcast blocking violation count changes
+		// Broadcast GRC posture changes — debounced + only when values actually change
 		this._register(this.grcEngine.onDidCheckComplete(() => {
-			try {
-				const blocking = this.grcEngine.getBlockingViolations();
-				const total = this.grcEngine.getAllResults().length;
-				this.powerBus.send(
-					'checks-agent', '*', 'broadcast',
-					JSON.stringify({ type: 'grc-posture-update', blocking: blocking.length, total }),
-				);
-			} catch { /* engine not ready */ }
+			if (this._broadcastDebounceTimer !== undefined) { return; } // already pending
+			this._broadcastDebounceTimer = setTimeout(() => {
+				this._broadcastDebounceTimer = undefined;
+				try {
+					const blocking = this.grcEngine.getBlockingViolations();
+					const total = this.grcEngine.getAllResults().length;
+					const blockingCount = blocking.length;
+					if (blockingCount === this._lastBroadcastBlocking && total === this._lastBroadcastTotal) { return; }
+					this._lastBroadcastBlocking = blockingCount;
+					this._lastBroadcastTotal = total;
+
+					// Broadcast to all agents (lightweight summary)
+					this.powerBus.send(
+						'checks-agent', '*', 'broadcast',
+						JSON.stringify({ type: 'grc-posture-update', blocking: blockingCount, total }),
+					);
+
+					// If there are blocking violations, send a targeted alert to Power Mode
+					// so its LLM can warn the user before the next commit attempt
+					if (blockingCount > 0 && this.powerBus.isRegistered('power-mode')) {
+						const topBlocking = blocking.slice(0, 3).map(r =>
+							`${r.ruleId} in ${r.fileUri?.path.split('/').pop() ?? '?'}:${r.line ?? '?'} — ${r.message}`
+						).join('\n');
+						this.powerBus.send(
+							'checks-agent', 'power-mode', 'broadcast',
+							JSON.stringify({
+								type: 'blocking-violations-alert',
+								blockingCount,
+								total,
+								summary: `${blockingCount} blocking violation${blockingCount > 1 ? 's' : ''} — commit is gated`,
+								topViolations: topBlocking,
+							}),
+						);
+					}
+				} catch { /* engine not ready */ }
+			}, 5000); // 5s debounce — posture pings are low-priority
 		}));
 	}
 
 	private _handleBusQuery(fromAgent: string, replyTo: string, content: string): void {
-		// Answer compliance queries from other agents without LLM round-trip
+		// Natural-language query — route through LLM (async, reply when done)
+		if (content !== 'posture-summary') {
+			this.answerQuery(content).then(answer => {
+				this.powerBus.send('checks-agent', fromAgent, 'response', answer, { replyTo });
+			}).catch(() => {
+				this.powerBus.send('checks-agent', fromAgent, 'response', 'Checks Agent could not answer the query.', { replyTo });
+			});
+			return;
+		}
+
+		// Fast path: posture-summary — return structured JSON without LLM round-trip
 		let response: string;
 		try {
-			const lower = content.toLowerCase();
-			if (lower.includes('blocking') || lower.includes('block commit')) {
-				const violations = this.grcEngine.getBlockingViolations();
-				response = JSON.stringify({ blocking: violations.length, violations: violations.slice(0, 10) });
-			} else if (lower.includes('summary') || lower.includes('posture') || lower.includes('domain')) {
-				const summary = this.grcEngine.getDomainSummary();
-				response = JSON.stringify({ domains: summary });
-			} else if (lower.includes('violation') || lower.includes('error') || lower.includes('warning')) {
-				const results = this.grcEngine.getAllResults().slice(0, 20);
-				response = JSON.stringify({ total: this.grcEngine.getAllResults().length, sample: results });
-			} else {
-				const total = this.grcEngine.getAllResults().length;
-				const blocking = this.grcEngine.getBlockingViolations().length;
-				const frameworks = this.grcEngine.getActiveFrameworks().map(f => f.name);
-				response = JSON.stringify({ total, blocking, frameworks });
-			}
+			const allResults = this.grcEngine.getAllResults();
+			const blocking = this.grcEngine.getBlockingViolations();
+			const summary = this.grcEngine.getDomainSummary();
+			const frameworks = this.grcEngine.getActiveFrameworks();
+			const errors = allResults.filter(r => (r.severity ?? '').toLowerCase() === 'error').length;
+			const warnings = allResults.filter(r => (r.severity ?? '').toLowerCase() === 'warning').length;
+
+			const topBlocking = blocking.slice(0, 5).map(r => ({
+				ruleId: r.ruleId,
+				file: r.fileUri?.path.split('/').pop() ?? 'unknown',
+				line: r.line ?? 0,
+				message: r.message,
+			}));
+
+			const domainsWithIssues = summary
+				.filter(d => d.errorCount + d.warningCount > 0)
+				.map(d => ({ domain: d.domain, errors: d.errorCount, warnings: d.warningCount }));
+
+			response = JSON.stringify({
+				total: allResults.length,
+				errors,
+				warnings,
+				blockingCount: blocking.length,
+				commitGated: blocking.length > 0,
+				frameworks: frameworks.map(f => f.name),
+				domainsWithIssues,
+				topBlockingViolations: topBlocking,
+			});
 		} catch (e: any) {
 			response = JSON.stringify({ error: e.message ?? 'GRC engine not ready' });
 		}
@@ -397,44 +466,97 @@ export class ChecksAgentService extends Disposable implements IChecksAgentServic
 		this._checksModelSelection = selection;
 	}
 
-	async requestCodeContext(file: string, startLine: number, endLine: number): Promise<string> {
-		const directory = this.workspaceContext.getWorkspace().folders[0]?.uri.fsPath ?? '/';
-		// Budget cap: max 50 lines to avoid flooding the LLM context
-		const cappedEnd = Math.min(endLine, startLine + 49);
+	askPowerMode(question: string): Promise<string> {
+		if (!this.powerBus.isRegistered('power-mode')) {
+			return Promise.resolve('[Power Mode is not available]');
+		}
 
 		return new Promise<string>((resolve) => {
-			const timeoutMs = 10_000;
-			let capturedRequestId: string | undefined;
+			let resolved = false;
+			const finish = (result: string) => {
+				if (resolved) { return; }
+				resolved = true;
+				clearTimeout(timer);
+				resolve(result);
+			};
 
+			// 60s — Power Mode aborts at 55s and always sends a reply before this fires
 			const timer = setTimeout(() => {
-				if (capturedRequestId) { this._pendingBusRequests.delete(capturedRequestId); }
-				resolve('[Code context request timed out — Power Mode may not be running]');
-			}, timeoutMs);
+				for (const [id, fn] of this._pendingBusRequests) {
+					if (fn === finish) { this._pendingBusRequests.delete(id); break; }
+				}
+				finish('[Power Mode did not respond in time]');
+			}, 60_000);
 
-			// Capture the message ID from the bus synchronously before the response can arrive
-			const once = this.powerBus.onMessage(msg => {
-				if (msg.from === 'checks-agent' && msg.type === 'tool-request' && !capturedRequestId) {
-					capturedRequestId = msg.id;
-					this._pendingBusRequests.set(msg.id, (result) => {
-						clearTimeout(timer);
-						once.dispose();
-						resolve(result);
-					});
-					once.dispose();
+			// Capture the bus-assigned ID synchronously (publish fires onMessage sync)
+			let capturedId: string | undefined;
+			const captureOnce = this.powerBus.onMessage((msg: IAgentBusMessage) => {
+				if (!capturedId && msg.from === 'checks-agent' && msg.type === 'query') {
+					capturedId = msg.id;
+					this._pendingBusRequests.set(capturedId, finish);
+					captureOnce.dispose();
 				}
 			});
 
-			// publish() fires onMessage synchronously — capturedRequestId is set before we continue
-			this.powerBus.publish({
-				from: 'checks-agent',
-				to: 'power-mode',
-				type: 'tool-request',
-				content: `Read code context: ${file}:${startLine}-${cappedEnd}`,
-				toolName: 'read',
-				toolArgs: { path: file, startLine, endLine: cappedEnd },
-				toolDirectory: directory,
-			});
+			this.powerBus.send('checks-agent', 'power-mode', 'query', question);
+
+			if (!capturedId) { captureOnce.dispose(); }
 		});
+	}
+
+	async answerQuery(question: string): Promise<string> {
+		let directory: string;
+		let wsCtx: { isGitRepo: boolean; workingDirectory: string; customInstructions?: string } | undefined;
+		let systemPrompt: string;
+		try {
+			directory = this.workspaceContext.getWorkspace().folders[0]?.uri.fsPath ?? '/';
+			wsCtx = await this._contextBuilder.build(directory);
+			systemPrompt = this._buildSystemPrompt(wsCtx);
+		} catch (e: any) {
+			return `[Checks Agent error: ${e.message ?? 'failed to build context'}]`;
+		}
+
+		const abort = new AbortController();
+		const timer = setTimeout(() => abort.abort(), 60_000); // 60s — allow multi-step tool-call rounds
+
+		let _idCtr = 0;
+		const nextId = () => `aq_${Date.now()}_${++_idCtr}`;
+
+		const userMsg: IChecksMessage = {
+			id: nextId(), sessionId: 'silent', role: 'user',
+			createdAt: Date.now(),
+			parts: [{ type: 'text', id: nextId(), text: question }],
+		};
+		const assistantMsg: IChecksMessage = {
+			id: nextId(), sessionId: 'silent', role: 'assistant',
+			createdAt: Date.now(), parts: [],
+		};
+
+		const callbacks: IProcessorCallbacks = {
+			onPartCreated: () => { /* silent */ },
+			onPartUpdated: () => { /* silent */ },
+			onTextDelta: () => { /* silent */ },
+			sendToLLM: (req) => this._llmBridge.sendToLLM(req, this._checksModelSelection),
+		};
+
+		try {
+			await runChecksAgentLoop({
+				assistantMessage: assistantMsg,
+				sessionMessages: [userMsg, assistantMsg],
+				toolRegistry: this._toolRegistry,
+				callbacks,
+				abort: abort.signal,
+				systemPrompt,
+			});
+		} catch { /* still return whatever was collected */ }
+
+		clearTimeout(timer);
+
+		return assistantMsg.parts
+			.filter((p): p is IChecksTextPart => p.type === 'text')
+			.map(p => p.text)
+			.join('')
+			|| 'No answer available.';
 	}
 
 	prefill(text: string): void {
@@ -520,4 +642,4 @@ export class ChecksAgentService extends Disposable implements IChecksAgentServic
 	}
 }
 
-registerSingleton(IChecksAgentService, ChecksAgentService, InstantiationType.Delayed);
+registerSingleton(IChecksAgentService, ChecksAgentService, InstantiationType.Eager);

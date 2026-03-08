@@ -41,6 +41,26 @@ export const toolRiskLevels: Record<BuiltinToolName, ToolRiskLevel> = {
 	'open_persistent_terminal': 'destructive',
 	'send_command_input': 'destructive',
 	'kill_persistent_terminal': 'destructive',
+
+	// Power Mode style tools
+	'bash': 'destructive',
+	'read': 'safe',
+	'write': 'moderate',
+	'edit': 'moderate',
+	'glob': 'safe',
+	'grep': 'safe',
+	'list': 'safe',
+
+	// GRC compliance tools (read-only, no side effects)
+	'grc_violations': 'safe',
+	'grc_domain_summary': 'safe',
+	'grc_blocking_violations': 'safe',
+	'grc_framework_rules': 'safe',
+	'grc_impact_chain': 'safe',
+	'grc_rescan': 'safe',
+	'grc_ai_scan': 'safe',
+	'ask_checksagent': 'safe',
+	'ask_powermode': 'safe',
 };
 
 export const getRiskLevel = (toolName: ToolName): ToolRiskLevel => {
@@ -144,6 +164,26 @@ export const defaultApprovalTiers: Record<BuiltinToolName, ApprovalTier> = {
 	'open_persistent_terminal': 'confirm',
 	'send_command_input': 'confirm',
 	'kill_persistent_terminal': 'confirm',
+
+	// Power Mode style tools
+	'bash': 'confirm',
+	'read': 'auto',
+	'write': 'notify',
+	'edit': 'notify',
+	'glob': 'auto',
+	'grep': 'auto',
+	'list': 'auto',
+
+	// GRC compliance tools
+	'grc_violations': 'auto',
+	'grc_domain_summary': 'auto',
+	'grc_blocking_violations': 'auto',
+	'grc_framework_rules': 'auto',
+	'grc_impact_chain': 'auto',
+	'grc_rescan': 'auto',
+	'grc_ai_scan': 'auto',
+	'ask_checksagent': 'auto',
+	'ask_powermode': 'auto',
 };
 
 
@@ -169,7 +209,8 @@ export type AgentEventType =
 	| 'task_completed'
 	| 'task_failed'
 	| 'task_paused'
-	| 'task_cancelled';
+	| 'task_cancelled'
+	| 'grc_violation_detected';
 
 export interface AgentEvent {
 	type: AgentEventType;
@@ -182,7 +223,7 @@ export interface AgentEvent {
 // ======================== Agent Context (Working Memory) ========================
 
 export interface AgentContextEntry {
-	type: 'file_read' | 'file_edit' | 'terminal_output' | 'search_result' | 'error' | 'user_feedback';
+	type: 'file_read' | 'file_edit' | 'terminal_output' | 'search_result' | 'error' | 'user_feedback' | 'observation';
 	summary: string;
 	timestamp: string;
 	/** Weight for context budget (higher = keep longer) */

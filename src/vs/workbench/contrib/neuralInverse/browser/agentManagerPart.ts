@@ -20,6 +20,7 @@ import { IWorkflowAgentService } from './workflowAgentService.js';
 import { IPowerModeService } from '../../powerMode/browser/powerModeService.js';
 import { PowerModeTerminalHost } from '../../powerMode/browser/powerModeTerminalHost.js';
 import { ITerminalService } from '../../terminal/browser/terminal.js';
+import { IPowerBusService } from '../../powerMode/browser/powerBusService.js';
 
 export class AgentManagerPart extends Part {
 
@@ -32,6 +33,7 @@ export class AgentManagerPart extends Part {
 
     private webviewElement: IWebviewElement | undefined;
     private powerModeTerminal: PowerModeTerminalHost | undefined;
+    private controlContainer: HTMLElement | undefined;
     private readonly disposables = new DisposableStore();
 
     constructor(
@@ -46,6 +48,7 @@ export class AgentManagerPart extends Part {
         @IWorkflowAgentService private readonly workflowAgentService: IWorkflowAgentService,
         @IPowerModeService private readonly powerModeService: IPowerModeService,
         @ITerminalService private readonly terminalService: ITerminalService,
+        @IPowerBusService private readonly powerBusService: IPowerBusService,
     ) {
         super(AgentManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
         this.registerListeners();
@@ -124,12 +127,20 @@ export class AgentManagerPart extends Part {
         powerModeContainer.style.position = 'relative';
         body.appendChild(powerModeContainer);
 
+        // VIEW 4: Control Center (native DOM — no webview needed)
+        const controlCenterContainer = document.createElement('div');
+        controlCenterContainer.style.width = '100%';
+        controlCenterContainer.style.height = '100%';
+        controlCenterContainer.style.overflow = 'auto';
+        controlCenterContainer.style.background = 'var(--vscode-editor-background)';
+        body.appendChild(controlCenterContainer);
+        this.controlContainer = controlCenterContainer;
 
         // State Management
-        const allContainers = [agentContainer, voidContainer, powerModeContainer];
+        const allContainers = [agentContainer, voidContainer, powerModeContainer, controlCenterContainer];
         let allTabs: HTMLElement[] = [];
 
-        const updateView = (view: 'manager' | 'chat' | 'powermode') => {
+        const updateView = (view: 'manager' | 'chat' | 'powermode' | 'control') => {
             // Hide all
             for (const c of allContainers) { c.style.display = 'none'; }
             for (const t of allTabs) { styleInactive(t); }
@@ -152,6 +163,10 @@ export class AgentManagerPart extends Part {
                     // Re-fit terminal when tab becomes visible again
                     setTimeout(() => this.powerModeTerminal?.layout(), 50);
                 }
+            } else if (view === 'control') {
+                controlCenterContainer.style.display = 'block';
+                styleActive(tabControl);
+                this._renderControlPanel();
             }
         };
 
@@ -170,12 +185,14 @@ export class AgentManagerPart extends Part {
         const tabChat = createTab('Chat', () => updateView('chat'));
         const tabAgents = createTab('Agents', () => updateView('manager'));
         const tabPowerMode = createTab('Power Mode', () => updateView('powermode'));
+        const tabControl = createTab('Control', () => updateView('control'));
 
-        allTabs = [tabChat, tabAgents, tabPowerMode];
+        allTabs = [tabChat, tabAgents, tabPowerMode, tabControl];
 
         tabsContainer.appendChild(tabChat);
         tabsContainer.appendChild(tabAgents);
         tabsContainer.appendChild(tabPowerMode);
+        tabsContainer.appendChild(tabControl);
 
         // Initialize view
         updateView('chat');
@@ -319,16 +336,266 @@ export class AgentManagerPart extends Part {
     private registerListeners(): void {
         this.disposables.add(this.agentStore.onDidChange(() => {
             this.updateAgentsList();
+            this._renderControlPanel();
         }));
         this.disposables.add(this.voidSettingsService.onDidChangeState(() => {
             this.updateModelsList();
+            this._renderControlPanel();
         }));
         this.disposables.add(this.workflowAgentService.onDidChangeWorkflows(() => {
             this.updateWorkflowsList();
         }));
         this.disposables.add(this.workflowAgentService.onDidChangeRun(() => {
             this.updateRunsList();
+            this._renderControlPanel();
         }));
+        this.disposables.add(this.powerBusService.onAgentsChanged(() => {
+            this._renderControlPanel();
+        }));
+    }
+
+    // ── Control Center ────────────────────────────────────────────────────────
+
+    private _renderControlPanel(): void {
+        const container = this.controlContainer;
+        if (!container || container.style.display === 'none') return;
+
+        container.innerHTML = '';
+        container.style.fontFamily = 'var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif)';
+        container.style.fontSize = '13px';
+        container.style.color = 'var(--vscode-editor-foreground)';
+        container.style.padding = '20px 24px';
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+        container.style.gap = '24px';
+
+        const models = this.voidSettingsService.state._modelOptions;
+        const agents = this.agentStore.getAgents();
+        const busAgents = this.powerBusService.getAgents();
+        const activeRuns = this.workflowAgentService.getActiveRuns();
+
+        const borderColor = 'var(--vscode-widget-border, rgba(255,255,255,0.1))';
+        const bgPanel = 'var(--vscode-editorWidget-background, rgba(255,255,255,0.05))';
+        const fgDim = 'var(--vscode-descriptionForeground)';
+
+        const mkSection = (title: string): HTMLElement => {
+            const sec = document.createElement('div');
+            const h = document.createElement('div');
+            h.textContent = title;
+            h.style.cssText = `font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:${fgDim};margin-bottom:10px;`;
+            sec.appendChild(h);
+            return sec;
+        };
+
+        // ── Section 1: Agent LLM Settings ───────────────────────────────────
+        const agentSec = mkSection('Agents & LLM');
+
+        if (agents.length === 0) {
+            const empty = document.createElement('div');
+            empty.textContent = 'No agents found in .inverse/agents/';
+            empty.style.cssText = `font-size:12px;color:${fgDim};padding:12px;background:${bgPanel};border-radius:6px;border:1px solid ${borderColor};`;
+            agentSec.appendChild(empty);
+        } else {
+            const grid = document.createElement('div');
+            grid.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+
+            for (const agent of agents) {
+                const row = document.createElement('div');
+                row.style.cssText = `display:flex;align-items:center;gap:10px;padding:8px 12px;background:${bgPanel};border:1px solid ${borderColor};border-radius:6px;`;
+
+                // Colour dot
+                const dot = document.createElement('div');
+                const hue = Math.abs(agent.id.split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % 360;
+                dot.style.cssText = `width:8px;height:8px;border-radius:50%;flex-shrink:0;background:hsl(${hue},60%,55%);`;
+                row.appendChild(dot);
+
+                // Name
+                const nameEl = document.createElement('div');
+                nameEl.textContent = agent.name;
+                nameEl.style.cssText = `flex:1;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+                row.appendChild(nameEl);
+
+                // Builtin badge
+                if (agent.isBuiltin) {
+                    const badge = document.createElement('span');
+                    badge.textContent = 'built-in';
+                    badge.style.cssText = `font-size:9px;padding:2px 6px;border-radius:8px;background:rgba(99,102,241,0.2);color:#a78bfa;border:1px solid rgba(99,102,241,0.3);flex-shrink:0;`;
+                    row.appendChild(badge);
+                }
+
+                // Model selector
+                const sel = document.createElement('select');
+                sel.style.cssText = `background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid ${borderColor};border-radius:4px;padding:3px 6px;font-size:11px;font-family:inherit;cursor:pointer;max-width:200px;`;
+                const currentVal = `${agent.model.providerName}::${agent.model.modelName}`;
+
+                for (const opt of models) {
+                    const o = document.createElement('option');
+                    const val = `${opt.selection.providerName}::${opt.selection.modelName}`;
+                    o.value = val;
+                    o.textContent = opt.name;
+                    if (val === currentVal) o.selected = true;
+                    sel.appendChild(o);
+                }
+                if (models.length === 0) {
+                    const o = document.createElement('option');
+                    o.value = currentVal;
+                    o.textContent = agent.model.modelName || '(no models configured)';
+                    sel.appendChild(o);
+                }
+
+                sel.addEventListener('change', () => {
+                    const [providerName, modelName] = sel.value.split('::');
+                    this.agentStore.updateAgent(agent.id, {
+                        model: { providerName: providerName ?? '', modelName: modelName ?? sel.value },
+                    }).catch((e: Error) => console.error('[AgentManagerPart] model update failed', e));
+                });
+
+                row.appendChild(sel);
+
+                // Iterations label
+                const iterEl = document.createElement('div');
+                iterEl.textContent = `max ${agent.maxIterations ?? 20} iter`;
+                iterEl.style.cssText = `font-size:10px;color:${fgDim};flex-shrink:0;`;
+                row.appendChild(iterEl);
+
+                grid.appendChild(row);
+            }
+
+            agentSec.appendChild(grid);
+        }
+        container.appendChild(agentSec);
+
+        // ── Section 2: Network (PowerBus) ────────────────────────────────────
+        const netSec = mkSection('Agent Network (PowerBus)');
+
+        if (busAgents.length === 0) {
+            const empty = document.createElement('div');
+            empty.textContent = 'No agents registered on the bus yet.';
+            empty.style.cssText = `font-size:12px;color:${fgDim};padding:12px;background:${bgPanel};border-radius:6px;border:1px solid ${borderColor};`;
+            netSec.appendChild(empty);
+        } else {
+            const busGrid = document.createElement('div');
+            busGrid.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;';
+
+            for (const ba of busAgents) {
+                const pill = document.createElement('div');
+                pill.style.cssText = `display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:${bgPanel};border:1px solid ${borderColor};border-radius:20px;font-size:11px;`;
+
+                const onlineDot = document.createElement('div');
+                onlineDot.style.cssText = 'width:6px;height:6px;border-radius:50%;background:#22c55e;flex-shrink:0;';
+                pill.appendChild(onlineDot);
+
+                const nameEl = document.createElement('span');
+                nameEl.textContent = ba.displayName ?? ba.agentId;
+                nameEl.style.fontWeight = '500';
+                pill.appendChild(nameEl);
+
+                if (ba.capabilities.length > 0) {
+                    const caps = document.createElement('span');
+                    caps.textContent = ba.capabilities.join(', ');
+                    caps.style.cssText = `color:${fgDim};font-size:10px;`;
+                    pill.appendChild(caps);
+                }
+
+                busGrid.appendChild(pill);
+            }
+            netSec.appendChild(busGrid);
+        }
+        container.appendChild(netSec);
+
+        // ── Section 3: Active Runs ───────────────────────────────────────────
+        const runSec = mkSection('Active Runs');
+
+        if (activeRuns.length === 0) {
+            const empty = document.createElement('div');
+            empty.textContent = 'No workflows running.';
+            empty.style.cssText = `font-size:12px;color:${fgDim};padding:12px;background:${bgPanel};border-radius:6px;border:1px solid ${borderColor};`;
+            runSec.appendChild(empty);
+        } else {
+            const runList = document.createElement('div');
+            runList.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+
+            for (const run of activeRuns) {
+                const card = document.createElement('div');
+                card.style.cssText = `padding:8px 12px;background:${bgPanel};border:1px solid ${borderColor};border-radius:6px;display:flex;align-items:center;gap:12px;`;
+
+                const statusDot = document.createElement('div');
+                statusDot.style.cssText = 'width:8px;height:8px;border-radius:50%;flex-shrink:0;background:#3b82f6;animation:pulse 1.5s infinite;';
+                card.appendChild(statusDot);
+
+                const info = document.createElement('div');
+                info.style.cssText = 'flex:1;';
+
+                const nameEl = document.createElement('div');
+                nameEl.textContent = run.workflowName;
+                nameEl.style.cssText = 'font-size:13px;font-weight:500;';
+                info.appendChild(nameEl);
+
+                const statusEl = document.createElement('div');
+                statusEl.textContent = `${run.status} · started ${new Date(run.startedAt).toLocaleTimeString()}`;
+                statusEl.style.cssText = `font-size:11px;color:${fgDim};margin-top:2px;`;
+                info.appendChild(statusEl);
+
+                card.appendChild(info);
+
+                const cancelBtn = document.createElement('button');
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.style.cssText = `background:transparent;border:1px solid ${borderColor};color:${fgDim};border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:inherit;`;
+                cancelBtn.addEventListener('click', () => {
+                    this.workflowAgentService.cancelRun(run.id);
+                    this._renderControlPanel();
+                });
+                card.appendChild(cancelBtn);
+
+                runList.appendChild(card);
+            }
+            runSec.appendChild(runList);
+        }
+        container.appendChild(runSec);
+
+        // ── Section 4: Bus Message Log ───────────────────────────────────────
+        const logSec = mkSection('Recent Bus Messages');
+        const recentMsgs = this.powerBusService.getHistory(15);
+
+        if (recentMsgs.length === 0) {
+            const empty = document.createElement('div');
+            empty.textContent = 'No messages yet.';
+            empty.style.cssText = `font-size:12px;color:${fgDim};padding:12px;background:${bgPanel};border-radius:6px;border:1px solid ${borderColor};`;
+            logSec.appendChild(empty);
+        } else {
+            const logEl = document.createElement('div');
+            logEl.style.cssText = `background:${bgPanel};border:1px solid ${borderColor};border-radius:6px;overflow:hidden;`;
+
+            for (const msg of [...recentMsgs].reverse()) {
+                const row = document.createElement('div');
+                row.style.cssText = `display:flex;align-items:baseline;gap:8px;padding:5px 12px;border-bottom:1px solid ${borderColor};font-size:11px;`;
+
+                const time = document.createElement('span');
+                time.textContent = new Date(msg.timestamp).toLocaleTimeString();
+                time.style.cssText = `color:${fgDim};flex-shrink:0;font-variant-numeric:tabular-nums;`;
+                row.appendChild(time);
+
+                const route = document.createElement('span');
+                route.textContent = `${msg.from} → ${msg.to}`;
+                route.style.cssText = 'font-weight:500;flex-shrink:0;';
+                row.appendChild(route);
+
+                const typePill = document.createElement('span');
+                typePill.textContent = msg.type;
+                const typeColor = msg.type === 'tool-request' ? '#e0a84e' : msg.type === 'tool-result' ? '#22c55e' : '#3b82f6';
+                typePill.style.cssText = `color:${typeColor};flex-shrink:0;`;
+                row.appendChild(typePill);
+
+                const content = document.createElement('span');
+                content.textContent = msg.content.substring(0, 80) + (msg.content.length > 80 ? '…' : '');
+                content.style.cssText = `color:${fgDim};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;`;
+                row.appendChild(content);
+
+                logEl.appendChild(row);
+            }
+            logSec.appendChild(logEl);
+        }
+        container.appendChild(logSec);
     }
 
     private updateAgentsList(): void {

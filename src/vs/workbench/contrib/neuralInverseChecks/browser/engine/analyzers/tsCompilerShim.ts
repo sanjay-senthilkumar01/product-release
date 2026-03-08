@@ -74,12 +74,14 @@ export const enum SyntaxKind {
 	NewExpression = 214,
 	TaggedTemplateExpression = 215,
 	ParenthesizedExpression = 217,
+	FunctionExpression = 218,
 	ArrowFunction = 219,
 	AwaitExpression = 223,
 	ConditionalExpression = 227,
 	TemplateExpression = 228,
 	YieldExpression = 229,
 	SpreadElement = 230,
+	ClassExpression = 231,
 	BinaryExpression = 226,
 	PrefixUnaryExpression = 224,
 	PostfixUnaryExpression = 225,
@@ -141,6 +143,9 @@ export const enum SyntaxKind {
 	ProtectedKeyword = 124,
 	StaticKeyword = 126,
 	OverrideKeyword = 162,
+
+	// ── Keywords ──
+	UndefinedKeyword = 156,
 
 	// ── Type nodes ──
 	AsExpression = 232,
@@ -287,6 +292,14 @@ export interface ClassDeclaration extends Node {
 	heritageClauses?: readonly Node[];
 }
 
+export interface ClassExpression extends Node {
+	name?: Identifier;
+	members: readonly Node[];
+	heritageClauses?: readonly Node[];
+}
+
+export interface FunctionExpression extends FunctionLikeDeclaration { }
+
 export interface ReturnStatement extends Node {
 	expression?: Node;
 }
@@ -312,6 +325,28 @@ export interface ForStatement extends Node {
 	condition?: Node;
 	incrementor?: Node;
 	statement: Node;
+}
+
+export interface ForInStatement extends Node {
+	initializer: Node;
+	expression: Node;
+	statement: Node;
+}
+
+export interface ForOfStatement extends Node {
+	initializer: Node;
+	expression: Node;
+	statement: Node;
+}
+
+export interface WhileStatement extends Node {
+	expression: Node;
+	statement: Node;
+}
+
+export interface DoStatement extends Node {
+	statement: Node;
+	expression: Node;
 }
 
 export interface SwitchStatement extends Node {
@@ -348,6 +383,10 @@ export interface ArrayLiteralExpression extends Node {
 
 export interface ExpressionStatement extends Node {
 	expression: Node;
+}
+
+export interface Block extends Node {
+	statements: readonly Node[];
 }
 
 export interface ParenthesizedExpression extends Node {
@@ -509,6 +548,14 @@ export function isClassDeclaration(node: Node): node is ClassDeclaration {
 	return node.kind === SyntaxKind.ClassDeclaration;
 }
 
+export function isClassExpression(node: Node): node is ClassExpression {
+	return node.kind === SyntaxKind.ClassExpression;
+}
+
+export function isFunctionExpression(node: Node): node is FunctionExpression {
+	return node.kind === SyntaxKind.FunctionExpression;
+}
+
 export function isVariableDeclaration(node: Node): node is VariableDeclaration {
 	return node.kind === SyntaxKind.VariableDeclaration;
 }
@@ -546,6 +593,22 @@ export function isForStatement(node: Node): node is ForStatement {
 	return node.kind === SyntaxKind.ForStatement;
 }
 
+export function isForInStatement(node: Node): node is ForInStatement {
+	return node.kind === SyntaxKind.ForInStatement;
+}
+
+export function isForOfStatement(node: Node): node is ForOfStatement {
+	return node.kind === SyntaxKind.ForOfStatement;
+}
+
+export function isWhileStatement(node: Node): node is WhileStatement {
+	return node.kind === SyntaxKind.WhileStatement;
+}
+
+export function isDoStatement(node: Node): node is DoStatement {
+	return node.kind === SyntaxKind.DoStatement;
+}
+
 export function isSwitchStatement(node: Node): node is SwitchStatement {
 	return node.kind === SyntaxKind.SwitchStatement;
 }
@@ -554,7 +617,7 @@ export function isExpressionStatement(node: Node): node is ExpressionStatement {
 	return node.kind === SyntaxKind.ExpressionStatement;
 }
 
-export function isBlock(node: Node): node is Node {
+export function isBlock(node: Node): node is Block {
 	return node.kind === SyntaxKind.Block;
 }
 
@@ -603,6 +666,7 @@ export function forEachChild(node: Node, cbNode: (node: Node) => void): void {
  */
 export function isFunctionLike(node: Node): node is FunctionLikeDeclaration {
 	return node.kind === SyntaxKind.FunctionDeclaration
+		|| node.kind === SyntaxKind.FunctionExpression
 		|| node.kind === SyntaxKind.MethodDeclaration
 		|| node.kind === SyntaxKind.ArrowFunction
 		|| node.kind === SyntaxKind.Constructor

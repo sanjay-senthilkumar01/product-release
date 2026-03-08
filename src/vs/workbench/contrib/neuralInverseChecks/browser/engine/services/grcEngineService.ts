@@ -50,6 +50,7 @@ import { IWorkspaceContextService } from '../../../../../../platform/workspace/c
 import { ITextModel } from '../../../../../../editor/common/model.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { GRCDomain, IGRCRule, ICheckResult, IDomainSummary, GRC_BUILTIN_DOMAIN_LIST, toDisplaySeverity, IIgnoreSuggestion, IImpactNode } from '../types/grcTypes.js';
+import { IInvariantDefinition } from '../types/invariantTypes.js';
 import { GRCConfigLoader } from '../config/grcConfigLoader.js';
 import { IFrameworkRegistry } from '../framework/frameworkRegistry.js';
 import { IRegexCheck, IFileLevelCheck, IFrameworkMetadata, IFrameworkValidationResult } from '../framework/frameworkSchema.js';
@@ -60,6 +61,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../../../
 import { IPolicyService } from '../../context/autocomplete/policy/policyService.js';
 import { detectDomainFromPath } from './policyRuleGenerator.js';
 import { IExternalToolService } from './externalToolService.js';
+import { ImportPatternRegistry } from '../config/importPatternRegistry.js';
 
 export const IGRCEngineService = createDecorator<IGRCEngineService>('neuralInverseGRCEngineService');
 
@@ -188,6 +190,20 @@ export interface IGRCEngineService {
 	/** Delete a user-defined rule */
 	deleteRule(ruleId: string): Promise<void>;
 
+	// ─── Formal Verification / Invariant Management ───────────────────────────
+
+	/** Get all invariant definitions from .inverse/invariants.json */
+	getInvariants(): IInvariantDefinition[];
+
+	/** Add or update an invariant definition */
+	saveInvariant(invariant: IInvariantDefinition): Promise<void>;
+
+	/** Delete an invariant by ID */
+	deleteInvariant(id: string): Promise<void>;
+
+	/** Toggle an invariant's enabled state */
+	toggleInvariant(id: string, enabled: boolean): Promise<void>;
+
 	/**
 	 * Evaluate rules against raw file content (no ITextModel needed).
 	 * Used by the workspace scanner to check files that aren't open.
@@ -266,6 +282,15 @@ export interface IGRCEngineService {
 	 */
 	scanWorkspaceWithAI(): Promise<void>;
 
+	/** Start periodic AI workspace scans at the given interval (ms). Skips already-scanned unchanged files. */
+	startPeriodicAIScan(intervalMs?: number): void;
+
+	/** Stop periodic AI workspace scans. */
+	stopPeriodicAIScan(): void;
+
+	/** Whether periodic AI scanning is active */
+	readonly isPeriodicAIScanActive: boolean;
+
 	/**
 	 * Merge externally-produced results (from IExternalToolService) into the
 	 * results cache for a specific file + ruleId, then fire onDidCheckComplete.
@@ -317,6 +342,22 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 	/** Guards against scheduling the initial AI scan more than once */
 	private _initialAIScanScheduled = false;
 
+	/** Guards against bootstrapping the import map more than once */
+	private _importMapBootstrapped = false;
+
+	/** Timer handle for periodic AI workspace scans */
+	private _periodicAIScanTimer: ReturnType<typeof setInterval> | undefined;
+	private _periodicAIScanActive = false;
+
+	/** Last AI scan timestamp per file URI string — used to debounce save-triggered scans */
+	private readonly _lastScanTimestamp = new Map<string, number>();
+
+	/** Whether live (save-triggered) scanning is active — shown in UI */
+	private _liveScanActive = false;
+
+	/** Language-agnostic import pattern registry — covers all sectors and languages */
+	private readonly _importPatternRegistry: ImportPatternRegistry;
+
 	private readonly _onDidCheckComplete = this._register(new Emitter<ICheckResult[]>());
 	public readonly onDidCheckComplete: Event<ICheckResult[]> = this._onDidCheckComplete.event;
 
@@ -353,6 +394,9 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 			try { this._contextOnlyPatterns = JSON.parse(ctxStored); } catch { /* ignore */ }
 		}
 
+		// Language-universal import pattern registry
+		this._importPatternRegistry = new ImportPatternRegistry(this._fileService, this._workspaceContextService);
+
 		this._configLoader = this._register(
 			new GRCConfigLoader(this._fileService, this._workspaceContextService, frameworkRegistry, this.policyService)
 		);
@@ -370,9 +414,10 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 			this._onDidRulesChange.fire();
 		}));
 
-		// AI analysis on file save. Intelligence service handles content-hash dedup
-		// (unchanged files cost zero LLM calls). After the primary file is queued,
-		// we update the import map and trigger cross-file re-analysis for dependents.
+		// Real-time AI analysis on file save.
+		// Intelligence service handles content-hash dedup (unchanged files cost zero LLM calls).
+		// Debounced: won't re-scan the same file more than once every 10 seconds.
+		// After primary file is analyzed, dependents are queued with a short delay.
 		this._register(this.textFileService.files.onDidSave(e => {
 			const model = e.model.textEditorModel;
 			if (!model) return;
@@ -393,28 +438,97 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 
 			if (!this.contractReasonService.isAvailable) return;
 
-			const cachedResults = this._resultsByFile.get(fileUri.toString()) || [];
+			// Debounce: skip if we just scanned this file within the last 10 seconds
+			const fileKey = fileUri.toString();
+			const lastScan = this._lastScanTimestamp.get(fileKey);
+			if (lastScan && Date.now() - lastScan < 10_000) return;
+
+			this._lastScanTimestamp.set(fileKey, Date.now());
+
+			// Mark live scan active for UI
+			if (!this._liveScanActive) {
+				this._liveScanActive = true;
+				this.contractReasonService.scanTrackerSetPeriodicState(this._periodicAIScanActive, undefined);
+			}
+
+			const cachedResults = this._resultsByFile.get(fileKey) || [];
 			const nanoContext = this.projectAnalyzerService.getContextForFile(fileUri);
 
-			// Primary: analyze the saved file (pass context-only files for AI reference)
+			// Primary: analyze the saved file with risk score
 			const ctxFiles = this._contextFiles.size > 0 ? new Map(this._contextFiles) : undefined;
-			this.contractReasonService.analyzeFile(fileUri, content, cachedResults, allRules, nanoContext, ctxFiles);
+			const riskScore = this._computeRiskScore(fileUri, content, cachedResults);
+			this.contractReasonService.analyzeFile(fileUri, content, cachedResults, allRules, nanoContext, ctxFiles, undefined, riskScore);
 
-			// Cross-file: re-analyze files that directly import this file
-			this._triggerCrossFileAnalysis(fileUri, allRules);
+			// Cross-file: re-analyze dependents after a short delay (max 5)
+			const basePath = fileUri.path.replace(/\.[^/.]+$/, '');
+			const dependents = new Set<string>();
+			for (const [key, importers] of this._importedBy) {
+				if (key === basePath || key.startsWith(basePath + '/') || basePath.endsWith('/' + key)) {
+					for (const imp of importers) dependents.add(imp);
+				}
+			}
+
+			if (dependents.size > 0) {
+				setTimeout(() => {
+					let count = 0;
+					for (const depUriStr of dependents) {
+						if (++count > 5) break;
+						const lastDepScan = this._lastScanTimestamp.get(depUriStr);
+						if (lastDepScan && Date.now() - lastDepScan < 10_000) continue;
+						this._lastScanTimestamp.set(depUriStr, Date.now());
+
+						const depUri = URI.parse(depUriStr);
+						this._fileService.readFile(depUri).then(file => {
+							const depContent = file.value.toString();
+							const depResults = this._resultsByFile.get(depUriStr) || [];
+							const depContext = this.projectAnalyzerService.getContextForFile(depUri);
+							const depRisk = this._computeRiskScore(depUri, depContent, depResults);
+							this.contractReasonService.analyzeFile(depUri, depContent, depResults, allRules, depContext, ctxFiles, undefined, depRisk);
+						}).catch(() => { /* dependent unreadable — skip */ });
+					}
+				}, 3_000);
+			}
 		}));
 
 		// Schedule initial full workspace AI scan once rules are loaded and AI is ready.
 		// Delay gives the editor time to fully initialise before we start reading files.
+		// Also bootstrap the import map at 2s so cross-file impact works immediately
+		// without waiting for the full AI scan (which may be 10s+ or disabled).
 		this._register(this._configLoader.onDidChange(() => {
-			if (this._initialAIScanScheduled) return;
 			if (this._configLoader.getRules().length === 0) return;
+
+			// Bootstrap import map at 2s — import parsing only, no AI, no pattern evaluation
+			if (!this._importMapBootstrapped) {
+				this._importMapBootstrapped = true;
+				setTimeout(() => {
+					this._bootstrapImportMap().catch(e =>
+						console.error('[GRCEngine] Import map bootstrap failed:', e)
+					);
+				}, 2_000);
+			}
+
+			if (this._initialAIScanScheduled) return;
 			this._initialAIScanScheduled = true;
 			setTimeout(() => {
 				this.scanWorkspaceWithAI().catch(e =>
 					console.error('[GRCEngine] Initial AI workspace scan failed:', e)
 				);
 			}, 10_000); // 10s after first rule load
+		}));
+
+		// When the contract reasoning service becomes available (model configured after the
+		// initial 10s scan window passed), trigger a workspace scan so AI results are not
+		// permanently skipped for a session. Content-hash caching in contractReasonService
+		// makes repeated scans cheap — unchanged files cost zero LLM calls.
+		this._register(this.contractReasonService.onDidEnabledChange((enabled) => {
+			if (!enabled) return;
+			if (this._configLoader.getRules().length === 0) return;
+			// Brief delay lets framework comprehension finish before we start file analysis
+			setTimeout(() => {
+				this.scanWorkspaceWithAI().catch(e =>
+					console.error('[GRCEngine] Post-enable AI workspace scan failed:', e)
+				);
+			}, 3_000);
 		}));
 
 		// When intelligence results arrive, enrich existing violations and add new ones
@@ -1257,6 +1371,25 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 	}
 
 
+	// ─── Formal Verification / Invariant Management ──────────────────
+
+	public getInvariants(): IInvariantDefinition[] {
+		return this._configLoader.getInvariants();
+	}
+
+	public async saveInvariant(invariant: IInvariantDefinition): Promise<void> {
+		await this._configLoader.saveInvariant(invariant);
+	}
+
+	public async deleteInvariant(id: string): Promise<void> {
+		await this._configLoader.deleteInvariant(id);
+	}
+
+	public async toggleInvariant(id: string, enabled: boolean): Promise<void> {
+		await this._configLoader.toggleInvariant(id, enabled);
+	}
+
+
 	// ─── Ignore Patterns ─────────────────────────────────────────────
 
 	public getIgnorePatterns(): string[] {
@@ -1475,13 +1608,13 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 	}
 
 	public getImpactChain(fileUri: URI, maxDepth: number = 3): IImpactNode | undefined {
-		const basePath = fileUri.path.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
-		const visited = new Set<string>();
+		// Strip any extension — import map keys are stored without extensions, universally
+		const basePath = fileUri.path.replace(/\.[^/.]+$/, '');
 
-		// Collect direct dependents
+		// Collect direct dependents — also match package-style keys that end with the same suffix
 		const dependentUris = new Set<string>();
 		for (const [key, importers] of this._importedBy) {
-			if (key === basePath || key.startsWith(basePath + '/')) {
+			if (key === basePath || key.startsWith(basePath + '/') || basePath.endsWith('/' + key)) {
 				for (const imp of importers) dependentUris.add(imp);
 			}
 		}
@@ -1501,28 +1634,30 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 			dependents: [],
 		};
 
-		visited.add(fileKey);
-		this._buildImpactTree(rootNode, visited, maxDepth, 1);
+		// pathVisited tracks the current root→leaf path only, so a shared dependency
+		// (imported by multiple parents) appears under each parent rather than being
+		// silently dropped after its first occurrence.
+		const pathVisited = new Set<string>([fileKey]);
+		this._buildImpactTree(rootNode, pathVisited, maxDepth, 1);
 		return rootNode;
 	}
 
-	private _buildImpactTree(node: IImpactNode, visited: Set<string>, maxDepth: number, currentDepth: number): void {
+	private _buildImpactTree(node: IImpactNode, pathVisited: Set<string>, maxDepth: number, currentDepth: number): void {
 		if (currentDepth >= maxDepth) return;
 
-		// Find dependents by checking import map
-		const nodePath = node.filePath.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
+		// Strip any extension — works for all languages
+		const nodePath = node.filePath.replace(/\.[^/.]+$/, '');
 		const dependentUris = new Set<string>();
 		for (const [key, importers] of this._importedBy) {
-			if (key === nodePath || key.startsWith(nodePath + '/')) {
+			if (key === nodePath || key.startsWith(nodePath + '/') || nodePath.endsWith('/' + key)) {
 				for (const imp of importers) {
-					if (!visited.has(imp)) dependentUris.add(imp);
+					if (!pathVisited.has(imp)) dependentUris.add(imp);
 				}
 			}
 		}
 
 		for (const depUriStr of dependentUris) {
 			if (node.dependents.length >= 10) break; // cap per node
-			visited.add(depUriStr);
 
 			const depUri = URI.parse(depUriStr);
 			const depResults = this._resultsByFile.get(depUriStr) || [];
@@ -1535,7 +1670,11 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 				dependents: [],
 			};
 
-			this._buildImpactTree(depNode, visited, maxDepth, currentDepth + 1);
+			// Clone pathVisited for this branch so siblings are independent;
+			// only ancestors on the current root→leaf path block re-entry (cycle guard).
+			const branchVisited = new Set(pathVisited);
+			branchVisited.add(depUriStr);
+			this._buildImpactTree(depNode, branchVisited, maxDepth, currentDepth + 1);
 			node.dependents.push(depNode);
 		}
 	}
@@ -1614,16 +1753,29 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 			await this._collectFilesForAI(folder.uri, 0, allFiles);
 		}
 
-		// Phase 2: Prioritize files — process files with static violations first
-		// (AI enrichment is most valuable on files already flagged by patterns)
-		// Then process remaining files for discovery. Cap at 60 total AI-analyzed files
-		// per scan to avoid flooding the LLM provider.
-		const MAX_AI_FILES = 60;
-		const withViolations = allFiles.filter(f => (this._resultsByFile.get(f.uri.toString()) || []).length > 0);
-		const withoutViolations = allFiles.filter(f => (this._resultsByFile.get(f.uri.toString()) || []).length === 0);
-		const filesToScan = [...withViolations, ...withoutViolations].slice(0, MAX_AI_FILES);
+		// Build allFileContents map for cross-file dependency context
+		const allFileContents = new Map<string, string>();
+		for (const f of allFiles) {
+			allFileContents.set(f.uri.toString(), f.content);
+		}
 
-		console.log(`[GRCEngine] AI scan: ${filesToScan.length} files (${withViolations.length} with static violations, ${Math.max(0, filesToScan.length - withViolations.length)} additional)`);
+		// Phase 2: Risk-based prioritization — score each file and sort descending.
+		// This ensures auth handlers, DB layers, and payment code get scanned first
+		// even if they have zero static violations.
+		const MAX_AI_FILES = 60;
+		const scored = allFiles.map(f => ({
+			...f,
+			riskScore: this._computeRiskScore(f.uri, f.content, this._resultsByFile.get(f.uri.toString()) || []),
+		}));
+		scored.sort((a, b) => b.riskScore - a.riskScore);
+		const filesToScan = scored.slice(0, MAX_AI_FILES);
+
+		const highRiskCount = filesToScan.filter(f => f.riskScore > 50).length;
+		console.log(`[GRCEngine] AI scan: ${filesToScan.length} files (${highRiskCount} high-risk, top score: ${filesToScan[0]?.riskScore ?? 0})`);
+
+		// Notify scan tracker of all files we intend to process (with risk scores for UI)
+		const riskScoreMap = new Map(filesToScan.map(f => [f.uri.toString(), f.riskScore]));
+		this.contractReasonService.scanTrackerBeginScan(filesToScan.map(f => f.uri), riskScoreMap);
 
 		// Phase 3: Process in small batches with cooldown to respect rate limits
 		const BATCH_SIZE = 3;
@@ -1635,10 +1787,10 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 		for (let i = 0; i < filesToScan.length; i += BATCH_SIZE) {
 			const batch = filesToScan.slice(i, i + BATCH_SIZE);
 
-			await Promise.all(batch.map(({ uri, content }) => {
+			await Promise.all(batch.map(({ uri, content, riskScore }) => {
 				const cachedResults = this._resultsByFile.get(uri.toString()) || [];
 				const nanoContext = this.projectAnalyzerService.getContextForFile(uri);
-				return this.contractReasonService.analyzeFile(uri, content, cachedResults, allRules, nanoContext, contextFiles);
+				return this.contractReasonService.analyzeFile(uri, content, cachedResults, allRules, nanoContext, contextFiles, allFileContents, riskScore);
 			}));
 
 			processed += batch.length;
@@ -1649,7 +1801,82 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 			}
 		}
 
+		// Notify scan tracker that scan is complete
+		this.contractReasonService.scanTrackerEndScan();
 		console.log(`[GRCEngine] AI scan complete: ${processed} file(s) processed`);
+	}
+
+	// ─── Periodic AI Scan ────────────────────────────────────────────
+
+	public get isPeriodicAIScanActive(): boolean {
+		return this._periodicAIScanActive;
+	}
+
+	public startPeriodicAIScan(intervalMs: number = 120_000): void {
+		if (this._periodicAIScanTimer) {
+			clearInterval(this._periodicAIScanTimer);
+		}
+		this._periodicAIScanActive = true;
+		this.contractReasonService.scanTrackerSetPeriodicState(true, intervalMs);
+		console.log(`[GRCEngine] Periodic AI scan started (every ${intervalMs / 1000}s)`);
+
+		this._periodicAIScanTimer = setInterval(() => {
+			if (!this.contractReasonService.isAvailable) return;
+			console.log('[GRCEngine] Periodic AI scan triggered');
+			this.scanWorkspaceWithAI().catch(e =>
+				console.error('[GRCEngine] Periodic AI scan failed:', e)
+			);
+		}, intervalMs);
+	}
+
+	public stopPeriodicAIScan(): void {
+		if (this._periodicAIScanTimer) {
+			clearInterval(this._periodicAIScanTimer);
+			this._periodicAIScanTimer = undefined;
+		}
+		this._periodicAIScanActive = false;
+		this.contractReasonService.scanTrackerSetPeriodicState(false);
+		console.log('[GRCEngine] Periodic AI scan stopped');
+	}
+
+
+	/**
+	 * Compute a risk score for a file based on its path, content signals,
+	 * existing violations, and how many other files depend on it.
+	 * Higher scores = higher priority for AI analysis.
+	 */
+	private _computeRiskScore(uri: URI, content: string, staticViolations: ICheckResult[]): number {
+		let score = 0;
+		const path = uri.path.toLowerCase();
+
+		// Entry points / high-risk file roles
+		if (/\b(route|controller|handler|endpoint|api|gateway)\b/.test(path)) score += 30;
+		if (/\b(auth|login|session|token|credential|password|secret)\b/.test(path)) score += 40;
+		if (/\b(db|database|query|repository|dao|model)\b/.test(path)) score += 25;
+		if (/\b(payment|billing|transaction|stripe|paypal)\b/.test(path)) score += 35;
+		if (/\b(crypto|encrypt|decrypt|hash|sign|verify)\b/.test(path)) score += 30;
+		if (/\b(middleware|interceptor|filter|guard)\b/.test(path)) score += 20;
+
+		// Content signals — dangerous patterns
+		if (content.includes('eval(') || content.includes('Function(')) score += 50;
+		if (content.includes('innerHTML') || content.includes('dangerouslySetInnerHTML')) score += 40;
+		if (/\bexec\s*\(/.test(content)) score += 40;
+		if (/process\.env/.test(content)) score += 15;
+		if (/\b(password|secret|apikey|api_key|token)\b/i.test(content)) score += 20;
+
+		// Existing static violations (already flagged = needs deeper look)
+		score += staticViolations.length * 10;
+
+		// Fan-out: files imported by many others are high-impact
+		const basePath = uri.path.replace(/\.[^/.]+$/, '');
+		for (const [key, importers] of this._importedBy) {
+			if (key === basePath || key.endsWith('/' + basePath.split('/').pop())) {
+				score += Math.min(importers.size * 5, 30);
+				break;
+			}
+		}
+
+		return score;
 	}
 
 	/**
@@ -1702,34 +1929,88 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 
 	// ─── Import Graph & Cross-File Triggers ──────────────────────────
 
-	/** Regex that captures relative import/export paths from any JS/TS file */
-	private static readonly _IMPORT_RE =
-		/(?:^|\n)[ \t]*(?:import\s+(?:type\s+)?(?:[^'"\n]*?from\s+)?|export\s+(?:type\s+)?(?:[^'"\n]*?from\s+)|(?:const|let|var)\s+[^=]+=\s*(?:await\s+)?(?:require|import)\s*\()['"](\.[^'"]+)['"]/g;
-
 	/**
-	 * Parse the relative imports of `fileUri` from `content` and update
-	 * `_importedBy` so we know which files depend on which.
+	 * Parse the imports of `fileUri` from `content` using the `ImportPatternRegistry`
+	 * and update `_importedBy`. Fully language-agnostic — pattern definitions live
+	 * in `importPatternRegistry.ts` and `.inverse/import-patterns.json`.
 	 */
 	private _updateImportMap(fileUri: URI, content: string): void {
 		const importerStr = fileUri.toString();
 		const dirPath = fileUri.path.replace(/\/[^/]+$/, '');
+		const ext = fileUri.path.split('.').pop()?.toLowerCase() ?? '';
 
 		// Remove stale entries for this importer
 		for (const [, importers] of this._importedBy) {
 			importers.delete(importerStr);
 		}
 
-		// Parse new import paths
-		GRCEngineService._IMPORT_RE.lastIndex = 0;
-		let match: RegExpExecArray | null;
-		while ((match = GRCEngineService._IMPORT_RE.exec(content)) !== null) {
-			const importPath = match[1];
-			if (!importPath?.startsWith('.')) continue;
-			const resolved = this._resolveRelativePath(dirPath, importPath);
-			if (!resolved) continue;
-			if (!this._importedBy.has(resolved)) this._importedBy.set(resolved, new Set());
-			this._importedBy.get(resolved)!.add(importerStr);
+		const patterns = this._importPatternRegistry.getPatterns(ext);
+		for (const pattern of patterns) {
+			const re = new RegExp(pattern.regex, 'gm');
+			let m: RegExpExecArray | null;
+			while ((m = re.exec(content)) !== null) {
+				let rawCapture = m[pattern.group];
+				if (!rawCapture) continue;
+
+				// Skip if it matches an external/stdlib prefix
+				if (pattern.externalPrefixes?.some(p => rawCapture.startsWith(p))) continue;
+
+				// Normalise the captured path to a resolvable string
+				let rawPath: string;
+				if (pattern.resolution === 'package-to-path') {
+					// e.g. com.example.Auth → com/example/Auth (no leading ./)
+					// stored as a package key; lookup matches with endsWith in getImpactChain
+					rawPath = rawCapture.replace(/\./g, '/');
+				} else {
+					// 'relative' — ensure it starts with ./ or ../
+					rawPath = rawCapture.startsWith('.') ? rawCapture : './' + rawCapture;
+				}
+
+				const resolved = this._resolveRelativePath(dirPath, rawPath);
+				if (!resolved) continue;
+				if (!this._importedBy.has(resolved)) this._importedBy.set(resolved, new Set());
+				this._importedBy.get(resolved)!.add(importerStr);
+			}
 		}
+	}
+
+	/**
+	 * Walk all workspace files and populate `_importedBy` immediately at startup.
+	 * Import parsing only — no AI, no pattern evaluation, no diagnostics.
+	 * Covers all supported languages so cross-file impact works right after restart.
+	 */
+	private async _bootstrapImportMap(): Promise<void> {
+		const folders = this._workspaceContextService.getWorkspace().folders;
+		let count = 0;
+		for (const folder of folders) {
+			count += await this._walkForImports(folder.uri, 0);
+		}
+		console.log(`[GRCEngine] Import map bootstrapped: ${this._importedBy.size} unique import targets from ${count} files`);
+	}
+
+	private async _walkForImports(dirUri: URI, depth: number): Promise<number> {
+		if (depth > 12) return 0;
+		let count = 0;
+		try {
+			const stat = await this._fileService.resolve(dirUri);
+			if (!stat.children) return 0;
+			for (const child of stat.children) {
+				if (this._matchesIgnore(child.resource)) continue;
+				if (child.isDirectory) {
+					if (GRCEngineService._SKIP_DIRS.has(child.name)) continue;
+					count += await this._walkForImports(child.resource, depth + 1);
+				} else {
+					const ext = child.name.split('.').pop()?.toLowerCase() ?? '';
+					if (!GRCEngineService._SCANNABLE_EXT.has(ext)) continue;
+					try {
+						const file = await this._fileService.readFile(child.resource);
+						this._updateImportMap(child.resource, file.value.toString());
+						count++;
+					} catch { /* unreadable — skip */ }
+				}
+			}
+		} catch { /* unreadable dir — skip */ }
+		return count;
 	}
 
 	/** Resolve a relative import path to a normalised absolute path (no extension). */
@@ -1740,8 +2021,8 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 			if (part === '..') { resolved = resolved.replace(/\/[^/]+$/, ''); }
 			else resolved = `${resolved}/${part}`;
 		}
-		// Strip extension so lookup works regardless of .ts/.js etc.
-		return resolved.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
+		// Strip extension so lookup is language-agnostic (.ts, .c, .py, .v, etc.)
+		return resolved.replace(/\.[^/.]+$/, '');
 	}
 
 	/**
@@ -1749,12 +2030,11 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 	 * trigger AI re-analysis for them (limited to 10 to prevent flooding).
 	 */
 	private _triggerCrossFileAnalysis(changedFileUri: URI, rules: IGRCRule[]): void {
-		const basePath = changedFileUri.path.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '');
+		const basePath = changedFileUri.path.replace(/\.[^/.]+$/, '');
 		const dependents = new Set<string>();
 
-		// Match both the bare path and with any extension
 		for (const [key, importers] of this._importedBy) {
-			if (key === basePath || key.startsWith(basePath + '/')) {
+			if (key === basePath || key.startsWith(basePath + '/') || basePath.endsWith('/' + key)) {
 				for (const imp of importers) dependents.add(imp);
 			}
 		}
@@ -1838,3 +2118,4 @@ function _globMatches(pattern: string, filePath: string): boolean {
 }
 
 registerSingleton(IGRCEngineService, GRCEngineService, InstantiationType.Eager);
+

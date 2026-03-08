@@ -358,6 +358,41 @@ export interface ICheckResult {
 	 * AI violations, and are cleared when the breaking change is resolved.
 	 */
 	isBreakingChange?: boolean;
+
+	// ─── Deep analysis fields (cross-file, logic flow) ───────────────
+
+	/**
+	 * Data flow trace showing how tainted data reaches the violation point.
+	 * Each step represents a point in the flow from source to sink.
+	 */
+	dataFlowTrace?: Array<{
+		file: string;
+		line: number;
+		description: string;
+	}>;
+
+	/**
+	 * Related violations in other files (cross-file chain).
+	 * Links violations that are part of the same data flow or logic path.
+	 */
+	relatedViolations?: Array<{
+		fileUri: string;
+		line: number;
+		ruleId: string;
+		relationship: 'upstream' | 'downstream' | 'same-flow';
+	}>;
+
+	/**
+	 * The logic assumption that is violated, if applicable.
+	 * e.g. "Assumes req.body.email is always a string, but no type check exists"
+	 */
+	brokenAssumption?: string;
+
+	/**
+	 * Risk score assigned during AI scan prioritization (0-100+).
+	 * Higher scores indicate higher-risk files.
+	 */
+	riskScore?: number;
 }
 
 

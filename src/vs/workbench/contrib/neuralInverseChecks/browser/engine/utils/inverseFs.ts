@@ -58,6 +58,17 @@ export async function withInverseWriteAccess(inversePath: string, fn: () => Prom
 	await _chmodInverse(inversePath, true);
 	try {
 		await fn();
+	} catch (e: any) {
+		// If the write failed with EACCES, retry chmod + callback once.
+		// This handles race conditions where the terminal-based chmod hasn't
+		// fully propagated (deeply nested dirs, slow I/O) before the write.
+		if (e?.code === 'EACCES' || e?.code === 'NoPermissions' || (e?.message && e.message.includes('EACCES'))) {
+			console.warn('[InverseFs] EACCES on first attempt — retrying chmod + write');
+			await _chmodInverse(inversePath, true);
+			await fn();
+		} else {
+			throw e;
+		}
 	} finally {
 		await _chmodInverse(inversePath, false);
 	}

@@ -273,15 +273,9 @@ export class PowerModeTerminalHost extends Disposable {
 		this._drawnRunningTools.clear();
 		this._streamingCursor = false;
 
-		// ── Bordered input box ────────────────────────────────
-		const w = Math.min(this._cols - 4, 100);
-		const hint = ` / commands · Esc stop `;
-		const dashes = Math.max(4, w - hint.length);
-		const leftDash = Math.floor(dashes / 2);
-		const rightDash = Math.ceil(dashes / 2);
+		// ── Minimal prompt ────────────────────────────────────
 		this._write(line());
-		this._write(line(`  ${BLUE_LIGHT}╭${'─'.repeat(leftDash)}${DARK}${hint}${BLUE_LIGHT}${'─'.repeat(rightDash)}╮${RESET}`));
-		this._write(`  ${BLUE_LIGHT}│${RESET} ${CYAN}${BOLD}❯ ${RESET}`);
+		this._write(`  ${CYAN}${BOLD}❯ ${RESET}`);
 	}
 
 	// ── Slash Command Menu ──────────────────────────────────────────────
@@ -554,12 +548,11 @@ export class PowerModeTerminalHost extends Disposable {
 	}
 
 	private _drawUserMessage(text: string): void {
-		// Clear the ❯ prompt line, replace with styled user message block
+		// Clear the ❯ prompt line, replace with styled user message
 		this._write(`\r${ESC}2K`);
-		const BG_USER = `\x1b[48;2;30;48;80m`; // dark slate background
 		const msgLines = text.split('\n');
 		for (const l of msgLines) {
-			this._write(line(`  ${BG_USER} ${WHITE}${BOLD}${l} ${RESET}`));
+			this._write(line(`  ${WHITE}${BOLD}${l}${RESET}`));
 		}
 	}
 
@@ -691,7 +684,8 @@ export class PowerModeTerminalHost extends Disposable {
 			const iv = setInterval(() => {
 				frame++;
 				if (frame < frames.length) {
-					this._write(`${frames[frame]}${ESC}K`);
+					this._write(`
+${frames[frame]}${ESC}K`);
 				} else {
 					clearInterval(iv);
 					this._write(line());
@@ -703,8 +697,20 @@ export class PowerModeTerminalHost extends Disposable {
 			this._write(line(`  ${BLUE_LIGHT}◈ agent-bus${RESET}  ${toStr} ${GREEN}←───${RESET} ${CYAN}${from}${RESET}  ${DARK}[result]${RESET}`));
 			this._write(line(`  ${DARK}  ⊳ ${preview}${RESET}`));
 		} else if (msgType === 'broadcast') {
-			this._write(line());
-			this._write(line(`  ${BLUE_LIGHT}◈ bus${RESET}  ${CYAN}${from}${RESET} ${DARK}⇝${RESET} ${toStr}  ${DARK}[${msgType}]${RESET}`));
+			// Show blocking violation alerts prominently; suppress routine posture pings
+			try {
+				const data = JSON.parse(content);
+				if (data.type === 'blocking-violations-alert' && data.blockingCount > 0) {
+					this._write(line());
+					this._write(line(`  ${RED}⚠ checks-agent${RESET}  ${RED}${BOLD}${data.blockingCount} blocking violation${data.blockingCount > 1 ? 's' : ''}${RESET} ${DARK}— commit is gated${RESET}`));
+					if (data.topViolations) {
+						for (const v of String(data.topViolations).split('\n').slice(0, 3)) {
+							this._write(line(`  ${DARK}  · ${v}${RESET}`));
+						}
+					}
+				}
+				// Routine grc-posture-update broadcasts are silently ignored
+			} catch { /* not JSON */ }
 		} else {
 			this._write(line());
 			this._write(line(`  ${BLUE_LIGHT}◈ bus${RESET}  ${CYAN}${from}${RESET} ${DARK}→${RESET} ${toStr}  ${DARK}[${msgType}]${RESET}`));

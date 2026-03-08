@@ -35,6 +35,10 @@ export class ChecksToolRegistry {
 		return [...this._tools.values()];
 	}
 
+	getToolNames(): string[] {
+		return [...this._tools.keys()];
+	}
+
 	/**
 	 * Build InternalToolInfo[] for the LLM bridge (mcpTools format).
 	 */

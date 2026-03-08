@@ -481,7 +481,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 checksContainer.style.display = 'block';
                 this._currentViewMode = 'ignore';
                 this._currentDomain = undefined;
-                refreshWebview();
+                refreshWebview(true);
             } else if (view === 'frameworks') {
                 checksContainer.style.display = 'block';
                 this._currentViewMode = 'frameworks';
@@ -513,7 +513,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 checksContainer.style.display = 'block';
                 this._currentViewMode = 'dashboard';
                 this._currentDomain = DOMAIN_MAP[view];
-                refreshWebview();
+                refreshWebview(true);
             }
         };
 
@@ -572,6 +572,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         // Build sidebar sections
         addSidebarLabel('Overview');
         createSidebarItem('All Checks', 'all', '⬡');
+        createSidebarItem('Checks Agent', 'checks-agent', '⊗');
 
         addSidebarLabel('Domains');
         createSidebarItem('Security', 'security', '⚔');
@@ -597,8 +598,6 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
 
         addSidebarLabel('Tools');
         createSidebarItem('Nano Agents', 'nano', '◇');
-        createSidebarItem('Chat', 'chat', '◉');
-        createSidebarItem('Checks Agent', 'checks-agent', '⊗');
 
         // Initialize view
         updateView('all');
@@ -1570,8 +1569,30 @@ window.addEventListener('message', e => {
             byFile.get(k)!.push(r);
         }
 
+        // ── Sort files by cross-file impact score (dependents count) ──
+        const importedByMap = this.grcEngine.getImportedByMap();
+        const getImpactScore = (fileUriStr: string): number => {
+            const path = URI.parse(fileUriStr).path.replace(/\.[^/.]+$/, '');
+            let score = 0;
+            for (const [key, importers] of importedByMap) {
+                if (key === path || key.startsWith(path + '/') || path.endsWith('/' + key)) {
+                    score += importers.length;
+                }
+            }
+            return score;
+        };
+        const sortedByFile = [...byFile.entries()].sort((a, b) => {
+            const scoreB = getImpactScore(b[0]);
+            const scoreA = getImpactScore(a[0]);
+            if (scoreB !== scoreA) return scoreB - scoreA;
+            // Secondary: error count descending
+            const errA = a[1].filter(r => r.severity === 'error').length;
+            const errB = b[1].filter(r => r.severity === 'error').length;
+            return errB - errA;
+        });
+
         let violListHtml = '';
-        for (const [, fileResults] of byFile) {
+        for (const [fileKey, fileResults] of sortedByFile) {
             const first = fileResults[0];
             const fileName = first.fileUri.path.split('/').pop() ?? first.fileUri.path;
             const dirParts = first.fileUri.path.replace(/\/[^/]+$/, '').split('/');
@@ -1579,6 +1600,7 @@ window.addEventListener('message', e => {
             const domain = first.domain || 'general';
             const errCount  = fileResults.filter(r => r.severity === 'error').length;
             const warnCount = fileResults.filter(r => r.severity === 'warning').length;
+            const impactScore = getImpactScore(fileKey);
             const autoCollapsed = fileResults.length > 4 ? ' collapsed' : '';
 
             const itemsHtml = fileResults.map(r => {
@@ -1610,6 +1632,7 @@ window.addEventListener('message', e => {
                     <span class="file-counts">
                         ${errCount  > 0 ? `<span class="fc-err">${errCount}✖</span>` : ''}
                         ${warnCount > 0 ? `<span class="fc-warn">${warnCount}⚠</span>` : ''}
+                        ${impactScore > 0 ? `<span class="fc-impact" title="${impactScore} file(s) import this">⊷${impactScore}</span>` : ''}
                     </span>
                 </div>
                 <div class="file-items">${itemsHtml}</div>
@@ -1779,8 +1802,9 @@ body {
 .file-name  { font-weight: 700; flex-shrink: 0; }
 .file-dir   { font-size: 10px; opacity: .4; font-family: var(--vscode-editor-font-family, monospace); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-counts { display: flex; gap: 5px; margin-left: auto; flex-shrink: 0; }
-.fc-err  { color: #ef9a9a; font-size: 10px; font-weight: 700; }
-.fc-warn { color: #ffcc80; font-size: 10px; font-weight: 700; }
+.fc-err    { color: #ef9a9a; font-size: 10px; font-weight: 700; }
+.fc-warn   { color: #ffcc80; font-size: 10px; font-weight: 700; }
+.fc-impact { color: #7eb8f7; font-size: 10px; font-weight: 700; opacity: 0.85; }
 
 .file-items { display: flex; flex-direction: column; }
 .viol {
@@ -2529,7 +2553,7 @@ function updateJobInTables(job) {
             <span class="${fileClass}"${onclick}>${this._esc(node.fileName)}</span>${badge}`;
 
         if (node.dependents.length > 0) {
-            html += '<div class="impact-arrow">imports ↓</div>';
+            html += '<div class="impact-arrow">imported by ↓</div>';
             for (const dep of node.dependents) {
                 html += this._renderImpactNode(dep, false);
             }

@@ -45,8 +45,9 @@ export interface IInverseAccessService {
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 
-/** How long (ms) to wait after sending a chmod command before proceeding. */
-const CHMOD_SETTLE_MS = 400;
+/** How long (ms) to wait after sending a chmod command before proceeding.
+ *  400ms was too aggressive for deeply nested dirs — bumped to 800ms. */
+const CHMOD_SETTLE_MS = 800;
 
 const TERMINAL_NAME = 'Neural Inverse Ops';
 

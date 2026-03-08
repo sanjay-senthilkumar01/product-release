@@ -75,7 +75,7 @@ import { IFrameworkRegistry, ILoadedFramework } from '../framework/frameworkRegi
 import { ILLMMessageService } from '../../../../void/common/sendLLMMessageService.js';
 import { IVoidSettingsService } from '../../../../void/common/voidSettingsService.js';
 import { LLMChatMessage } from '../../../../void/common/sendLLMMessageTypes.js';
-import { INanoAgentContext, IProjectAnalyzerService } from '../../nanoAgents/projectAnalyzerService.js';
+import { INanoAgentContext } from '../../nanoAgents/projectAnalyzerService.js';
 import { IAccessibilitySignalService, AccessibilitySignal } from '../../../../../../platform/accessibilitySignal/browser/accessibilitySignalService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
 
@@ -119,6 +119,54 @@ interface ContractContext {
 }
 
 
+/**
+ * Per-file scan tracking entry.
+ */
+export interface IScanFileEntry {
+	/** File URI string */
+	fileUri: string;
+	/** Short display name (filename) */
+	fileName: string;
+	/** Scan status */
+	status: 'pending' | 'scanning' | 'scanned' | 'skipped' | 'error';
+	/** When this entry was last updated */
+	timestamp: number;
+	/** Number of AI violations found (if scanned) */
+	violationCount?: number;
+	/** Skip reason if status is 'skipped' */
+	skipReason?: string;
+	/** Error message if status is 'error' */
+	errorMessage?: string;
+	/** Risk score computed during scan prioritization (0-100+) */
+	riskScore?: number;
+}
+
+/**
+ * Aggregate scan tracker state exposed to UI.
+ */
+export interface IScanTrackerState {
+	/** All tracked file entries */
+	entries: IScanFileEntry[];
+	/** How many files total are queued or tracked */
+	totalFiles: number;
+	/** How many have been scanned (status === 'scanned') */
+	scannedCount: number;
+	/** How many were skipped (cache hit) */
+	skippedCount: number;
+	/** How many errored */
+	errorCount: number;
+	/** How many are currently in-flight */
+	scanningCount: number;
+	/** Whether a workspace scan is currently running */
+	isScanning: boolean;
+	/** Timestamp of last completed workspace scan */
+	lastScanCompleted: number | undefined;
+	/** Whether periodic scanning is active */
+	periodicScanActive: boolean;
+	/** Periodic scan interval in ms */
+	periodicScanIntervalMs: number;
+}
+
 export interface IContractReasonService {
 	readonly _serviceBrand: undefined;
 
@@ -144,7 +192,9 @@ export interface IContractReasonService {
 		patternResults: ICheckResult[],
 		rules: IGRCRule[],
 		context?: INanoAgentContext,
-		contextFiles?: Map<string, string>
+		contextFiles?: Map<string, string>,
+		allFileContents?: Map<string, string>,
+		riskScore?: number
 	): Promise<ContractReasonResult | undefined>;
 
 	/** Event fired when contract reasoning results are ready */
@@ -152,6 +202,26 @@ export interface IContractReasonService {
 
 	/** Send a one-shot query to the LLM (rate-limited). Returns raw response text. */
 	sendOneShotQuery(prompt: string): Promise<string | undefined>;
+
+	// ─── Scan Tracker API ────────────────────────────────────────────
+
+	/** Get the current scan tracker state for UI rendering */
+	getScanTrackerState(): IScanTrackerState;
+
+	/** Event fired when scan tracker state changes (file starts/completes/errors) */
+	readonly onDidScanTrackerUpdate: Event<IScanTrackerState>;
+
+	/** Mark scan as started (called by grcEngine before batch processing) */
+	scanTrackerBeginScan(fileUris: URI[], riskScores?: Map<string, number>): void;
+
+	/** Mark scan as completed */
+	scanTrackerEndScan(): void;
+
+	/** Reset scan tracker entries (e.g. on new workspace scan) */
+	scanTrackerReset(): void;
+
+	/** Update periodic scan state (called by grcEngine when periodic scan starts/stops) */
+	scanTrackerSetPeriodicState(active: boolean, intervalMs?: number): void;
 }
 
 
@@ -276,8 +346,14 @@ export class ContractReasonService extends Disposable implements IContractReason
 	/** Storage key for persisting per-file content hashes — skip LLM when content unchanged */
 	private static readonly FILE_HASH_STORAGE_KEY = 'grc.fileContentHashes';
 
+	/** Storage key for persisted AI violations — stored in IStorageService, NOT .inverse/audit */
+	private static readonly VIOLATIONS_CACHE_KEY = 'grc.aiViolationsCache';
+
 	/** Persisted content hashes from previous sessions: fileUri → hash */
 	private _persistedHashes = new Map<string, string>();
+
+	/** Persisted AI violations from previous sessions: fileUri → serialized violations */
+	private _persistedViolations = new Map<string, any[]>();
 
 	/** Cached framework comprehension contexts */
 	private readonly _contractContexts = new Map<string, ContractContext>();
@@ -302,26 +378,45 @@ export class ContractReasonService extends Disposable implements IContractReason
 	private readonly _onDidEnabledChange = this._register(new Emitter<boolean>());
 	public readonly onDidEnabledChange = this._onDidEnabledChange.event;
 
+	// ─── Scan Tracker State ──────────────────────────────────────────
+	private readonly _scanEntries = new Map<string, IScanFileEntry>();
+	private _isScanning = false;
+	private _lastScanCompleted: number | undefined;
+	private _periodicScanActive = false;
+	private _periodicScanIntervalMs = 120_000; // 2 min default
+	private readonly _onDidScanTrackerUpdate = this._register(new Emitter<IScanTrackerState>());
+	public readonly onDidScanTrackerUpdate = this._onDidScanTrackerUpdate.event;
+
 	constructor(
 		@ILLMMessageService private readonly llmMessageService: ILLMMessageService,
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IFrameworkRegistry private readonly frameworkRegistry: IFrameworkRegistry,
-		@IProjectAnalyzerService private readonly projectAnalyzerService: IProjectAnalyzerService,
 		@IAccessibilitySignalService private readonly accessibilitySignalService: IAccessibilitySignalService,
 		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
 
-		// Restore framework comprehensions and file hashes from previous session.
+		// Restore framework comprehensions, file hashes, and violation cache from previous session.
 		// Prevents re-running LLM calls on every IDE restart.
 		this._loadPersistedComprehensions();
 		this._loadPersistedHashes();
+		this._loadPersistedViolations();
 
-		// Auto-comprehend when frameworks change (only if enabled)
+		// Auto-comprehend when frameworks change (only if enabled).
+		// Also clear persisted content hashes so files are re-scanned with the new rules —
+		// without this, the hash cache would skip all files that haven't changed on disk
+		// even though the rules they're evaluated against have changed.
 		this._register(this.frameworkRegistry.onDidFrameworksChange(() => {
 			if (this._enabled) {
 				this._comprehendAllFrameworks();
 			}
+			// Always invalidate hashes + violations on framework change regardless of enabled state,
+			// so the next scan (whenever it runs) picks up new rules.
+			this._persistedHashes.clear();
+			this._savePersistedHashes();
+			this._persistedViolations.clear();
+			this._savePersistedViolations();
+			console.log('[ContractReason] Frameworks changed — cleared caches so files are re-scanned with updated rules');
 		}));
 
 		// Auto-enable/disable when model settings change
@@ -383,6 +478,33 @@ export class ContractReasonService extends Disposable implements IContractReason
 			);
 		} catch (e) {
 			console.error('[ContractReason] Failed to persist file hashes:', e);
+		}
+	}
+
+	private _loadPersistedViolations(): void {
+		try {
+			const stored = this.storageService.get(ContractReasonService.VIOLATIONS_CACHE_KEY, StorageScope.WORKSPACE);
+			if (!stored) return;
+			const entries: [string, any[]][] = JSON.parse(stored);
+			this._persistedViolations = new Map(entries);
+			console.log(`[ContractReason] Restored AI violations cache for ${this._persistedViolations.size} file(s)`);
+		} catch (e) {
+			console.error('[ContractReason] Failed to load persisted violations:', e);
+		}
+	}
+
+	private _savePersistedViolations(): void {
+		try {
+			// Cap at 100 entries to keep storage size reasonable
+			const entries = Array.from(this._persistedViolations.entries()).slice(-100);
+			this.storageService.store(
+				ContractReasonService.VIOLATIONS_CACHE_KEY,
+				JSON.stringify(entries),
+				StorageScope.WORKSPACE,
+				StorageTarget.MACHINE
+			);
+		} catch (e) {
+			console.error('[ContractReason] Failed to persist violations cache:', e);
 		}
 	}
 
@@ -495,7 +617,9 @@ export class ContractReasonService extends Disposable implements IContractReason
 			`- [${r.id}] "${r.message}" (severity: ${r.severity}, type: ${r.type})\n  Check: ${JSON.stringify(r.check).substring(0, 200)}`
 		).join('\n');
 
-		const systemPrompt = `You are a compliance framework analyst for critical and regulated software. Study the following framework rules and build a deep understanding of what this framework enforces.
+		const comprehensionSystemMsg = `You are a compliance framework analyst for critical and regulated software. Your job is to deeply understand compliance frameworks so you can later identify violations that static pattern matching misses.`;
+
+		const comprehensionUserMsg = `Study this framework and build a structured understanding of what it enforces.
 
 Framework: ${framework.definition.framework.name} v${fwVersion}
 Description: ${framework.definition.framework.description || 'N/A'}
@@ -506,16 +630,16 @@ ${rulesDescription}
 For each rule, identify:
 1. The core intent (what security/reliability issue it prevents)
 2. Edge cases that pattern matching might miss
-3. How this rule relates to other rules in the framework
-4. Common code patterns that violate this rule but are hard to catch with regex/AST
+3. Common code patterns that violate this rule but are hard to catch with regex/AST
+4. How violations of this rule typically appear in real code
 
-Return your understanding as a structured analysis. Be concise but thorough. Focus on what patterns might MISS, not what they already catch.`;
+Be concise but thorough. Focus on what patterns MISS, not what they already catch.`;
 
 		return new Promise<void>((resolve) => {
 			this.llmMessageService.sendLLMMessage({
 				messagesType: 'chatMessages',
-				messages: [{ role: 'user', content: systemPrompt }] as LLMChatMessage[],
-				separateSystemMessage: undefined,
+				messages: [{ role: 'user', content: comprehensionUserMsg }] as LLMChatMessage[],
+				separateSystemMessage: comprehensionSystemMsg,
 				chatMode: null,
 				modelSelection,
 				modelSelectionOptions: undefined,
@@ -561,7 +685,9 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		patternResults: ICheckResult[],
 		rules: IGRCRule[],
 		context?: INanoAgentContext,
-		contextFiles?: Map<string, string>
+		contextFiles?: Map<string, string>,
+		allFileContents?: Map<string, string>,
+		riskScore?: number
 	): Promise<ContractReasonResult | undefined> {
 		if (!this.isAvailable) {
 			return undefined;
@@ -570,6 +696,7 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		// Prevent duplicate analysis for the same file
 		const fileKey = fileUri.toString();
 		if (this._runningAnalyses.has(fileKey)) {
+			this._scanTrackerMarkSkipped(fileUri, 'already in-flight');
 			return undefined;
 		}
 
@@ -579,14 +706,15 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		if (cached && cached.hash === contentHash) {
 			// Fire the event so the engine and diagnostics pick up the cached violations.
 			this._onDidContractReasonResultsReady.fire(cached.result);
+			this._scanTrackerMarkSkipped(fileUri, 'in-memory cache hit');
 			return cached.result;
 		}
 
 		// Check persisted hash from a previous session.
-		// Content unchanged — restore saved violations from audit trail instead of re-calling LLM.
+		// Content unchanged — restore saved violations from in-memory/storage cache.
 		if (this._persistedHashes.get(fileKey) === contentHash) {
-			const saved = await this.projectAnalyzerService.loadAuditData(fileUri);
-			if (saved.length > 0) {
+			const saved = this._persistedViolations.get(fileKey);
+			if (saved && saved.length > 0) {
 				const violations: ICheckResult[] = saved.map((v: any) => ({ ...v, fileUri, checkSource: 'ai' as const }));
 				const restored: ContractReasonResult = {
 					additionalViolations: violations,
@@ -596,41 +724,63 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 				};
 				this._resultCache.set(fileKey, { result: restored, hash: contentHash });
 				this._onDidContractReasonResultsReady.fire(restored);
-				console.log(`[ContractReason] Restored ${violations.length} AI violation(s) for ${fileUri.path.split('/').pop()} from audit trail`);
+				this._scanTrackerMarkSkipped(fileUri, `restored ${violations.length} from cache`);
+				console.log(`[ContractReason] Restored ${violations.length} AI violation(s) for ${fileUri.path.split('/').pop()} from cache`);
 			} else {
+				this._scanTrackerMarkSkipped(fileUri, 'content unchanged, no prior violations');
 				console.log(`[ContractReason] Content unchanged for ${fileUri.path.split('/').pop()} — no prior AI violations`);
 			}
 			return undefined;
 		}
 
 		this._runningAnalyses.add(fileKey);
+		this._scanTrackerMarkScanning(fileUri);
 
 		// Route through rate limiter — waits for a slot before executing
 		let result: ContractReasonResult | undefined;
 		try {
 			await this._rateLimiter.enqueue(async () => {
-				result = await this._runAnalysis(fileUri, fileContent, patternResults, rules, context, contextFiles);
-				if (result) {
-					this._rateLimiter.reportSuccess();
+				try {
+					result = await this._runAnalysis(fileUri, fileContent, patternResults, rules, context, contextFiles, allFileContents, riskScore);
+					if (result) {
+						this._rateLimiter.reportSuccess();
 
-					// Cache result in memory
-					this._resultCache.set(fileKey, { result, hash: contentHash });
+						// Cache result in memory
+						this._resultCache.set(fileKey, { result, hash: contentHash });
 
-					// Evict old entries
-					if (this._resultCache.size > ContractReasonService.MAX_CACHE) {
-						const firstKey = this._resultCache.keys().next().value;
-						if (firstKey) this._resultCache.delete(firstKey);
+						// Evict old entries
+						if (this._resultCache.size > ContractReasonService.MAX_CACHE) {
+							const firstKey = this._resultCache.keys().next().value;
+							if (firstKey) this._resultCache.delete(firstKey);
+						}
+
+						// Persist content hash + violations to IStorageService (no .inverse disk writes)
+						this._persistedHashes.set(fileKey, contentHash);
+						this._savePersistedHashes();
+
+						// Store violations in cache — survives IDE restarts via IStorageService
+						this._persistedViolations.set(fileKey, result.additionalViolations.map(v => ({
+							ruleId: v.ruleId, domain: v.domain, severity: v.severity,
+							message: v.message, line: v.line, column: v.column,
+							endLine: v.endLine, endColumn: v.endColumn,
+							codeSnippet: v.codeSnippet, fix: v.fix,
+							frameworkId: v.frameworkId, references: v.references,
+							blockingBehavior: v.blockingBehavior,
+							aiExplanation: v.aiExplanation, aiConfidence: v.aiConfidence,
+							timestamp: v.timestamp,
+						})));
+						this._savePersistedViolations();
+
+						this._onDidContractReasonResultsReady.fire(result);
+						this.accessibilitySignalService.playSignal(AccessibilitySignal.neuralInverseTaskComplete);
+
+						this._scanTrackerMarkScanned(fileUri, result.additionalViolations.length);
+					} else {
+						this._scanTrackerMarkError(fileUri, 'LLM returned no result');
 					}
-
-					// Persist content hash so future sessions skip the LLM for unchanged files
-					this._persistedHashes.set(fileKey, contentHash);
-					this._savePersistedHashes();
-
-					// Persist AI violations securely to .inverse/audit disk storage
-					await this.projectAnalyzerService.saveAuditData(fileUri, result.additionalViolations);
-
-					this._onDidContractReasonResultsReady.fire(result);
-					this.accessibilitySignalService.playSignal(AccessibilitySignal.neuralInverseTaskComplete);
+				} catch (e) {
+					this._scanTrackerMarkError(fileUri, e instanceof Error ? e.message : 'unknown error');
+					throw e;
 				}
 			});
 		} finally {
@@ -642,7 +792,14 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 
 
 	/**
-	 * Run the actual LLM analysis.
+	 * Run the actual LLM analysis — routes to single-call or two-phase
+	 * based on risk score.
+	 *
+	 * For high-risk files (riskScore > 50): Two-phase analysis
+	 *   Phase A — Threat modeling (identify attack surfaces)
+	 *   Phase B — Targeted violation detection (using threat model)
+	 *
+	 * For low-risk files: Single-call analysis (efficient, one LLM round-trip)
 	 */
 	private async _runAnalysis(
 		fileUri: URI,
@@ -650,84 +807,322 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		patternResults: ICheckResult[],
 		rules: IGRCRule[],
 		context?: INanoAgentContext,
-		contextFiles?: Map<string, string>
+		contextFiles?: Map<string, string>,
+		allFileContents?: Map<string, string>,
+		riskScore?: number
 	): Promise<ContractReasonResult | undefined> {
 		const modelSelection = this._getModelSelection();
 		if (!modelSelection) return undefined;
 
-		// Gather contract understanding
-		const allContexts = Array.from(this._contractContexts.values())
-			.map(ctx => ctx.understanding)
-			.join('\n\n---\n\n');
-
-		// Build context files snippet (test/mock/config files for AI reference)
-		const contextSnippet = this._buildContextFilesSnippet(contextFiles);
-
-		// Extract functions from the file for function-level analysis.
-		// Cap at 6 functions per file to avoid LLM flooding — prioritize functions
-		// that overlap with existing pattern violations, then by code size.
-		const allFunctions = this._extractFunctions(fileContent);
-		const MAX_FUNCTIONS_PER_FILE = 6;
-		const functions = allFunctions.length > MAX_FUNCTIONS_PER_FILE
-			? [
-				// Priority 1: functions that contain existing pattern violations
-				...allFunctions.filter(fn => patternResults.some(r => r.line >= fn.startLine && r.line <= fn.endLine)),
-				// Priority 2: largest functions (most likely to have issues)
-				...allFunctions
-					.filter(fn => !patternResults.some(r => r.line >= fn.startLine && r.line <= fn.endLine))
-					.sort((a, b) => (b.endLine - b.startLine) - (a.endLine - a.startLine)),
-			].slice(0, MAX_FUNCTIONS_PER_FILE)
-			: allFunctions;
-
-		// Get file extension for language hint
 		const ext = fileUri.path.split('.').pop() || 'ts';
 		const fileName = fileUri.path.split('/').pop() || 'unknown';
+		const startTime = Date.now();
 
-		// If we extracted functions, analyze each individually with relevant rules
-		if (functions.length > 0) {
-			console.log(`[ContractReason] Analyzing ${functions.length}/${allFunctions.length} functions in ${fileName}`);
+		// Gather contract understanding (compact — cap at 3000 chars)
+		const frameworkContext = Array.from(this._contractContexts.values())
+			.map(ctx => ctx.understanding)
+			.join('\n---\n')
+			.substring(0, 3000);
 
-			// Analyze functions concurrently (max 3 at a time)
-			const allResults: (ContractReasonResult | undefined)[] = [];
-			const concurrencyLimit = 3;
+		// Context files snippet (tests, mocks, configs)
+		const contextSnippet = this._buildContextFilesSnippet(contextFiles);
 
-			for (let i = 0; i < functions.length; i += concurrencyLimit) {
-				const batch = functions.slice(i, i + concurrencyLimit);
-				const batchResults = await Promise.all(
-					batch.map(fn => {
-						// Get pattern results that fall within this function's line range
-						const fnPatternResults = patternResults.filter(
-							r => r.line >= fn.startLine && r.line <= fn.endLine
-						);
+		// Cross-file dependency context (imports/imported-by)
+		const dependencyContext = this._buildDependencyContext(fileUri, fileContent, allFileContents);
 
-						// Route relevant rules based on function content patterns
-						const relevantRules = this._getRelevantRules(fn, rules, context);
+		// Enabled rules
+		const enabledRules = rules.filter(r => r.enabled);
 
-						console.log(`[ContractReason] Analyzing function: ${fn.name} (lines ${fn.startLine}-${fn.endLine}, ${relevantRules.length} rules)`);
+		// Pattern results summary
+		const patternSummary = patternResults.length > 0
+			? patternResults.map(r =>
+				`  L${r.line}: [${r.ruleId}] ${r.message.substring(0, 80)}`
+			).join('\n')
+			: '  (none)';
 
-						return this._analyzeFunctionChunk(
-							fileUri, fn, ext, fnPatternResults, relevantRules, allContexts, modelSelection, contextSnippet
-						);
-					})
-				);
-				allResults.push(...batchResults);
-			}
+		// Extract key functions and build a focused code view.
+		const functions = this._extractFunctions(fileContent);
 
-			// Merge all function-level results into one file-level result
-			return this._mergeResults(allResults, fileUri);
+		// No functions extracted — delegate to whole-file analyzer
+		if (functions.length === 0) {
+			console.log(`[ContractReason] No functions extracted in ${fileName} — using whole-file analysis`);
+			return this._analyzeWholeFile(
+				fileUri, fileContent, ext, patternResults, enabledRules, frameworkContext, modelSelection, contextSnippet + dependencyContext
+			);
 		}
 
-		// Fallback: analyze the whole file if no functions were extracted
-		return this._analyzeWholeFile(
-			fileUri, fileContent, ext, patternResults, rules, allContexts, modelSelection, contextSnippet
-		);
+		// Use rule routing to get the relevant rules for the combined function content
+		const combinedFn = { name: fileName, code: functions.map(f => f.code).join('\n') };
+		const relevantRules = this._getRelevantRules(combinedFn, enabledRules, context);
+
+		// Cap at 8 functions, prioritize ones with existing violations + largest
+		const MAX_FNS = 8;
+		const prioritized = functions.length > MAX_FNS
+			? [
+				...functions.filter(fn => patternResults.some(r => r.line >= fn.startLine && r.line <= fn.endLine)),
+				...functions
+					.filter(fn => !patternResults.some(r => r.line >= fn.startLine && r.line <= fn.endLine))
+					.sort((a, b) => (b.endLine - b.startLine) - (a.endLine - a.startLine)),
+			].slice(0, MAX_FNS)
+			: functions;
+
+		// Build batched code section with function boundaries marked
+		const MAX_CODE = 10000;
+		let codeLen = 0;
+		const parts: string[] = [];
+		for (const fn of prioritized) {
+			const header = `// ── ${fn.name} (lines ${fn.startLine}-${fn.endLine}) ──`;
+			const chunk = header + '\n' + fn.code;
+			if (codeLen + chunk.length > MAX_CODE) break;
+			parts.push(chunk);
+			codeLen += chunk.length;
+		}
+		const codeSection = parts.join('\n\n');
+
+		// Route: two-phase for high-risk files, single-call for low-risk
+		const effectiveRisk = riskScore ?? 0;
+		if (effectiveRisk > 50) {
+			console.log(`[ContractReason] Two-phase analysis for ${fileName} (risk: ${effectiveRisk}, ${parts.length}/${functions.length} fns, ${relevantRules.length} rules)`);
+			return this._runTwoPhaseAnalysis(
+				fileUri, fileName, ext, codeSection, patternSummary, relevantRules, enabledRules,
+				frameworkContext, contextSnippet, dependencyContext, modelSelection, startTime
+			);
+		}
+
+		console.log(`[ContractReason] Single-call analysis for ${fileName} (risk: ${effectiveRisk}, ${parts.length}/${functions.length} fns, ${relevantRules.length} rules)`);
+
+		const rulesSummary = relevantRules.map(r =>
+			`- [${r.id}] "${r.message}" (${r.severity})`
+		).join('\n');
+
+		const systemMsg = `You are a security auditor and logic analyzer for critical software. Your analysis must be deeper than pattern matching.
+
+ANALYSIS DEPTH:
+1. DATA FLOW TRACING: Follow variables from input to output. Track through assignments, function calls, destructuring, spreads, and returns. Flag when tainted data reaches sensitive sinks without sanitization.
+2. LOGIC INVARIANT CHECKING: Identify assumptions the code makes (non-null, specific types, array bounds, enum completeness) and check if they can be violated by callers or external input.
+3. CROSS-FILE BOUNDARY ANALYSIS: When cross-file context is provided, check that data contracts between files are honored — types match, error cases are handled, auth checks aren't bypassed.
+4. CONTROL FLOW ANALYSIS: Check for unreachable code, impossible conditions, race conditions in async code, and unhandled promise rejections.
+5. SECURITY PATTERN DETECTION: Check for TOCTOU, prototype pollution, ReDoS patterns, insecure deserialization, and missing rate limiting on sensitive endpoints.
+
+Be conservative — only flag issues you are confident about. For each violation, explain the EXACT data flow or logic path that leads to the issue. Respond with ONLY valid JSON, no prose.`;
+
+		const userMsg = `Analyze this code against the compliance rules.
+${frameworkContext ? `\nFRAMEWORK CONTEXT:\n${frameworkContext}\n` : ''}
+RULES (use exact IDs):
+${rulesSummary}
+
+EXISTING PATTERN VIOLATIONS:
+${patternSummary}
+${contextSnippet}${dependencyContext}
+FILE: ${fileName}
+
+\`\`\`${ext}
+${codeSection}
+\`\`\`
+
+JSON response:
+{"additionalViolations":[{"line":<number>,"ruleId":"<ID>","severity":"error|warning|info","message":"<what>","snippet":"<code max 80ch>","aiExplanation":"<why>","aiConfidence":"high|medium|low","dataFlowTrace":[{"file":"<filename>","line":<n>,"description":"<step>"}],"brokenAssumption":"<optional>"}],"enrichments":[{"ruleId":"<ID>","line":<n>,"aiExplanation":"<context>","aiConfidence":"high|medium|low"}],"falsePositives":[{"ruleId":"<ID>","line":<n>,"reason":"<why wrong>"}]}`;
+
+		return new Promise<ContractReasonResult | undefined>((resolve) => {
+			const timeoutId = setTimeout(() => {
+				console.warn(`[ContractReason] Analysis timed out for ${fileName} after 30s`);
+				resolve(undefined);
+			}, 30_000);
+
+			this.llmMessageService.sendLLMMessage({
+				messagesType: 'chatMessages',
+				messages: [{ role: 'user', content: userMsg }] as LLMChatMessage[],
+				separateSystemMessage: systemMsg,
+				chatMode: null,
+				modelSelection: modelSelection as any,
+				modelSelectionOptions: undefined,
+				overridesOfModel: undefined,
+				onText: () => { },
+				onFinalMessage: (params: { fullText: string }) => {
+					clearTimeout(timeoutId);
+					const elapsed = Date.now() - startTime;
+					console.log(`[ContractReason] ${fileName} analyzed in ${elapsed}ms`);
+					resolve(this._parseAnalysisResponse(params.fullText, fileUri, enabledRules, riskScore));
+				},
+				onError: (err: { message: string }) => {
+					clearTimeout(timeoutId);
+					if (err.message && (err.message.includes('rate') || err.message.includes('429') || err.message.includes('quota'))) {
+						this._rateLimiter.reportRateLimitError();
+					}
+					console.error(`[ContractReason] Analysis error for ${fileName}:`, err.message);
+					resolve(undefined);
+				},
+				onAbort: () => { clearTimeout(timeoutId); resolve(undefined); },
+				logging: { loggingName: `GRC-ContractReason-${fileName}` },
+			});
+		});
 	}
 
 
-	// ─── Function-Level Analysis ────────────────────────────────────
+	// ─── Two-Phase Analysis (high-risk files) ────────────────────────
 
 	/**
-	 * Represents a function/method/arrow extracted from source code.
+	 * Phase A: Threat modeling — identify attack surfaces and data flows.
+	 * Phase B: Targeted violation detection using the threat model.
+	 */
+	private async _runTwoPhaseAnalysis(
+		fileUri: URI,
+		fileName: string,
+		ext: string,
+		codeSection: string,
+		patternSummary: string,
+		relevantRules: IGRCRule[],
+		allEnabledRules: IGRCRule[],
+		frameworkContext: string,
+		contextSnippet: string,
+		dependencyContext: string,
+		modelSelection: { providerName: string; modelName: string },
+		startTime: number,
+	): Promise<ContractReasonResult | undefined> {
+
+		// ── Phase A: Threat Modeling ──
+		const phaseASystem = `You are a security threat modeler. Identify potential attack surfaces and logic vulnerabilities. Respond with ONLY valid JSON, no prose.`;
+
+		const phaseAUser = `Given this code and its cross-file context, identify:
+1. Data entry points (user input, API params, env vars, file reads)
+2. Sensitive operations (DB writes, auth decisions, crypto, file system)
+3. Data flow paths from entry points to sensitive operations
+4. Logic assumptions that could be violated (null checks, type coercions, race conditions)
+${dependencyContext}${contextSnippet}
+FILE: ${fileName}
+
+\`\`\`${ext}
+${codeSection}
+\`\`\`
+
+JSON response:
+{"entryPoints":["<description>"],"sensitiveOps":["<description>"],"dataFlows":["<source → transform → sink>"],"assumptions":["<assumption that could be broken>"]}`;
+
+		const threatModel = await new Promise<string | undefined>((resolve) => {
+			const timeoutId = setTimeout(() => {
+				console.warn(`[ContractReason] Phase A (threat model) timed out for ${fileName}`);
+				resolve(undefined);
+			}, 20_000);
+
+			this.llmMessageService.sendLLMMessage({
+				messagesType: 'chatMessages',
+				messages: [{ role: 'user', content: phaseAUser }] as LLMChatMessage[],
+				separateSystemMessage: phaseASystem,
+				chatMode: null,
+				modelSelection: modelSelection as any,
+				modelSelectionOptions: undefined,
+				overridesOfModel: undefined,
+				onText: () => { },
+				onFinalMessage: (params: { fullText: string }) => {
+					clearTimeout(timeoutId);
+					resolve(params.fullText);
+				},
+				onError: (err: { message: string }) => {
+					clearTimeout(timeoutId);
+					if (err.message && (err.message.includes('rate') || err.message.includes('429') || err.message.includes('quota'))) {
+						this._rateLimiter.reportRateLimitError();
+					}
+					console.error(`[ContractReason] Phase A error for ${fileName}:`, err.message);
+					resolve(undefined);
+				},
+				onAbort: () => { clearTimeout(timeoutId); resolve(undefined); },
+				logging: { loggingName: `GRC-ContractReason-PhaseA-${fileName}` },
+			});
+		});
+
+		if (!threatModel) {
+			// Fallback to single-call if threat modeling fails
+			console.log(`[ContractReason] Phase A failed for ${fileName}, falling back to single-call`);
+			return undefined;
+		}
+
+		const phaseAElapsed = Date.now() - startTime;
+		console.log(`[ContractReason] Phase A complete for ${fileName} in ${phaseAElapsed}ms`);
+
+		// Parse threat model to enhance rule routing
+		let parsedThreatModel: { entryPoints?: string[]; sensitiveOps?: string[]; dataFlows?: string[]; assumptions?: string[] } | undefined;
+		try {
+			let jsonStr = threatModel.trim();
+			const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+			if (jsonMatch) jsonStr = jsonMatch[1].trim();
+			parsedThreatModel = JSON.parse(jsonStr);
+		} catch {
+			// Use raw threat model text as context even if not parseable
+		}
+
+		// Re-route rules using threat model for better relevance
+		const threatEnhancedRules = parsedThreatModel
+			? this._getRelevantRules({ name: fileName, code: codeSection }, allEnabledRules, undefined, parsedThreatModel)
+			: relevantRules;
+
+		// ── Phase B: Targeted Violation Detection ──
+		const rulesSummary = threatEnhancedRules.map(r =>
+			`- [${r.id}] "${r.message}" (${r.severity})`
+		).join('\n');
+
+		const phaseBSystem = `You are a compliance auditor for critical software. Use the threat model to find real violations. For each violation, trace the data flow path that leads to it. Be conservative — only flag issues you are confident about. Respond with ONLY valid JSON, no prose.`;
+
+		const phaseBUser = `THREAT MODEL (from security analysis):
+${threatModel}
+
+RULES TO CHECK (use exact IDs):
+${rulesSummary}
+${frameworkContext ? `\nFRAMEWORK CONTEXT:\n${frameworkContext}\n` : ''}
+EXISTING PATTERN VIOLATIONS:
+${patternSummary}
+${dependencyContext}
+FILE: ${fileName}
+
+\`\`\`${ext}
+${codeSection}
+\`\`\`
+
+Using the threat model above, find violations that match the identified data flows and broken assumptions.
+For each violation, trace the data flow path that leads to it.
+
+JSON response:
+{"additionalViolations":[{"line":<number>,"ruleId":"<ID>","severity":"error|warning|info","message":"<what>","snippet":"<code max 80ch>","aiExplanation":"<why — reference specific threat model findings>","aiConfidence":"high|medium|low","dataFlowTrace":[{"file":"<filename>","line":<n>,"description":"<step>"}],"brokenAssumption":"<from threat model>"}],"enrichments":[{"ruleId":"<ID>","line":<n>,"aiExplanation":"<context>","aiConfidence":"high|medium|low"}],"falsePositives":[{"ruleId":"<ID>","line":<n>,"reason":"<why wrong>"}]}`;
+
+		return new Promise<ContractReasonResult | undefined>((resolve) => {
+			const timeoutId = setTimeout(() => {
+				console.warn(`[ContractReason] Phase B timed out for ${fileName}`);
+				resolve(undefined);
+			}, 30_000);
+
+			this.llmMessageService.sendLLMMessage({
+				messagesType: 'chatMessages',
+				messages: [{ role: 'user', content: phaseBUser }] as LLMChatMessage[],
+				separateSystemMessage: phaseBSystem,
+				chatMode: null,
+				modelSelection: modelSelection as any,
+				modelSelectionOptions: undefined,
+				overridesOfModel: undefined,
+				onText: () => { },
+				onFinalMessage: (params: { fullText: string }) => {
+					clearTimeout(timeoutId);
+					const elapsed = Date.now() - startTime;
+					console.log(`[ContractReason] ${fileName} two-phase analysis complete in ${elapsed}ms`);
+					resolve(this._parseAnalysisResponse(params.fullText, fileUri, allEnabledRules));
+				},
+				onError: (err: { message: string }) => {
+					clearTimeout(timeoutId);
+					if (err.message && (err.message.includes('rate') || err.message.includes('429') || err.message.includes('quota'))) {
+						this._rateLimiter.reportRateLimitError();
+					}
+					console.error(`[ContractReason] Phase B error for ${fileName}:`, err.message);
+					resolve(undefined);
+				},
+				onAbort: () => { clearTimeout(timeoutId); resolve(undefined); },
+				logging: { loggingName: `GRC-ContractReason-PhaseB-${fileName}` },
+			});
+		});
+	}
+
+
+	// ─── Function Extraction (used by single-call analysis) ─────────
+
+	/**
+	 * Extract function/method boundaries from source code.
 	 */
 	private _extractFunctions(fileContent: string): Array<{
 		name: string;
@@ -738,11 +1133,12 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		const functions: Array<{ name: string; startLine: number; endLine: number; code: string }> = [];
 		const lines = fileContent.split('\n');
 
-		// Match common function patterns: function decl, method, arrow, exports
+		const CONTROL_FLOW = new Set(['if', 'for', 'while', 'switch', 'do', 'else', 'try', 'catch', 'finally', 'return', 'class', 'new', 'typeof', 'instanceof', 'void', 'delete', 'throw']);
+
 		const fnPatterns = [
 			/^\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)/,
 			/^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?(?:\(|function)/,
-			/^\s*(?:public|private|protected|static|async|\s)*\s+(\w+)\s*\([^)]*\)\s*[:{]/,
+			/^\s*(?:(?:public|private|protected|static|async|override)\s+)+(\w+)\s*\([^)]*\)\s*[:{]/,
 			/^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?\(.*\)\s*=>/,
 		];
 
@@ -758,8 +1154,7 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 				}
 			}
 
-			if (fnName) {
-				// Find the end of this function by tracking brace depth
+			if (fnName && !CONTROL_FLOW.has(fnName)) {
 				let braceDepth = 0;
 				let foundOpen = false;
 				let endLine = i;
@@ -778,17 +1173,15 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 					}
 				}
 
-				// Only include functions with meaningful body (>2 lines)
 				if (endLine - i >= 2) {
 					functions.push({
 						name: fnName,
-						startLine: i + 1, // 1-indexed
+						startLine: i + 1,
 						endLine: endLine + 1,
 						code: lines.slice(i, endLine + 1).join('\n'),
 					});
 				}
 
-				// Skip past this function body
 				i = endLine;
 			}
 		}
@@ -796,18 +1189,26 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 		return functions;
 	}
 
+
+	// ─── Rule Routing & Legacy Multi-Call Helpers ───────────────────
+
 	/**
 	 * Route relevant rules to a function based on its content patterns.
-	 * Instead of sending ALL rules to AI for every function, we select
-	 * rules that are likely relevant based on what the function does.
+	 * Optionally uses a parsed threat model (from Phase A) for semantic routing.
 	 */
 	private _getRelevantRules(
 		fn: { name: string; code: string },
 		allRules: IGRCRule[],
-		context?: INanoAgentContext
+		_context?: INanoAgentContext,
+		threatModel?: { entryPoints?: string[]; sensitiveOps?: string[]; dataFlows?: string[]; assumptions?: string[] }
 	): IGRCRule[] {
 		const code = fn.code.toLowerCase();
 		const relevant: IGRCRule[] = [];
+
+		// Build threat keyword set for semantic routing
+		const threatKeywords = threatModel
+			? [...(threatModel.entryPoints || []), ...(threatModel.sensitiveOps || []), ...(threatModel.dataFlows || [])].join(' ').toLowerCase()
+			: '';
 
 		for (const rule of allRules) {
 			if (!rule.enabled) continue;
@@ -818,30 +1219,53 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 				continue;
 			}
 
-			// Route by tags or content analysis
-			const tags = rule.tags || [];
+			// Threat model semantic routing — if threat model found something related to this rule
+			if (threatModel && threatKeywords) {
+				const ruleTags = (rule.tags || []).map(t => t.toLowerCase());
+				if (ruleTags.some(t => threatKeywords.includes(t))) {
+					relevant.push(rule);
+					continue;
+				}
+				// Also match rule domain against threat keywords
+				if (rule.domain && threatKeywords.includes(rule.domain.toLowerCase())) {
+					relevant.push(rule);
+					continue;
+				}
+			}
+
+			// Domain-based routing using rule.check patterns
+			if (rule.check) {
+				const checkStr = JSON.stringify(rule.check).toLowerCase();
+				const concepts = checkStr.match(/\b\w{4,}\b/g) || [];
+				if (concepts.some(c => code.includes(c))) {
+					relevant.push(rule);
+					continue;
+				}
+			}
+
+			// Fallback: tag / content keyword matching
+			const tags = (rule.tags || []).map(t => t.toLowerCase());
 			const isNetworkRelated = tags.some(t => ['network', 'authentication', 'api'].includes(t))
 				|| code.includes('fetch') || code.includes('axios') || code.includes('http')
 				|| code.includes('req.') || code.includes('res.');
 
-			const isCryptoRelated = tags.some(t => ['crypto', 'encryption'].includes(t))
+			const isCryptoRelated = tags.some(t => ['crypto', 'encryption', 'hash'].includes(t))
 				|| code.includes('crypto') || code.includes('encrypt') || code.includes('hash');
 
-			const isAuthRelated = tags.some(t => ['auth', 'authentication', 'credentials', 'secrets'].includes(t))
+			const isAuthRelated = tags.some(t => ['auth', 'authentication', 'credentials', 'secrets', 'token'].includes(t))
 				|| code.includes('token') || code.includes('password') || code.includes('secret')
 				|| code.includes('apikey') || code.includes('api_key');
 
-			const isDbRelated = tags.some(t => ['sql', 'database', 'sql-injection'].includes(t))
+			const isDbRelated = tags.some(t => ['sql', 'database', 'sql-injection', 'db'].includes(t))
 				|| code.includes('query') || code.includes('execute') || code.includes('sql');
 
-			const isErrorHandling = tags.some(t => ['error-handling', 'async'].includes(t))
+			const isErrorHandling = tags.some(t => ['error-handling', 'async', 'exception'].includes(t))
 				|| code.includes('async') || code.includes('try') || code.includes('catch');
 
-			// Also use nano agent context if available
-			const ctxRelevant = context && context.capabilities && (
-				(context.capabilities.hasNetwork && isNetworkRelated) ||
-				(context.capabilities.hasCrypto && isCryptoRelated) ||
-				(context.capabilities.hasAuth && isAuthRelated)
+			const ctxRelevant = _context && _context.capabilities && (
+				(_context.capabilities.hasNetwork && isNetworkRelated) ||
+				(_context.capabilities.hasCrypto && isCryptoRelated) ||
+				(_context.capabilities.hasAuth && isAuthRelated)
 			);
 
 			if (isNetworkRelated || isCryptoRelated || isAuthRelated || isDbRelated || isErrorHandling || ctxRelevant) {
@@ -859,6 +1283,7 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 
 	/**
 	 * Analyze a single function chunk with AI, using only relevant rules.
+	 * (Preserved for targeted single-function analysis if needed externally.)
 	 */
 	private async _analyzeFunctionChunk(
 		fileUri: URI,
@@ -880,54 +1305,37 @@ Return your understanding as a structured analysis. Be concise but thorough. Foc
 			`- [${r.id}] "${r.message}" (severity: ${r.severity})\n  Intent: ${r.fix || 'N/A'}`
 		).join('\n');
 
-		const prompt = `You are a compliance auditor. Analyze this SINGLE FUNCTION against the framework rules below.
+		const fnSystemMsg = `You are a compliance auditor for critical software. You find violations that static pattern matching misses — aliased variables, indirect flows, obfuscated secrets, and context-dependent issues. Be conservative: only flag real issues with high confidence. Respond ONLY with valid JSON, no prose.`;
+
+		const fnUserMsg = `Analyze this function against the compliance rules below.
 
 FRAMEWORK UNDERSTANDING:
-${frameworkContext.substring(0, 2000)}
+${frameworkContext.substring(0, 6000)}
 
-RULES TO CHECK (only these):
+RULES TO CHECK (only these — use their exact IDs in your response):
 ${rulesSummary}
 
 PATTERN CHECKS ALREADY FOUND IN THIS FUNCTION:
 ${patternSummary}
-
-FUNCTION: ${fn.name} (lines ${fn.startLine}-${fn.endLine})
+${contextSnippet}
+FUNCTION: ${fn.name} (lines ${fn.startLine}-${fn.endLine} in file)
 
 \`\`\`${ext}
 ${fn.code}
 \`\`\`
 
-Respond with ONLY valid JSON:
+Respond with ONLY this JSON structure:
 {
   "additionalViolations": [
-    {
-      "line": <absolute line number in file>,
-      "ruleId": "<rule ID from rules above>",
-      "severity": "error|warning|info",
-      "message": "<what's wrong, mentioning specific variables/flows>",
-      "snippet": "<offending code, max 80 chars>",
-      "aiExplanation": "<why this matters from framework perspective>",
-      "aiConfidence": "high|medium|low"
-    }
+    { "line": <absolute line number in file>, "ruleId": "<exact rule ID from above>", "severity": "error|warning|info", "message": "<what's wrong>", "snippet": "<offending code max 80 chars>", "aiExplanation": "<why this matters>", "aiConfidence": "high|medium|low" }
   ],
   "enrichments": [
-    {
-      "ruleId": "<rule ID>",
-      "line": <number>,
-      "aiExplanation": "<context-specific explanation using actual variable names>",
-      "aiConfidence": "high|medium|low"
-    }
+    { "ruleId": "<exact rule ID>", "line": <number>, "aiExplanation": "<context-specific explanation using actual variable names>", "aiConfidence": "high|medium|low" }
   ],
   "falsePositives": [
-    { "ruleId": "<rule ID>", "line": <number>, "reason": "<why this is likely wrong>" }
+    { "ruleId": "<exact rule ID>", "line": <number>, "reason": "<why the pattern check was wrong>" }
   ]
-}
-
-FOCUS ON:
-- Violations patterns MISSED (obfuscated secrets, aliased variables, indirect flows)
-- Each additionalViolation MUST reference a ruleId from the rules above
-- Be conservative — only flag real issues with high confidence
-- Return ONLY valid JSON${contextSnippet}`;
+}`;
 
 		return new Promise<ContractReasonResult | undefined>((resolve) => {
 			const timeoutId = setTimeout(() => {
@@ -936,8 +1344,8 @@ FOCUS ON:
 
 			this.llmMessageService.sendLLMMessage({
 				messagesType: 'chatMessages',
-				messages: [{ role: 'user', content: prompt }] as LLMChatMessage[],
-				separateSystemMessage: undefined,
+				messages: [{ role: 'user', content: fnUserMsg }] as LLMChatMessage[],
+				separateSystemMessage: fnSystemMsg,
 				chatMode: null,
 				modelSelection: modelSelection as any,
 				modelSelectionOptions: undefined,
@@ -950,7 +1358,6 @@ FOCUS ON:
 				},
 				onError: (err: { message: string }) => {
 					clearTimeout(timeoutId);
-					// Detect rate limit errors and signal the limiter
 					if (err.message && (err.message.includes('rate') || err.message.includes('429') || err.message.includes('quota'))) {
 						this._rateLimiter.reportRateLimitError();
 					}
@@ -964,7 +1371,8 @@ FOCUS ON:
 	}
 
 	/**
-	 * Fallback: analyze the whole file when function extraction isn't possible.
+	 * Analyze the whole file when function extraction isn't possible.
+	 * (Preserved for fallback / external use.)
 	 */
 	private async _analyzeWholeFile(
 		fileUri: URI,
@@ -991,37 +1399,37 @@ FOCUS ON:
 			`- [${r.id}] "${r.message}" (severity: ${r.severity})`
 		).join('\n');
 
-		const prompt = `You are a compliance auditor reviewing code against a regulatory framework.
+		const wfSystemMsg = `You are a compliance auditor for critical software. You find violations that static pattern matching misses. Be conservative: only flag real issues with high confidence. Respond ONLY with valid JSON, no prose.`;
+
+		const wfUserMsg = `Analyze this file against the compliance rules below.
 
 FRAMEWORK UNDERSTANDING:
-${frameworkContext.substring(0, 4000)}
+${frameworkContext.substring(0, 6000)}
 
-RULES TO CHECK:
+RULES TO CHECK (use their exact IDs in your response):
 ${rulesSummary}
 
 PATTERN CHECKS ALREADY FOUND:
 ${patternSummary}
-
+${contextSnippet}
 FILE: ${fileUri.path.split('/').pop()}
 
 \`\`\`${ext}
 ${truncatedCode}
 \`\`\`
 
-Respond with ONLY valid JSON:
+Respond with ONLY this JSON structure:
 {
-  "enrichments": [
-    { "ruleId": "<rule ID>", "line": <number>, "aiExplanation": "<context explanation>", "aiConfidence": "high|medium|low" }
-  ],
   "additionalViolations": [
-    { "line": <number>, "ruleId": "<rule ID from framework>", "severity": "error|warning|info", "message": "<what's wrong>", "snippet": "<code, max 80 chars>", "aiExplanation": "<why this matters>", "aiConfidence": "high|medium|low" }
+    { "line": <number>, "ruleId": "<exact rule ID>", "severity": "error|warning|info", "message": "<what's wrong>", "snippet": "<code max 80 chars>", "aiExplanation": "<why this matters>", "aiConfidence": "high|medium|low" }
+  ],
+  "enrichments": [
+    { "ruleId": "<exact rule ID>", "line": <number>, "aiExplanation": "<context explanation using actual variable names>", "aiConfidence": "high|medium|low" }
   ],
   "falsePositives": [
-    { "ruleId": "<rule ID>", "line": <number>, "reason": "<why likely wrong>" }
+    { "ruleId": "<exact rule ID>", "line": <number>, "reason": "<why the pattern check was wrong>" }
   ]
-}
-
-FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${contextSnippet}`;
+}`;
 
 		return new Promise<ContractReasonResult | undefined>((resolve) => {
 			const timeoutId = setTimeout(() => {
@@ -1031,8 +1439,8 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${
 
 			this.llmMessageService.sendLLMMessage({
 				messagesType: 'chatMessages',
-				messages: [{ role: 'user', content: prompt }] as LLMChatMessage[],
-				separateSystemMessage: undefined,
+				messages: [{ role: 'user', content: wfUserMsg }] as LLMChatMessage[],
+				separateSystemMessage: wfSystemMsg,
 				chatMode: null,
 				modelSelection: modelSelection as any,
 				modelSelectionOptions: undefined,
@@ -1098,7 +1506,8 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${
 	private _parseAnalysisResponse(
 		response: string,
 		fileUri: URI,
-		rules: IGRCRule[]
+		rules: IGRCRule[],
+		riskScore?: number
 	): ContractReasonResult | undefined {
 		try {
 			// Extract JSON from response (handle markdown-wrapped responses)
@@ -1142,6 +1551,10 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${
 					checkSource: 'ai' as const,
 					aiExplanation: v.aiExplanation || `AI detected a potential ${rule.domain} violation.`,
 					aiConfidence: v.aiConfidence || 'medium',
+					// Deep analysis fields
+					dataFlowTrace: Array.isArray(v.dataFlowTrace) ? v.dataFlowTrace : undefined,
+					brokenAssumption: v.brokenAssumption || undefined,
+					riskScore: riskScore,
 				});
 			}
 
@@ -1221,6 +1634,142 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${
 	}
 
 
+	// ─── Scan Tracker API ────────────────────────────────────────────
+
+	public getScanTrackerState(): IScanTrackerState {
+		const entries = Array.from(this._scanEntries.values());
+		return {
+			entries,
+			totalFiles: entries.length,
+			scannedCount: entries.filter(e => e.status === 'scanned').length,
+			skippedCount: entries.filter(e => e.status === 'skipped').length,
+			errorCount: entries.filter(e => e.status === 'error').length,
+			scanningCount: entries.filter(e => e.status === 'scanning').length,
+			isScanning: this._isScanning,
+			lastScanCompleted: this._lastScanCompleted,
+			periodicScanActive: this._periodicScanActive,
+			periodicScanIntervalMs: this._periodicScanIntervalMs,
+		};
+	}
+
+	public scanTrackerBeginScan(fileUris: URI[], riskScores?: Map<string, number>): void {
+		this._isScanning = true;
+		for (const uri of fileUris) {
+			const key = uri.toString();
+			const riskScore = riskScores?.get(key);
+			// Only set to pending if not already tracked from a previous scan
+			if (!this._scanEntries.has(key)) {
+				this._scanEntries.set(key, {
+					fileUri: key,
+					fileName: uri.path.split('/').pop() || 'unknown',
+					status: 'pending',
+					timestamp: Date.now(),
+					riskScore,
+				});
+			} else {
+				// Re-queue: reset to pending unless already scanned with same hash
+				const existing = this._scanEntries.get(key)!;
+				if (existing.status !== 'scanned' && existing.status !== 'skipped') {
+					existing.status = 'pending';
+					existing.timestamp = Date.now();
+				}
+				// Always update risk score when available
+				if (riskScore !== undefined) existing.riskScore = riskScore;
+			}
+		}
+		this._fireScanTrackerUpdate();
+	}
+
+	public scanTrackerEndScan(): void {
+		this._isScanning = false;
+		this._lastScanCompleted = Date.now();
+		this._fireScanTrackerUpdate();
+	}
+
+	public scanTrackerReset(): void {
+		this._scanEntries.clear();
+		this._fireScanTrackerUpdate();
+	}
+
+	public scanTrackerSetPeriodicState(active: boolean, intervalMs?: number): void {
+		this._periodicScanActive = active;
+		if (intervalMs !== undefined) {
+			this._periodicScanIntervalMs = intervalMs;
+		}
+		this._fireScanTrackerUpdate();
+	}
+
+	/** Internal: mark a file as scanning */
+	private _scanTrackerMarkScanning(fileUri: URI): void {
+		const key = fileUri.toString();
+		const entry = this._scanEntries.get(key);
+		if (entry) {
+			entry.status = 'scanning';
+			entry.timestamp = Date.now();
+		} else {
+			this._scanEntries.set(key, {
+				fileUri: key,
+				fileName: fileUri.path.split('/').pop() || 'unknown',
+				status: 'scanning',
+				timestamp: Date.now(),
+			});
+		}
+		this._fireScanTrackerUpdate();
+	}
+
+	/** Internal: mark a file as scanned with result count */
+	private _scanTrackerMarkScanned(fileUri: URI, violationCount: number): void {
+		const key = fileUri.toString();
+		const entry = this._scanEntries.get(key) || {
+			fileUri: key,
+			fileName: fileUri.path.split('/').pop() || 'unknown',
+			status: 'scanned' as const,
+			timestamp: Date.now(),
+		};
+		entry.status = 'scanned';
+		entry.violationCount = violationCount;
+		entry.timestamp = Date.now();
+		this._scanEntries.set(key, entry);
+		this._fireScanTrackerUpdate();
+	}
+
+	/** Internal: mark a file as skipped (cache hit or duplicate) */
+	private _scanTrackerMarkSkipped(fileUri: URI, reason: string): void {
+		const key = fileUri.toString();
+		const entry = this._scanEntries.get(key) || {
+			fileUri: key,
+			fileName: fileUri.path.split('/').pop() || 'unknown',
+			status: 'skipped' as const,
+			timestamp: Date.now(),
+		};
+		entry.status = 'skipped';
+		entry.skipReason = reason;
+		entry.timestamp = Date.now();
+		this._scanEntries.set(key, entry);
+		// Don't fire on every skip during bulk scan — too noisy
+	}
+
+	/** Internal: mark a file as errored */
+	private _scanTrackerMarkError(fileUri: URI, errorMessage: string): void {
+		const key = fileUri.toString();
+		const entry = this._scanEntries.get(key) || {
+			fileUri: key,
+			fileName: fileUri.path.split('/').pop() || 'unknown',
+			status: 'error' as const,
+			timestamp: Date.now(),
+		};
+		entry.status = 'error';
+		entry.errorMessage = errorMessage;
+		entry.timestamp = Date.now();
+		this._scanEntries.set(key, entry);
+		this._fireScanTrackerUpdate();
+	}
+
+	private _fireScanTrackerUpdate(): void {
+		this._onDidScanTrackerUpdate.fire(this.getScanTrackerState());
+	}
+
+
 	// ─── Helpers ─────────────────────────────────────────────────────
 
 	/**
@@ -1228,6 +1777,101 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${
 	 * These files are excluded from scanning but provide important context
 	 * for AI reasoning about the code being analyzed.
 	 */
+	/**
+	 * Build a cross-file dependency context snippet for the LLM prompt.
+	 * Includes focused excerpts from files that import or are imported by the target.
+	 */
+	private _buildDependencyContext(
+		fileUri: URI,
+		fileContent: string,
+		allFileContents?: Map<string, string>
+	): string {
+		if (!allFileContents || allFileContents.size === 0) return '';
+
+		const targetPath = fileUri.path;
+		const targetName = targetPath.split('/').pop() || 'unknown';
+		const targetDir = targetPath.replace(/\/[^/]+$/, '');
+
+		// Find what this file imports (simple relative import scan)
+		const importedPaths: string[] = [];
+		const importRegex = /from\s+['"](\.[^'"]+)['"]/g;
+		let match: RegExpExecArray | null;
+		while ((match = importRegex.exec(fileContent)) !== null) {
+			importedPaths.push(match[1]);
+		}
+
+		// Find files that import this file (dependents) by scanning allFileContents
+		const targetBaseName = targetName.replace(/\.[^.]+$/, '');
+		const dependentEntries: Array<[string, string]> = [];
+		const dependencyEntries: Array<[string, string]> = [];
+
+		for (const [uriStr, content] of allFileContents) {
+			if (uriStr === fileUri.toString()) continue;
+
+			// Check if this file imports the target
+			const importsTarget = content.includes(`'${targetBaseName}'`) ||
+				content.includes(`"${targetBaseName}"`) ||
+				content.includes(`/${targetBaseName}'`) ||
+				content.includes(`/${targetBaseName}"`);
+
+			if (importsTarget && dependentEntries.length < 3) {
+				dependentEntries.push([uriStr, content]);
+			}
+		}
+
+		// For each import path, find the matching file in allFileContents
+		for (const importPath of importedPaths.slice(0, 3)) {
+			// Resolve relative to target dir
+			const parts = importPath.split('/');
+			let resolved = targetDir;
+			for (const part of parts) {
+				if (part === '.' || part === '') continue;
+				if (part === '..') { resolved = resolved.replace(/\/[^/]+$/, ''); }
+				else resolved = `${resolved}/${part}`;
+			}
+
+			// Find matching entry in allFileContents
+			for (const [uriStr, content] of allFileContents) {
+				const uriPath = URI.parse(uriStr).path;
+				const uriBase = uriPath.replace(/\.[^.]+$/, '');
+				if (uriBase === resolved || uriBase.endsWith(resolved.split('/').pop() || '')) {
+					if (dependencyEntries.length < 3) {
+						dependencyEntries.push([uriStr, content]);
+					}
+					break;
+				}
+			}
+		}
+
+		if (dependentEntries.length === 0 && dependencyEntries.length === 0) return '';
+
+		const MAX_CHARS = 2000;
+		const sections: string[] = [];
+
+		// Files this file imports (dependencies)
+		for (const [uriStr, content] of dependencyEntries) {
+			const name = uriStr.split('/').pop() || 'unknown';
+			const excerpt = content.length > MAX_CHARS ? content.substring(0, MAX_CHARS) + '\n... (truncated)' : content;
+			sections.push(`// DEPENDENCY: ${name} (imported by ${targetName})\n${excerpt}`);
+		}
+
+		// Files that import this file (dependents)
+		for (const [uriStr, content] of dependentEntries) {
+			const name = uriStr.split('/').pop() || 'unknown';
+			const excerpt = content.length > MAX_CHARS ? content.substring(0, MAX_CHARS) + '\n... (truncated)' : content;
+			sections.push(`// DEPENDENT: ${name} (imports from ${targetName})\n${excerpt}`);
+		}
+
+		return `\n\nCROSS-FILE CONTEXT:
+These files are connected to ${targetName} via imports. Check for:
+- Tainted data flowing across file boundaries
+- Missing validation at import boundaries
+- Inconsistent error handling across the call chain
+- Auth checks bypassed by callers
+
+${sections.join('\n\n---\n\n')}`;
+	}
+
 	private _buildContextFilesSnippet(contextFiles?: Map<string, string>): string {
 		if (!contextFiles || contextFiles.size === 0) return '';
 
@@ -1258,6 +1902,9 @@ FOCUS ON: violations patterns MISSED. Be conservative. Return ONLY valid JSON.${
 		}
 		return hash.toString(36);
 	}
+
+	// Preserved for targeted per-function analysis (future: coding agent deep-scan)
+	private readonly _legacyAnalyzers = [this._analyzeFunctionChunk, this._mergeResults];
 }
 
 
