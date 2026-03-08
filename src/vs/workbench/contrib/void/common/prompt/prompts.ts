@@ -396,7 +396,8 @@ export const availableTools = (chatMode: ChatMode | null, mcpTools: InternalTool
 
 	const builtinToolNames: BuiltinToolName[] | undefined = (chatMode === 'ask' || chatMode === 'reason' || chatMode === 'gather') ? (Object.keys(builtinTools) as BuiltinToolName[]).filter(toolName => !(toolName in approvalTypeOfBuiltinToolName))
 		: (chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'agent') ? Object.keys(builtinTools) as BuiltinToolName[]
-			: undefined
+			: (chatMode === 'power' || chatMode === 'checks') ? [] as BuiltinToolName[]
+				: undefined
 
 	let effectiveBuiltinTools = builtinToolNames?.map(toolName => builtinTools[toolName]) ?? undefined
 
@@ -409,7 +410,7 @@ export const availableTools = (chatMode: ChatMode | null, mcpTools: InternalTool
 		);
 	}
 
-	const effectiveMCPTools = (chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'reason' || chatMode === 'ask') ? mcpTools : undefined
+	const effectiveMCPTools = (chatMode === 'power' || chatMode === 'checks' || chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'reason' || chatMode === 'ask') ? mcpTools : undefined
 
 	const tools: InternalToolInfo[] | undefined = !(builtinToolNames || mcpTools) ? undefined
 		: [

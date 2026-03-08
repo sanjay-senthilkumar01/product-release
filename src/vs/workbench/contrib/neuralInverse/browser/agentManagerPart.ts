@@ -17,6 +17,9 @@ import { IVoidSettingsService } from '../../void/common/voidSettingsService.js';
 import { mountSidebar } from '../../void/browser/react/out/sidebar-tsx/index.js';
 import { toDisposable } from '../../../../base/common/lifecycle.js';
 import { IWorkflowAgentService } from './workflowAgentService.js';
+import { IPowerModeService } from '../../powerMode/browser/powerModeService.js';
+import { PowerModeTerminalHost } from '../../powerMode/browser/powerModeTerminalHost.js';
+import { ITerminalService } from '../../terminal/browser/terminal.js';
 
 export class AgentManagerPart extends Part {
 
@@ -28,6 +31,7 @@ export class AgentManagerPart extends Part {
     maximumHeight: number = Infinity;
 
     private webviewElement: IWebviewElement | undefined;
+    private powerModeTerminal: PowerModeTerminalHost | undefined;
     private readonly disposables = new DisposableStore();
 
     constructor(
@@ -40,6 +44,8 @@ export class AgentManagerPart extends Part {
         @IAgentStoreService private readonly agentStore: IAgentStoreService,
         @IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
         @IWorkflowAgentService private readonly workflowAgentService: IWorkflowAgentService,
+        @IPowerModeService private readonly powerModeService: IPowerModeService,
+        @ITerminalService private readonly terminalService: ITerminalService,
     ) {
         super(AgentManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
         this.registerListeners();
@@ -109,25 +115,43 @@ export class AgentManagerPart extends Part {
         const voidContainer = document.createElement('div');
         voidContainer.style.width = '100%';
         voidContainer.style.height = '100%';
-        // voidContainer.style.display = 'none';
         body.appendChild(voidContainer);
+
+        // VIEW 3: Power Mode
+        const powerModeContainer = document.createElement('div');
+        powerModeContainer.style.width = '100%';
+        powerModeContainer.style.height = '100%';
+        powerModeContainer.style.position = 'relative';
+        body.appendChild(powerModeContainer);
 
 
         // State Management
+        const allContainers = [agentContainer, voidContainer, powerModeContainer];
+        let allTabs: HTMLElement[] = [];
 
-        const updateView = (view: 'manager' | 'chat') => {
+        const updateView = (view: 'manager' | 'chat' | 'powermode') => {
+            // Hide all
+            for (const c of allContainers) { c.style.display = 'none'; }
+            for (const t of allTabs) { styleInactive(t); }
+
             if (view === 'manager') {
                 agentContainer.style.display = 'block';
-                voidContainer.style.display = 'none';
-
                 styleActive(tabAgents);
-                styleInactive(tabChat);
-            } else {
-                agentContainer.style.display = 'none';
+            } else if (view === 'chat') {
                 voidContainer.style.display = 'block';
-
-                styleInactive(tabAgents);
                 styleActive(tabChat);
+            } else if (view === 'powermode') {
+                powerModeContainer.style.display = 'block';
+                styleActive(tabPowerMode);
+                // Lazy-init real xterm terminal
+                if (!this.powerModeTerminal) {
+                    this.powerModeTerminal = new PowerModeTerminalHost(this.terminalService, this.powerModeService);
+                    this.disposables.add(this.powerModeTerminal);
+                    this.powerModeTerminal.createTerminal(powerModeContainer);
+                } else {
+                    // Re-fit terminal when tab becomes visible again
+                    setTimeout(() => this.powerModeTerminal?.layout(), 50);
+                }
             }
         };
 
@@ -145,9 +169,13 @@ export class AgentManagerPart extends Part {
 
         const tabChat = createTab('Chat', () => updateView('chat'));
         const tabAgents = createTab('Agents', () => updateView('manager'));
+        const tabPowerMode = createTab('Power Mode', () => updateView('powermode'));
+
+        allTabs = [tabChat, tabAgents, tabPowerMode];
 
         tabsContainer.appendChild(tabChat);
         tabsContainer.appendChild(tabAgents);
+        tabsContainer.appendChild(tabPowerMode);
 
         // Initialize view
         updateView('chat');

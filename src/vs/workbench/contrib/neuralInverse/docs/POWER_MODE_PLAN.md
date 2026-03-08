@@ -1,170 +1,148 @@
-# Void Power Mode — OpenCode Integration Plan
+# Neural Inverse Power Mode — Implementation Plan
 
-## Background
+## Decision: Fork OpenCode as In-Process Library
 
-We evaluated all major open source agentic coding tools for integration into Void IDE:
+One-time code acquisition from `sst/opencode` (MIT license, TypeScript).
+Not tracking upstream. Evolving independently under Neural Inverse branding based on our own user data.
 
-| Tool       | Stars | LLM Agnostic | License    | Notes                              |
-|------------|-------|--------------|------------|------------------------------------|
-| Claude Code | 74k  | No           | Check repo | Anthropic-only LLM                 |
-| OpenHands  | 68k   | Yes          | MIT        | Python-based, SWEBench 77.6%       |
-| Cline      | 58k   | Yes          | Apache 2.0 | VS Code extension, good fit        |
-| Goose      | 32k   | Yes          | Apache 2.0 | MCP support, extensible            |
-| Plandex    | 15k   | Yes          | MIT        | Terminal, large multi-file tasks   |
-| **OpenCode** | **117k** | **Yes** | **MIT** | **Selected — see reasoning below** |
-
-## Why OpenCode
-
-- Largest community (117k stars, beats Claude Code)
-- MIT license — commercially safe to fork and rebrand
+### Why OpenCode as starting point
+- 117k stars, battle-tested agent loop and tool implementations
 - TypeScript 53% — same stack as Void
-- Client/server architecture — agent runs as background process, UI is just a client (naturally detachable)
-- 75+ LLM providers via Models.dev — plugs directly into Void's BYOLLM story
-- Built-in LSP support — understands codebase structure
-- Two built-in agents: `build` (full access) + `plan` (read-only) — maps to regulated environments
-- Multi-session parallel agents — maps to Workflow orchestration
-- Already has IDE extension path in their roadmap
+- MIT license — commercially clean
+- Two built-in agents (build + plan) — maps to regulated environments
+- Multi-session support already implemented
+- LSP-aware codebase understanding
 
-## Architecture Overview
+### Embedding Strategy: In-Process Library (Option B)
 
-OpenCode uses a client/server model:
+Strip OpenCode down to its core agent loop + tool implementations.
+Import directly into the VS Code extension host as a library module — no child process, no HTTP/WS layer.
 
 ```
-opencode server (Node.js)       <- Agent brain, LLM calls, tools
-- Runs as background process
-- Exposes local HTTP/WS API
-- Manages sessions
+OpenCode fork (stripped)
+  - Agent execution loop
+  - Tool implementations (file, terminal, git, search, etc.)
+  - Session state management
+  - Context/prompt construction
 
-Clients (all connect to same server):
-  TUI (ink)    Desktop (Tauri)    IDE Extension (coming)
+Void integration layer
+  - VoidProviderAdapter: maps OpenCode's model interface -> ILLMMessageService
+  - PowerModeService: DI service wrapping the fork's session API
+  - PowerModeUI: ocean blue terminal webview in Agent Manager
 ```
 
-The server is detachable by design. The TUI is just a client.
-In Void, we replace the TUI client with a webview panel inside Agent Manager.
+### What gets stripped from the fork
+- TUI client (ink)
+- Tauri desktop build
+- HTTP/WS server layer
+- Provider config system (replaced by ILLMMessageService)
+- opencode.json config (replaced by IVoidSettingsService)
 
-## Target UI Layout
+### What gets kept
+- Core agent loop (plan + build agents)
+- All tool implementations
+- Session state machine
+- Context construction (AGENTS.md, codebase indexing)
+- Token counting / context window management
+
+## Coexistence
+
+Power Mode is a separate execution path from the existing WorkflowAgentService / AgenticModeService.
+Those stay as-is for structured workflow agents. Power Mode is the free-form "Claude Code" experience.
 
 ```
 Agent Manager
-[Agents]  [Workflows]  [Power Mode]
---------------------------------------------
-Left Panel          |  Right Panel
-                    |
-Sessions            |  Terminal-style output stream
----------           |  (monospace, ANSI colors)
-> Session 1         |
-> Session 2         |  > Reading src/auth.ts...
-                    |  > Running: tsc --noEmit
-Files Changed       |  > 0 errors
----------           |  > Writing fix to auth.ts
-auth.ts (edited)    |  > Done
-index.ts            |
-                    |  [ Type your instruction... ]
-Tool Calls          |
----------           |  [Stop]  [Detach]  [New Session]
-> read_file         |
-> bash              |
-> write_file        |
---------------------------------------------
+  [Agents]  [Workflows]  [Power Mode]
+                              ^
+                              |
+                         This is new
 ```
 
-Detach button opens an auxiliary VS Code window.
-Session continues running when the panel is closed.
-Status bar entry: "Power Mode running" — click to reconnect.
+## LLM Routing
+
+Power Mode uses Void's existing ILLMMessageService.
+User's configured provider (Anthropic / OpenAI / Azure / Ollama / etc.) flows through automatically.
+No separate API key config needed — BYOLLM works out of the box.
+
+## UI: Ocean Blue Terminal
+
+Rendered in a webview panel inside Agent Manager (Power Mode tab).
+
+```
++-------------------------------------------+
+| [Agents]  [Workflows]  [Power Mode]      |
++-------------------------------------------+
+|                                           |
+|  Sessions        |  Terminal Output       |
+|  -----------     |  (ocean blue bg)       |
+|  > Session 1     |  (monospace, ANSI)     |
+|  > Session 2     |                        |
+|                  |  > Reading src/...     |
+|  Files Changed   |  > Running tsc...      |
+|  -----------     |  > 0 errors            |
+|  auth.ts         |  > Writing fix...      |
+|  index.ts        |  > Done                |
+|                  |                        |
+|  Tool Calls      |  [instruction input ]  |
+|  -----------     |                        |
+|  > read_file     |  [Stop] [New Session]  |
+|  > bash          |                        |
++-------------------------------------------+
+```
 
 ## Build Phases
 
-### Phase 0 — Research (Before Writing Code)
-- Dig into OpenCode source: server API surface, provider interface, tool execution pipeline
-- Identify exact integration points for LLM provider swap and tool interception
-- Validate that the server can be embedded as a Node.js child process inside VS Code extension host
-
 ### Phase 1 — Fork and Strip
-- Fork `sst/opencode` into Void monorepo under:
-  `src/vs/workbench/contrib/powerMode/`
-- Remove Tauri desktop build
-- Keep: `packages/opencode` (server core), TypeScript provider abstraction
-- Rename package names: `opencode` -> `void-power-mode`
-- Preserve all MIT license headers
-- Verify standalone build works
+- Fork `sst/opencode` into `src/vs/workbench/contrib/powerMode/`
+- Remove: TUI, Tauri, HTTP server, WS layer, provider config
+- Keep: agent core, tools, session state, context construction
+- Rename all package references: opencode -> neural-inverse-power
+- Preserve MIT license headers on all forked files
+- Verify the stripped core compiles standalone
 
-### Phase 2 — Wire ILLMMessageService (Critical Path)
-Replace OpenCode's provider layer with Void's existing LLM stack:
+### Phase 2 — Wire to Void LLM Stack
+- Implement VoidProviderAdapter: OpenCode model interface -> ILLMMessageService
+- Map model selection to IVoidSettingsService (user's configured provider)
+- Implement PowerModeService as DI singleton wrapping session lifecycle
+- Register: `createDecorator<IPowerModeService>('powerModeService')`
 
-```
-OpenCode provider interface
-        |
-VoidProviderAdapter
-        |
-ILLMMessageService  (existing Void service)
-        |
-User's configured LLM (Anthropic / OpenAI / Azure / Ollama / etc.)
-```
+### Phase 3 — Ocean Blue Terminal UI
+- Add [Power Mode] tab to Agent Manager webview
+- xterm.js for terminal rendering with ANSI color support
+- Ocean blue color scheme (#0a1628 background, #e2e8f0 text, #38bdf8 accents)
+- Left sidebar: session list, files changed, tool call log
+- Right panel: streaming terminal output
+- Bottom: instruction input bar + Stop / New Session controls
+- Session persists when panel is closed — status bar shows running state
 
-- Map OpenCode's provider config schema to IVoidSettingsService
-- Write VoidProviderAdapter implementing OpenCode's model interface
-- Inject at server startup — no opencode.json config needed
-- BYOLLM works automatically
+### Phase 4 — Session Management
+- Multi-session support: run parallel agent sessions
+- Session persistence across IDE restarts (IStorageService)
+- Session history browser
+- Reconnect to running session when re-opening panel
 
-### Phase 3 — Embed in Agent Manager (Power Mode Tab)
-- Add [Power Mode] tab to Agent Manager sidebar
-- Webview connects to void-power-mode server via local WebSocket
-- Left panel: session list, file change tracker, tool call log
-- Right panel: streaming output with ANSI color support
-- Input bar at bottom
-- Detach button opens auxiliary window (session keeps running)
-
-### Phase 4 — GRC Gates (Core Differentiator)
-Intercept destructive tool calls and check against active compliance frameworks:
-
-```
-Tool call request
-      |
-VoidToolGate.check(toolName, args)
-      |
-neuralInverseChecks GRC engine
-      |
-   Allow          Block / Require Approval
-     |                    |
-  Execute         Approval dialog in panel
-                  [Allow once] [Allow always] [Deny]
-```
-
-- Hook into OpenCode's tool execution pipeline
-- `bash`, `write_file`, `git_commit` route through GRC engine
-- Inline approval cards shown in output stream
-- Every approved/denied tool call logged for audit trail
-
-### Phase 5 — Detachable Window + Status Bar
-- On Detach: open auxiliary VS Code window connected to same WS session
-- Status bar: `$(sync~spin) Power Mode running` — click to reopen panel
-- Session state lives in server process, not the webview
-- Reconnect: panel re-subscribes to existing session stream
-
-### Phase 6 — AGENTS.md + Void Context Injection
-OpenCode uses `AGENTS.md` for project context. Enhance with Void's GRC knowledge:
-- Auto-generate `AGENTS.md` including:
+### Phase 5 — Context Injection (Neural Inverse Aware)
+- Auto-generate AGENTS.md equivalent with:
   - Active compliance frameworks from neuralInverseChecks
-  - Blocked patterns / restricted APIs for the project
+  - Blocked patterns / restricted APIs
   - Workspace structure summary
+- Feed into agent system prompt
 - Regenerate on framework changes
 
-## Why This Is the Right Product for Regulated/Critical Software
+### Phase 6 — GRC Gates (Deferred — Separate Track)
+- Tool execution interception
+- Approval flow for destructive operations
+- Audit trail
+- Will be planned and built as its own dedicated effort
 
-Claude Code and every other agentic tool gives you NO:
-- Audit trail of agent actions
-- Approval gates before destructive operations
-- Compliance framework awareness
-- Air-gap / custom LLM routing
+## Key Files
 
-Void Power Mode has ALL of these because the GRC engine is already built.
-This is the moat. No one else is building agentic execution for regulated enterprises.
-
-## Key Files to Reference
-- GRC Engine: `neuralInverseChecks/browser/engine/services/grcEngineService.ts`
-- Contract Reason: `neuralInverseChecks/browser/engine/services/contractReasonService.ts`
-- LLM Service: `void/common/sendLLMMessageService.ts`
-- Settings Service: `void/common/voidSettingsService.ts`
-- Agent Manager UI: `neuralInverse/browser/agentManagerPart.ts`
-- Workflow Agent Service: `neuralInverse/browser/workflowAgentService.ts`
-- Agentic Mode Service: `neuralInverse/browser/agenticModeService.ts`
+| Purpose | Path |
+|---------|------|
+| Power Mode core | `contrib/powerMode/` (forked from OpenCode) |
+| DI service | `contrib/powerMode/browser/powerModeService.ts` |
+| Provider adapter | `contrib/powerMode/browser/voidProviderAdapter.ts` |
+| Terminal UI | `contrib/powerMode/browser/powerModePanel.ts` |
+| Agent Manager tab | `contrib/neuralInverse/browser/agentManagerPart.ts` (modified) |
+| Existing LLM stack | `contrib/void/common/sendLLMMessageService.ts` |
+| Existing settings | `contrib/void/common/voidSettingsService.ts` |

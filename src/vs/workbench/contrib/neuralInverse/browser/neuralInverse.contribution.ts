@@ -23,6 +23,7 @@ import '../../neuralInverseUserProfile/browser/neuralInverseUserProfile.contribu
 import './fim/neuralInverseFIMService.js';
 import './context/input/astContextService.js';
 import './context/graph/dependencyGraph.js';
+import '../../powerMode/browser/powerMode.contribution.js'; // Register Power Mode service
 
 
 

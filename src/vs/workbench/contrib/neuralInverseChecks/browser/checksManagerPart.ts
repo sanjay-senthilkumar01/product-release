@@ -34,6 +34,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { IVoidSettingsService } from '../../void/common/voidSettingsService.js';
 import { IExternalToolService } from './engine/services/externalToolService.js';
 import { IExternalJob } from './engine/types/externalJobTypes.js';
+import { IChecksAgentService } from './checksAgent/checksAgentService.js';
+import { ChecksAgentTerminalHost } from './checksAgent/checksAgentTerminalHost.js';
 
 export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProvider {
 
@@ -54,6 +56,8 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
     private auditAndEvidenceControl: AuditAndEvidenceControl | undefined;
     private failSafeDefaultsControl: FailSafeDefaultsControl | undefined;
     private formalVerificationControl: FormalVerificationControl | undefined;
+    private checksAgentTerminalHost: ChecksAgentTerminalHost | undefined;
+    private checksAgentContainer: HTMLElement | undefined;
     private sidebarVisible: boolean = true;
     private terminalContainer: HTMLElement | undefined;
     private terminalBody: HTMLElement | undefined;
@@ -64,7 +68,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
     private _sash: Sash | undefined;
     private _startHeight: number = 0;
     private _currentDomain: string | undefined = undefined;
-    private _currentViewMode: 'dashboard' | 'ignore' | 'impact' | 'nano' | 'chat' | 'frameworks' | 'external-tools' = 'dashboard';
+    private _currentViewMode: 'dashboard' | 'ignore' | 'impact' | 'nano' | 'chat' | 'frameworks' | 'external-tools' | 'checks-agent' = 'dashboard';
     private _frameworksImportOpen = false;
     private _webviewInteractionLocked = false;
     private _webviewInteractionTimer: ReturnType<typeof setTimeout> | undefined = undefined;
@@ -88,6 +92,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         @IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
         @IFrameworkRegistry private readonly frameworkRegistry: IFrameworkRegistry,
         @IExternalToolService private readonly externalToolService: IExternalToolService,
+        @IChecksAgentService private readonly checksAgentService: IChecksAgentService,
     ) {
         super(ChecksManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
     }
@@ -384,12 +389,17 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         voidContainer.style.cssText = 'width:100%;height:100%;display:none';
         body.appendChild(voidContainer);
 
+        // VIEW: Checks Agent terminal — hidden until selected, lazily initialized
+        this.checksAgentContainer = document.createElement('div');
+        this.checksAgentContainer.style.cssText = 'width:100%;height:100%;display:none;overflow:hidden';
+        body.appendChild(this.checksAgentContainer);
+
         // Terminal Container (Appended last to be at bottom)
         body.appendChild(this.terminalContainer);
 
 
         // ── Sidebar Navigation ────────────────────────────────────────
-        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'impact' | 'audit' | 'ignore' | 'nano' | 'chat' | 'frameworks' | 'external-tools';
+        type ViewId = 'all' | 'security' | 'compliance' | 'policy' | 'architecture' | 'data-integrity' | 'fail-safe' | 'reliability' | 'availability' | 'processing-integrity' | 'confidentiality' | 'formal-verification' | 'impact' | 'audit' | 'ignore' | 'nano' | 'chat' | 'frameworks' | 'external-tools' | 'checks-agent';
         const DOMAIN_MAP: Partial<Record<ViewId, string>> = {
             security: 'security', compliance: 'compliance', policy: 'policy',
             architecture: 'architecture', 'data-integrity': 'data-integrity',
@@ -431,6 +441,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
              policyContainer, aacContainer, cacContainer, sacContainer,
              dicContainer, aedContainer, fsdContainer, fvContainer
             ].forEach(el => { el.style.display = 'none'; });
+            if (this.checksAgentContainer) { this.checksAgentContainer.style.display = 'none'; }
             this.nanoAgentsControl?.hide();
             this.codeAsPolicyControl?.hide();
             this.architectureAsCodeControl?.hide();
@@ -485,6 +496,19 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 if (this.webviewElement) {
                     this.webviewElement.setHtml(this._getExternalToolsHtml());
                 }
+            } else if (view === 'checks-agent') {
+                if (this.checksAgentContainer) {
+                    this.checksAgentContainer.style.display = 'block';
+                    // Lazily create the terminal on first show
+                    if (!this.checksAgentTerminalHost) {
+                        this.checksAgentTerminalHost = this._register(
+                            new ChecksAgentTerminalHost(this.terminalService, this.checksAgentService)
+                        );
+                        this.checksAgentTerminalHost.createTerminal(this.checksAgentContainer);
+                    }
+                }
+                this._currentViewMode = 'checks-agent';
+                this._currentDomain = undefined;
             } else {
                 checksContainer.style.display = 'block';
                 this._currentViewMode = 'dashboard';
@@ -574,6 +598,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         addSidebarLabel('Tools');
         createSidebarItem('Nano Agents', 'nano', '◇');
         createSidebarItem('Chat', 'chat', '◉');
+        createSidebarItem('Checks Agent', 'checks-agent', '⊗');
 
         // Initialize view
         updateView('all');
@@ -661,11 +686,11 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
                 if (this._currentViewMode === 'ignore') refreshWebview(true);
             } else if (msg.type === 'askAgentAboutViolation') {
                 const v = msg as any;
-                const question = `Explain this GRC violation and suggest a fix:\n- Rule: ${v.ruleId}\n- File: ${v.file}\n- Line: ${v.line}\n- Message: ${v.message}`;
-                // Switch to nano agents view and prefill the question
-                updateView('nano');
+                const question = `Explain this GRC violation:\n- Rule: ${v.ruleId}\n- File: ${v.file}\n- Line: ${v.line}\n- Message: ${v.message}`;
+                // Switch to Checks Agent view and prefill the question
+                updateView('checks-agent');
                 setTimeout(() => {
-                    this.nanoAgentsControl?.askWithPrefill(question);
+                    this.checksAgentTerminalHost?.prefill(question);
                 }, 300);
             } else if (msg.type === 'runExternalTool') {
                 const ruleId = (msg as any).ruleId as string;
@@ -2935,6 +2960,13 @@ document.getElementById('patternInput').addEventListener('keydown', function(e) 
         this.auditAndEvidenceControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
         this.failSafeDefaultsControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
         this.formalVerificationControl?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+
+        if (this.checksAgentContainer) {
+            const agentW = Math.max(0, width - sidebarWidth);
+            this.checksAgentContainer.style.width = `${agentW}px`;
+            this.checksAgentContainer.style.height = `${contentHeight}px`;
+            this.checksAgentTerminalHost?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        }
 
         if (this.terminalVisible && this.terminalInstance && this.terminalInstance.xterm) {
             const font = this.terminalInstance.xterm.getFont();
