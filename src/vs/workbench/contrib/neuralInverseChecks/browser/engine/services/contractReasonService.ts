@@ -1281,99 +1281,6 @@ JSON response:
 		return relevant;
 	}
 
-	/**
-	 * Analyze a single function chunk with AI, using only relevant rules.
-	 * (Preserved for targeted single-function analysis if needed externally.)
-	 */
-	private async _analyzeFunctionChunk(
-		fileUri: URI,
-		fn: { name: string; startLine: number; endLine: number; code: string },
-		ext: string,
-		patternResults: ICheckResult[],
-		relevantRules: IGRCRule[],
-		frameworkContext: string,
-		modelSelection: { providerName: string; modelName: string },
-		contextSnippet: string = ''
-	): Promise<ContractReasonResult | undefined> {
-		const patternSummary = patternResults.length > 0
-			? patternResults.map(r =>
-				`  Line ${r.line}: [${r.ruleId}] ${r.message.substring(0, 100)}`
-			).join('\n')
-			: '  (No violations found by pattern checks for this function)';
-
-		const rulesSummary = relevantRules.map(r =>
-			`- [${r.id}] "${r.message}" (severity: ${r.severity})\n  Intent: ${r.fix || 'N/A'}`
-		).join('\n');
-
-		const fnSystemMsg = `You are a compliance auditor for critical software. You find violations that static pattern matching misses — aliased variables, indirect flows, obfuscated secrets, and context-dependent issues. Be conservative: only flag real issues with high confidence. Respond ONLY with valid JSON, no prose.`;
-
-		const fnUserMsg = `Analyze this function against the compliance rules below.
-
-FRAMEWORK UNDERSTANDING:
-${frameworkContext.substring(0, 6000)}
-
-RULES TO CHECK (only these — use their exact IDs in your response):
-${rulesSummary}
-
-PATTERN CHECKS ALREADY FOUND IN THIS FUNCTION:
-${patternSummary}
-${contextSnippet}
-FUNCTION: ${fn.name} (lines ${fn.startLine}-${fn.endLine} in file)
-
-\`\`\`${ext}
-${fn.code}
-\`\`\`
-
-Respond with ONLY this JSON structure:
-{
-  "additionalViolations": [
-    { "line": <absolute line number in file>, "ruleId": "<exact rule ID from above>", "severity": "error|warning|info", "message": "<what's wrong>", "snippet": "<offending code max 80 chars>", "aiExplanation": "<why this matters>", "aiConfidence": "high|medium|low" }
-  ],
-  "enrichments": [
-    { "ruleId": "<exact rule ID>", "line": <number>, "aiExplanation": "<context-specific explanation using actual variable names>", "aiConfidence": "high|medium|low" }
-  ],
-  "falsePositives": [
-    { "ruleId": "<exact rule ID>", "line": <number>, "reason": "<why the pattern check was wrong>" }
-  ]
-}`;
-
-		return new Promise<ContractReasonResult | undefined>((resolve) => {
-			const timeoutId = setTimeout(() => {
-				resolve(undefined);
-			}, 20_000);
-
-			this.llmMessageService.sendLLMMessage({
-				messagesType: 'chatMessages',
-				messages: [{ role: 'user', content: fnUserMsg }] as LLMChatMessage[],
-				separateSystemMessage: fnSystemMsg,
-				chatMode: null,
-				modelSelection: modelSelection as any,
-				modelSelectionOptions: undefined,
-				overridesOfModel: undefined,
-				onText: () => { },
-				onFinalMessage: (params: { fullText: string }) => {
-					clearTimeout(timeoutId);
-					const result = this._parseAnalysisResponse(params.fullText, fileUri, relevantRules);
-					resolve(result);
-				},
-				onError: (err: { message: string }) => {
-					clearTimeout(timeoutId);
-					if (err.message && (err.message.includes('rate') || err.message.includes('429') || err.message.includes('quota'))) {
-						this._rateLimiter.reportRateLimitError();
-					}
-					console.error(`[ContractReason] Function analysis error (${fn.name}):`, err.message);
-					resolve(undefined);
-				},
-				onAbort: () => { clearTimeout(timeoutId); resolve(undefined); },
-				logging: { loggingName: `GRC-ContractReason-Function-${fn.name}` },
-			});
-		});
-	}
-
-	/**
-	 * Analyze the whole file when function extraction isn't possible.
-	 * (Preserved for fallback / external use.)
-	 */
 	private async _analyzeWholeFile(
 		fileUri: URI,
 		fileContent: string,
@@ -1463,40 +1370,6 @@ Respond with ONLY this JSON structure:
 			});
 		});
 	}
-
-	/**
-	 * Merge multiple function-level analysis results into one file-level result.
-	 */
-	private _mergeResults(
-		results: (ContractReasonResult | undefined)[],
-		fileUri: URI
-	): ContractReasonResult {
-		const merged: ContractReasonResult = {
-			additionalViolations: [],
-			falsePositiveFlags: [],
-			enrichments: new Map(),
-			fileUri,
-		};
-
-		for (const result of results) {
-			if (!result) continue;
-			merged.additionalViolations.push(...result.additionalViolations);
-			merged.falsePositiveFlags.push(...result.falsePositiveFlags);
-			for (const [key, value] of result.enrichments) {
-				merged.enrichments.set(key, value);
-			}
-		}
-
-		console.log(
-			`[ContractReason] Merged results: ` +
-			`${merged.additionalViolations.length} AI violations, ` +
-			`${merged.enrichments.size} enrichments, ` +
-			`${merged.falsePositiveFlags.length} false positives`
-		);
-
-		return merged;
-	}
-
 
 	// ─── Response Parsing ────────────────────────────────────────────
 
@@ -1903,8 +1776,6 @@ ${sections.join('\n\n---\n\n')}`;
 		return hash.toString(36);
 	}
 
-	// Preserved for targeted per-function analysis (future: coding agent deep-scan)
-	private readonly _legacyAnalyzers = [this._analyzeFunctionChunk, this._mergeResults];
 }
 
 

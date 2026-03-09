@@ -61,6 +61,7 @@ export const toolRiskLevels: Record<BuiltinToolName, ToolRiskLevel> = {
 	'grc_ai_scan': 'safe',
 	'ask_checksagent': 'safe',
 	'ask_powermode': 'safe',
+	'query_ni_agent': 'safe',
 };
 
 export const getRiskLevel = (toolName: ToolName): ToolRiskLevel => {
@@ -184,6 +185,7 @@ export const defaultApprovalTiers: Record<BuiltinToolName, ApprovalTier> = {
 	'grc_ai_scan': 'auto',
 	'ask_checksagent': 'auto',
 	'ask_powermode': 'auto',
+	'query_ni_agent': 'auto',
 };
 
 

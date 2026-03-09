@@ -17,10 +17,8 @@ import { IVoidSettingsService } from '../../void/common/voidSettingsService.js';
 import { mountSidebar } from '../../void/browser/react/out/sidebar-tsx/index.js';
 import { toDisposable } from '../../../../base/common/lifecycle.js';
 import { IWorkflowAgentService } from './workflowAgentService.js';
-import { IPowerModeService } from '../../powerMode/browser/powerModeService.js';
-import { PowerModeTerminalHost } from '../../powerMode/browser/powerModeTerminalHost.js';
-import { ITerminalService } from '../../terminal/browser/terminal.js';
 import { IPowerBusService } from '../../powerMode/browser/powerBusService.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 
 export class AgentManagerPart extends Part {
 
@@ -32,7 +30,6 @@ export class AgentManagerPart extends Part {
     maximumHeight: number = Infinity;
 
     private webviewElement: IWebviewElement | undefined;
-    private powerModeTerminal: PowerModeTerminalHost | undefined;
     private controlContainer: HTMLElement | undefined;
     private readonly disposables = new DisposableStore();
 
@@ -46,9 +43,8 @@ export class AgentManagerPart extends Part {
         @IAgentStoreService private readonly agentStore: IAgentStoreService,
         @IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
         @IWorkflowAgentService private readonly workflowAgentService: IWorkflowAgentService,
-        @IPowerModeService private readonly powerModeService: IPowerModeService,
-        @ITerminalService private readonly terminalService: ITerminalService,
         @IPowerBusService private readonly powerBusService: IPowerBusService,
+        @ICommandService private readonly commandService: ICommandService,
     ) {
         super(AgentManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
         this.registerListeners();
@@ -120,14 +116,7 @@ export class AgentManagerPart extends Part {
         voidContainer.style.height = '100%';
         body.appendChild(voidContainer);
 
-        // VIEW 3: Power Mode
-        const powerModeContainer = document.createElement('div');
-        powerModeContainer.style.width = '100%';
-        powerModeContainer.style.height = '100%';
-        powerModeContainer.style.position = 'relative';
-        body.appendChild(powerModeContainer);
-
-        // VIEW 4: Control Center (native DOM — no webview needed)
+        // VIEW 3: Control Center (native DOM — no webview needed)
         const controlCenterContainer = document.createElement('div');
         controlCenterContainer.style.width = '100%';
         controlCenterContainer.style.height = '100%';
@@ -137,11 +126,10 @@ export class AgentManagerPart extends Part {
         this.controlContainer = controlCenterContainer;
 
         // State Management
-        const allContainers = [agentContainer, voidContainer, powerModeContainer, controlCenterContainer];
+        const allContainers = [agentContainer, voidContainer, controlCenterContainer];
         let allTabs: HTMLElement[] = [];
 
-        const updateView = (view: 'manager' | 'chat' | 'powermode' | 'control') => {
-            // Hide all
+        const updateView = (view: 'manager' | 'chat' | 'control') => {
             for (const c of allContainers) { c.style.display = 'none'; }
             for (const t of allTabs) { styleInactive(t); }
 
@@ -151,22 +139,6 @@ export class AgentManagerPart extends Part {
             } else if (view === 'chat') {
                 voidContainer.style.display = 'block';
                 styleActive(tabChat);
-            } else if (view === 'powermode') {
-                powerModeContainer.style.display = 'block';
-                styleActive(tabPowerMode);
-                // Lazy-init real xterm terminal
-                if (!this.powerModeTerminal) {
-                    this.powerModeTerminal = new PowerModeTerminalHost(this.terminalService, this.powerModeService);
-                    this.disposables.add(this.powerModeTerminal);
-                    this.powerModeTerminal.createTerminal(powerModeContainer);
-                } else {
-                    // Re-fit terminal when tab becomes visible again
-                    setTimeout(() => this.powerModeTerminal?.layout(), 50);
-                }
-            } else if (view === 'control') {
-                controlCenterContainer.style.display = 'block';
-                styleActive(tabControl);
-                this._renderControlPanel();
             }
         };
 
@@ -184,15 +156,33 @@ export class AgentManagerPart extends Part {
 
         const tabChat = createTab('Chat', () => updateView('chat'));
         const tabAgents = createTab('Agents', () => updateView('manager'));
-        const tabPowerMode = createTab('Power Mode', () => updateView('powermode'));
-        const tabControl = createTab('Control', () => updateView('control'));
 
-        allTabs = [tabChat, tabAgents, tabPowerMode, tabControl];
+        allTabs = [tabChat, tabAgents];
 
         tabsContainer.appendChild(tabChat);
         tabsContainer.appendChild(tabAgents);
-        tabsContainer.appendChild(tabPowerMode);
-        tabsContainer.appendChild(tabControl);
+
+        // Power Mode launcher — right-aligned in header
+        const spacer = document.createElement('div');
+        spacer.style.flex = '1';
+        header.appendChild(spacer);
+
+        const powerModeBtn = document.createElement('div');
+        powerModeBtn.textContent = '⚡ Power Mode ↗';
+        powerModeBtn.title = 'Open Power Mode window (Ctrl+Alt+P)';
+        powerModeBtn.style.cssText = [
+            'display:flex', 'align-items:center', 'height:100%',
+            'padding:0 10px', 'cursor:pointer', 'font-size:11px',
+            'color:#5eaed6', 'font-weight:bold', 'letter-spacing:0.03em',
+            'border-left:1px solid var(--vscode-panel-border)',
+            'white-space:nowrap', 'user-select:none',
+        ].join(';');
+        powerModeBtn.addEventListener('mouseenter', () => { powerModeBtn.style.color = '#7dcfff'; });
+        powerModeBtn.addEventListener('mouseleave', () => { powerModeBtn.style.color = '#5eaed6'; });
+        powerModeBtn.addEventListener('click', () => {
+            this.commandService.executeCommand('neuralInverse.openPowerMode');
+        });
+        header.appendChild(powerModeBtn);
 
         // Initialize view
         updateView('chat');

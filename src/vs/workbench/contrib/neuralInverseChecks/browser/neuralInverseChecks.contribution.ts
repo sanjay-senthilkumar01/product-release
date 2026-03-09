@@ -38,6 +38,7 @@ import './engine/services/externalCommandExecutor.js'; // External tool command 
 import './engine/services/externalResultCache.js';     // Content-hash cache for external tool results
 import './engine/services/externalToolService.js';     // External tool orchestration (CodeQL, Semgrep, Polyspace, ...)
 import './checksAgent/checksAgentService.js';          // GRC specialist AI (Checks Agent TUI)
+import './checksSocket/checksSocketService.js';        // Enterprise checks-socket integration
 import { GRCDiagnosticsContribution } from './diagnostics/grcDiagnosticsContribution.js';
 import { GRCAnalyzerRegistration } from './engine/analyzers/analyzerRegistration.js';
 import { BreakingChangeDetector } from './engine/services/breakingChangeDetector.js';

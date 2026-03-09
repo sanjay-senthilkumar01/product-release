@@ -110,8 +110,83 @@ export interface EnterpriseModelPolicy {
     /** MCP server allowlist/blocklist */
     mcpPolicy?: MCPPolicy;
 
+    /** FIM / inline code completion settings */
+    fimPolicy?: FIMPolicy;
+
+    /** Power Mode (autonomous agent terminal) settings */
+    powerModePolicy?: PowerModePolicy;
+
+    /** Checks Agent (GRC enforcement agent) settings */
+    checksAgentPolicy?: ChecksAgentPolicy;
+
+    /** Workflow Agents (agent-to-agent orchestration) settings */
+    agentPolicy?: AgentPolicy;
+
     /** Global settings overrides applied to IDE */
     globalSettings?: GlobalSettingsOverrides;
+}
+
+export interface PowerModePolicy {
+    /** Force Power Mode on/off org-wide. null = developer decides. */
+    enabled?: boolean | null;
+    /** Allowlist of tool names available in Power Mode. Empty = all tools allowed. */
+    allowedTools?: string[];
+    /** Maximum agent iteration count per session. Undefined = no cap. */
+    maxIterations?: number;
+    /** Auto-approve all Power Mode tool calls without developer confirmation. null = developer decides. */
+    autoApprove?: boolean | null;
+    /** Prevent developers from changing their local Power Mode settings. */
+    lockSettings?: boolean;
+}
+
+export interface ChecksAgentPolicy {
+    /** Force Checks Agent on/off org-wide. null = developer decides. */
+    enabled?: boolean | null;
+    /** Auto-trigger workspace scan on file save. null = developer decides. */
+    autoScanOnSave?: boolean | null;
+    /** Block git commits when blocker/critical violations are present. */
+    blockCommitsOnViolations?: boolean;
+    /** Framework IDs that are mandatory for all projects in this org. */
+    enforcedFrameworkIds?: string[];
+    /** Prevent developers from changing their local Checks Agent settings. */
+    lockSettings?: boolean;
+}
+
+export interface AgentPolicy {
+    /** Force Workflow Agents on/off org-wide. null = developer decides. */
+    enabled?: boolean | null;
+    /** Maximum number of sub-agents that can run concurrently. Default: 3. */
+    maxConcurrentAgents?: number;
+    /** Maximum iterations per sub-agent session. Default: 20. */
+    maxIterationsPerAgent?: number;
+    /** Per-tool-type auto-approve overrides for agent sessions. */
+    autoApprove?: {
+        terminal?: boolean | null;
+        file?: boolean | null;
+        browser?: boolean | null;
+        [key: string]: boolean | null | undefined;
+    };
+    /** Restrict which sub-agent roles are permitted. Empty = all roles. */
+    allowedRoles?: ('explorer' | 'editor' | 'verifier')[];
+    /** Prevent developers from changing their local Agent settings. */
+    lockSettings?: boolean;
+}
+
+export interface FIMPolicy {
+    /** null/undefined = developer decides, true = force on, false = force off */
+    enabled?: boolean | null;
+    /** Override the FIM model (defaults to Codestral-2501 on agent-socket) */
+    model?: string;
+    /** Max tokens per completion */
+    maxTokens?: number;
+    /** Temperature 0.0–1.0 */
+    temperature?: number;
+    /** Tokens that must never appear in output — server-side firewall */
+    forbiddenTokens?: string[];
+    /** Stop tokens to end completion early */
+    stopTokens?: string[];
+    /** Prevent developers from overriding FIM settings locally */
+    lockFIMSettings?: boolean;
 }
 
 /** Response shape from GET /agent/v1/model-policy */

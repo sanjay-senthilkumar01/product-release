@@ -75,6 +75,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
     private static readonly INTERACTION_LOCK_MS = 8000;
     private _ignoreSuggestionsLoading = false;
     private _ignoreSuggestions: Array<{ pattern: string; mode: string; reason: string; confidence: string }> = [];
+    private _checksContainer: HTMLElement | undefined;
 
     /** Snapshot of external tool job states for rendering in the dashboard */
     private _externalJobs: IExternalJob[] = [];
@@ -342,6 +343,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
         checksContainer.style.width = '100%';
         checksContainer.style.height = '100%';
         body.appendChild(checksContainer);
+        this._checksContainer = checksContainer;
 
         // VIEW 2: Nano Agents
         const nanoContainer = document.createElement('div');
@@ -883,6 +885,7 @@ export class ChecksManagerPart extends Part implements IHorizontalSashLayoutProv
             this._webviewInteractionTimer = undefined;
         }
     }
+
 
     private _getFrameworksHtml(): string {
         const frameworks = this.frameworkRegistry.getActiveFrameworks();
@@ -2990,6 +2993,11 @@ document.getElementById('patternInput').addEventListener('keydown', function(e) 
             this.checksAgentContainer.style.width = `${agentW}px`;
             this.checksAgentContainer.style.height = `${contentHeight}px`;
             this.checksAgentTerminalHost?.layout(Math.max(0, width - sidebarWidth), contentHeight);
+        }
+
+        if (this._checksContainer) {
+            this._checksContainer.style.width = `${Math.max(0, width - sidebarWidth)}px`;
+            this._checksContainer.style.height = `${contentHeight}px`;
         }
 
         if (this.terminalVisible && this.terminalInstance && this.terminalInstance.xterm) {

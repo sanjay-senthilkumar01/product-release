@@ -16,3 +16,10 @@ export const AGENT_API_URL = `${AGENT_SOCKET_BASE_URL}/agent/v1`;
 
 /** Default endpoint pre-filled in Neural Inverse provider settings */
 export const NEURAL_INVERSE_DEFAULT_ENDPOINT = `${AGENT_SOCKET_BASE_URL}/agent`;
+
+/** Base URL for checks-socket. Dev default = localhost:3003. Pipeline replaces for prod. */
+export const CHECKS_SOCKET_BASE_URL = 'http://localhost:3003';
+
+/** Versioned REST API root for checks — /checks/v1/frameworks, /checks/v1/violations */
+export const CHECKS_API_URL = `${CHECKS_SOCKET_BASE_URL}/checks/v1`;
+

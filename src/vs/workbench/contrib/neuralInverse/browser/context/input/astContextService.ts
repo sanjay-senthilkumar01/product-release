@@ -17,8 +17,14 @@ export interface IASTContext {
     nodeType: string;
     parentNode: string;
     parentType: string;
-    siblings: string[]; // Names of sibling nodes if identifiers
-    kind: string; // Simplified kind for prompt
+    siblings: string[];
+    kind: string;
+    // ── Enriched scope context ────────────────────────────────────────
+    language: string;           // e.g. 'typescript', 'python'
+    fileName: string;           // basename of the file, e.g. 'authService.ts'
+    enclosingFunction?: string; // name of the function/method cursor is inside
+    enclosingClass?: string;    // name of the class cursor is inside
+    functionSignature?: string; // first line of enclosing function (params + return type)
 }
 
 export interface IASTContextService {
@@ -35,63 +41,108 @@ export class ASTContextService extends Disposable implements IASTContextService 
         super();
     }
 
-    public async getASTContext(model: ITextModel, position: Position): Promise<IASTContext | undefined> {
-        // 1. Get Parse Result (may trigger parse if not fresh)
-        // We use getTextModelTreeSitter to get the wrapper, then its parse result
-        const treeSitterModel = await this.treeSitterService.getTextModelTreeSitter(model, true); // true = ensure parsed
+    // ── AST helpers ──────────────────────────────────────────────────────────
 
+    private _findEnclosing(node: any, types: Set<string>): any {
+        let cur = node.parent;
+        while (cur) {
+            if (types.has(cur.type)) return cur;
+            cur = cur.parent;
+        }
+        return null;
+    }
+
+    private _nodeName(node: any): string {
+        if (!node) return '(anonymous)';
+        for (let i = 0; i < node.namedChildCount; i++) {
+            const c = node.namedChild(i);
+            if (c && (c.type === 'identifier' || c.type === 'property_identifier' || c.type === 'type_identifier')) {
+                return c.text;
+            }
+        }
+        // Arrow / function expression assigned to variable: const foo = () => {}
+        if (node.type === 'arrow_function' || node.type === 'function_expression') {
+            const vd = node.parent;
+            if (vd?.type === 'variable_declarator') {
+                const id = vd.namedChild(0);
+                if (id?.type === 'identifier') return id.text;
+            }
+        }
+        return '(anonymous)';
+    }
+
+    private _functionSignature(node: any): string {
+        // Grab everything from the node start up to the opening brace or arrow
+        const firstLine = node.text.split('\n')[0]
+            .replace(/\s*\{.*$/, '')   // strip trailing {
+            .replace(/\s*=>.*$/, '')   // strip trailing =>
+            .trim();
+        return firstLine.length > 100 ? firstLine.slice(0, 100) + '…' : firstLine;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public async getASTContext(model: ITextModel, position: Position): Promise<IASTContext | undefined> {
+        const language = model.getLanguageId();
+        const fileName = model.uri.path.split('/').pop() ?? model.uri.path;
+
+        const treeSitterModel = await this.treeSitterService.getTextModelTreeSitter(model, true);
         if (!treeSitterModel) {
-            console.warn('[ASTContextService] TreeSitter model not available for language:', model.getLanguageId());
+            console.warn('[ASTContextService] TreeSitter model not available for language:', language);
             return undefined;
         }
 
         const parseResult = treeSitterModel.parseResult;
-        if (!parseResult || !parseResult.tree) {
+        if (!parseResult?.tree) {
             console.warn('[ASTContextService] Parse result or tree missing.');
             return undefined;
         }
 
-        const tree = parseResult.tree;
-
-        // 2. Find Node at Cursor
-        // Position is 1-based, TreeSitter is 0-based
         const targetPoint: Parser.Point = {
             row: position.lineNumber - 1,
             column: position.column - 1
         };
 
-        const node = tree.rootNode.descendantForPosition(targetPoint);
+        const node = parseResult.tree.rootNode.descendantForPosition(targetPoint);
+        if (!node) return undefined;
 
-        if (!node) {
-            return undefined;
-        }
-
-        // 3. Extract Context
         const parent = node.parent;
 
-        // Get Siblings (named children of parent, excluding self)
+        // Siblings
         const siblings: string[] = [];
         if (parent) {
-            // Limit to modest number of close siblings
             for (let i = 0; i < parent.namedChildCount; i++) {
                 const child = parent.namedChild(i);
-                if (child && child.id !== node.id) {
-                    // Try to get text if it looks like an identifier/name
-                    if (child.type.includes('identifier') || child.type === 'name') {
-                        siblings.push(child.text);
-                    }
+                if (child && child.id !== node.id &&
+                    (child.type.includes('identifier') || child.type === 'name')) {
+                    siblings.push(child.text);
                 }
                 if (siblings.length >= 5) break;
             }
         }
 
+        // Enclosing function / class
+        const FUNCTION_TYPES = new Set([
+            'function_declaration', 'method_definition', 'arrow_function',
+            'function_expression', 'generator_function_declaration', 'generator_function',
+        ]);
+        const CLASS_TYPES = new Set(['class_declaration', 'abstract_class_declaration', 'class']);
+
+        const enclosingFnNode = this._findEnclosing(node, FUNCTION_TYPES);
+        const enclosingClassNode = this._findEnclosing(node, CLASS_TYPES);
+
         return {
-            currentNode: node.text,
+            currentNode: node.text.slice(0, 60),
             nodeType: node.type,
-            parentNode: parent ? parent.text.substring(0, 50) + '...' : 'ROOT', // Truncate parent text
+            parentNode: parent ? parent.text.slice(0, 80) : 'ROOT',
             parentType: parent ? parent.type : 'ROOT',
-            siblings: siblings,
-            kind: node.type // Simplify mapping later
+            siblings,
+            kind: node.type,
+            language,
+            fileName,
+            enclosingFunction: enclosingFnNode ? this._nodeName(enclosingFnNode) : undefined,
+            enclosingClass: enclosingClassNode ? this._nodeName(enclosingClassNode) : undefined,
+            functionSignature: enclosingFnNode ? this._functionSignature(enclosingFnNode) : undefined,
         };
     }
 }

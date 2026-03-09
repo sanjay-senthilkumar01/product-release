@@ -2025,39 +2025,6 @@ Be specific to this project. Suggest 3-8 patterns. Return ONLY valid JSON array.
 		return resolved.replace(/\.[^/.]+$/, '');
 	}
 
-	/**
-	 * After `changedFileUri` is saved, find all files that import it and
-	 * trigger AI re-analysis for them (limited to 10 to prevent flooding).
-	 */
-	private _triggerCrossFileAnalysis(changedFileUri: URI, rules: IGRCRule[]): void {
-		const basePath = changedFileUri.path.replace(/\.[^/.]+$/, '');
-		const dependents = new Set<string>();
-
-		for (const [key, importers] of this._importedBy) {
-			if (key === basePath || key.startsWith(basePath + '/') || basePath.endsWith('/' + key)) {
-				for (const imp of importers) dependents.add(imp);
-			}
-		}
-
-		if (dependents.size === 0) return;
-
-		const changedName = changedFileUri.path.split('/').pop() ?? '';
-		console.log(`[GRCEngine] Cross-file: ${changedName} changed → re-analysing ${dependents.size} dependent(s)`);
-
-		let count = 0;
-		for (const depUriStr of dependents) {
-			if (++count > 10) break;
-			const depUri = URI.parse(depUriStr);
-			this._fileService.readFile(depUri).then(file => {
-				const content = file.value.toString();
-				const cachedResults = this._resultsByFile.get(depUriStr) || [];
-				const nanoContext = this.projectAnalyzerService.getContextForFile(depUri);
-				this.contractReasonService.analyzeFile(depUri, content, cachedResults, rules, nanoContext);
-			}).catch(() => { /* dependent file unreadable — skip */ });
-		}
-	}
-
-
 	// ─── Static Workspace Scan ───────────────────────────────────────
 
 	private async _scanDir(dirUri: URI, depth: number): Promise<void> {
