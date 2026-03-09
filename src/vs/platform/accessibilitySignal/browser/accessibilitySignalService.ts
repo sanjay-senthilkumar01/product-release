@@ -662,4 +662,11 @@ export class AccessibilitySignal {
 		announcementMessage: localize('accessibility.signals.neuralInverseTaskComplete', 'AI Task Completed'),
 		settingsKey: 'accessibility.signals.neuralInverseTaskComplete',
 	});
+
+	public static readonly neuralInversePolicyBlocked = AccessibilitySignal.register({
+		name: localize('accessibilitySignals.neuralInversePolicyBlocked', 'Neural Inverse Feature Blocked by Policy'),
+		sound: Sound.warning,
+		announcementMessage: localize('accessibility.signals.neuralInversePolicyBlocked', 'Feature blocked by organization policy'),
+		settingsKey: 'accessibility.signals.neuralInversePolicyBlocked',
+	});
 }

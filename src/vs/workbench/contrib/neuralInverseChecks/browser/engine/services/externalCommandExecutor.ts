@@ -171,7 +171,7 @@ export class ExternalCommandExecutorImpl extends Disposable implements IExternal
 			config: {
 				name: TERMINAL_NAME,
 				isTransient: true,
-				hideFromUser: false,
+				hideFromUser: true,
 			},
 		});
 	}

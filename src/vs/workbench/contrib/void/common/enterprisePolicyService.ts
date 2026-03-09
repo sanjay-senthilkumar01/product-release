@@ -12,10 +12,13 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { URI } from '../../../../base/common/uri.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { INeuralInverseAuthService } from '../../../services/neuralInverseAuth/common/neuralInverseAuth.js';
 import { EnterpriseModelPolicy, ModelPolicyResponse } from './enterprisePolicyTypes.js';
 import { AGENT_API_URL } from './neuralInverseConfig.js';
@@ -70,6 +73,8 @@ class EnterprisePolicyService extends Disposable implements IEnterprisePolicySer
         @INeuralInverseAuthService private readonly _authService: INeuralInverseAuthService,
         @INativeHostService private readonly _nativeHostService: INativeHostService,
         @IStorageService private readonly _storageService: IStorageService,
+        @IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+        @IFileService private readonly _fileService: IFileService,
     ) {
         super();
 
@@ -143,6 +148,39 @@ class EnterprisePolicyService extends Disposable implements IEnterprisePolicySer
         this._storageService.remove(POLICY_CACHE_KEY, StorageScope.APPLICATION);
     }
 
+    // ─── Workspace Context ────────────────────────────────────────────────────
+
+    /**
+     * Reads the current workspace root path and git remote origin URL.
+     * Used to scope IAM enforcement to project/subproject level on agent-socket.
+     *
+     * - workspacePath: local filesystem path (subproject resourceId)
+     * - repoUrl: git remote origin URL (used to resolve DB project ID)
+     */
+    private async _getWorkspaceContext(): Promise<{ workspacePath: string | null; repoUrl: string | null }> {
+        const folders = this._workspaceContextService.getWorkspace().folders;
+        if (!folders.length) return { workspacePath: null, repoUrl: null };
+
+        const rootFolder = folders[0];
+        const workspacePath = rootFolder.uri.fsPath;
+
+        let repoUrl: string | null = null;
+        try {
+            const gitConfigUri = URI.joinPath(rootFolder.uri, '.git', 'config');
+            const content = await this._fileService.readFile(gitConfigUri);
+            const text = content.value.toString();
+            // Parse [remote "origin"] section — grab first url = line after it
+            const match = text.match(/\[remote\s+"origin"\][^\[]*\burl\s*=\s*([^\r\n]+)/);
+            if (match) {
+                repoUrl = match[1].trim();
+            }
+        } catch {
+            // No .git folder or not readable — workspace may not be a git repo
+        }
+
+        return { workspacePath, repoUrl };
+    }
+
     // ─── Fetch ────────────────────────────────────────────────────────────────
 
     private async _fetchPolicy(): Promise<void> {
@@ -157,16 +195,20 @@ class EnterprisePolicyService extends Disposable implements IEnterprisePolicySer
                 return;
             }
 
+            // Resolve workspace context so agent-socket can apply project/subproject IAM scoping
+            const { workspacePath, repoUrl } = await this._getWorkspaceContext();
+
+            const headers: Record<string, string> = {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            };
+            if (workspacePath) headers['x-ni-workspace-path'] = workspacePath;
+            if (repoUrl) headers['x-ni-repo-url'] = repoUrl;
+
             // ARCH-001: Use central config — no more localhost hardcodes
             const response = await this._nativeHostService.request(
                 `${AGENT_API_URL}/model-policy`,
-                {
-                    type: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    }
-                }
+                { type: 'GET', headers }
             );
 
             if (response.statusCode === 403) {

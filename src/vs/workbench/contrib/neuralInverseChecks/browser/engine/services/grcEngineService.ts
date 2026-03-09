@@ -176,6 +176,12 @@ export interface IGRCEngineService {
 	clearResultsForFile(fileUri: URI): void;
 
 	/**
+	 * Remove specific violations from a file's cached results by ruleId+line.
+	 * Used to clear diagnostics for violations resolved/suppressed on the web console.
+	 */
+	clearSpecificViolations(fileUri: URI, keys: Array<{ ruleId: string; line: number }>): void;
+
+	/**
 	 * Register a pluggable analyzer for specific rule types.
 	 * Used by Phase 2 analyzers (AST, dataflow, etc.) to plug into the engine.
 	 */
@@ -531,6 +537,20 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 			}, 3_000);
 		}));
 
+		// When infra pushes new/updated frameworks, re-run AI scan with fresh rules.
+		// ContractReasonService already clears its hash cache on frameworksChange,
+		// so this scan will re-analyze all files against the updated rule set.
+		this._register(this.frameworkRegistry.onDidFrameworksChange(() => {
+			if (!this.contractReasonService.isAvailable) return;
+			if (this._configLoader.getRules().length === 0) return;
+			console.log('[GRCEngine] Frameworks changed — scheduling AI rescan with updated rules');
+			setTimeout(() => {
+				this.scanWorkspaceWithAI().catch(e =>
+					console.error('[GRCEngine] Framework-change AI scan failed:', e)
+				);
+			}, 5_000); // give comprehension time to finish first
+		}));
+
 		// When intelligence results arrive, enrich existing violations and add new ones
 		this._register(this.contractReasonService.onDidContractReasonResultsReady((result) => {
 			const fileKey = result.fileUri.toString();
@@ -840,6 +860,29 @@ export class GRCEngineService extends Disposable implements IGRCEngineService {
 		console.log(`[GRCEngine] Restored ${toAdd.length} AI violations for ${fileUri.path.split('/').pop()}`);
 	}
 
+
+	/**
+	 * Remove specific violations from a file's cached results.
+	 * Called when suppressions change (e.g. resolved on the web console) so
+	 * diagnostics clear without waiting for a full rescan.
+	 */
+	public clearSpecificViolations(fileUri: URI, keys: Array<{ ruleId: string; line: number }>): void {
+		if (keys.length === 0) return;
+		const fileKey = fileUri.toString();
+		const existing = this._resultsByFile.get(fileKey);
+		if (!existing || existing.length === 0) return;
+
+		const keySet = new Set(keys.map(k => `${k.ruleId}:${k.line}`));
+		const filtered = existing.filter(r => !keySet.has(`${r.ruleId}:${r.line}`));
+		if (filtered.length === existing.length) return; // nothing changed
+
+		if (filtered.length === 0) {
+			this._resultsByFile.delete(fileKey);
+		} else {
+			this._resultsByFile.set(fileKey, filtered);
+		}
+		this._onDidCheckComplete.fire(filtered);
+	}
 
 	/**
 	 * Set (replace) breaking change violations for a file.

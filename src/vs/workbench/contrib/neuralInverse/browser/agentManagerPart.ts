@@ -19,6 +19,7 @@ import { toDisposable } from '../../../../base/common/lifecycle.js';
 import { IWorkflowAgentService } from './workflowAgentService.js';
 import { IPowerBusService } from '../../powerMode/browser/powerBusService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IEnterprisePolicyService } from '../../void/common/enterprisePolicyService.js';
 
 export class AgentManagerPart extends Part {
 
@@ -45,6 +46,7 @@ export class AgentManagerPart extends Part {
         @IWorkflowAgentService private readonly workflowAgentService: IWorkflowAgentService,
         @IPowerBusService private readonly powerBusService: IPowerBusService,
         @ICommandService private readonly commandService: ICommandService,
+        @IEnterprisePolicyService private readonly enterprisePolicyService: IEnterprisePolicyService,
     ) {
         super(AgentManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
         this.registerListeners();
@@ -177,12 +179,20 @@ export class AgentManagerPart extends Part {
             'border-left:1px solid var(--vscode-panel-border)',
             'white-space:nowrap', 'user-select:none',
         ].join(';');
-        powerModeBtn.addEventListener('mouseenter', () => { powerModeBtn.style.color = '#7dcfff'; });
+        powerModeBtn.addEventListener('mouseenter', () => { if (powerModeBtn.style.display !== 'none') powerModeBtn.style.color = '#7dcfff'; });
         powerModeBtn.addEventListener('mouseleave', () => { powerModeBtn.style.color = '#5eaed6'; });
         powerModeBtn.addEventListener('click', () => {
             this.commandService.executeCommand('neuralInverse.openPowerMode');
         });
         header.appendChild(powerModeBtn);
+
+        // Sync visibility with enterprise policy
+        const syncPowerModeBtn = () => {
+            const blocked = this.enterprisePolicyService.policy?.powerModePolicy?.enabled === false;
+            powerModeBtn.style.display = blocked ? 'none' : 'flex';
+        };
+        syncPowerModeBtn();
+        this.disposables.add(this.enterprisePolicyService.onDidChangePolicy(() => syncPowerModeBtn()));
 
         // Initialize view
         updateView('chat');

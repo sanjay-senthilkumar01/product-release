@@ -100,14 +100,21 @@ const _modelsWithSwappedInNewModels = (options: { existingModels: VoidStatefulMo
 		existingModelsMap[existingModel.modelName] = existingModel
 	}
 
-	const newDefaultModels = models.map((modelName, i) => ({ modelName, type, isHidden: !!existingModelsMap[modelName]?.isHidden, }))
+	const newDetectedModels = models.map((modelName) => ({ modelName, type, isHidden: !!existingModelsMap[modelName]?.isHidden, }))
+
+	// When the server returns an authoritative autodetected list, hide any default models
+	// not in that list. This lets IAM policy enforcement on the server control which models
+	// are visible without requiring us to remove hardcoded defaults.
+	const detectedSet = type === 'autodetected' && models.length > 0 ? new Set(models) : null
 
 	return [
-		...newDefaultModels, // swap out all the models of this type for the new models of this type
-		...existingModels.filter(m => {
-			const keep = m.type !== type
-			return keep
-		})
+		...newDetectedModels,
+		...existingModels
+			.filter(m => m.type !== type && !detectedSet?.has(m.modelName))
+			.map(m => ({
+				...m,
+				isHidden: detectedSet ? !detectedSet.has(m.modelName) : m.isHidden,
+			}))
 	]
 }
 

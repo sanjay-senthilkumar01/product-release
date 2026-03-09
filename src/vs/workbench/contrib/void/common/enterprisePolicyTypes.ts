@@ -47,6 +47,8 @@ type TriState = boolean | null;
 export interface FeaturePolicy {
     forceAutocomplete?: TriState;
     forceInlineSuggestions?: TriState;
+    forceInlineChat?: TriState;
+    forceCodeActions?: TriState;
     forceAutoAcceptLLMChanges?: TriState;
     forceIncludeToolLintErrors?: TriState;
     forceAutoApprove?: {

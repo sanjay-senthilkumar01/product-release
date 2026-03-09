@@ -15,6 +15,8 @@ import { IEnclaveFirewallService } from '../../common/services/firewall/enclaveF
 import { IEnclaveSandboxService } from '../../common/services/sandbox/enclaveSandboxService.js';
 import { IEnclaveAuditTrailService } from '../../common/services/audit/enclaveAuditTrailService.js';
 import { IEnclaveEnvironmentService } from '../../common/services/environment/enclaveEnvironmentService.js';
+import { IEnclaveActionLogService } from '../services/actionLog/enclaveActionLogService.js';
+import { IActionLogFilter, ActionCategory, ActionSource } from '../../common/services/actionLog/enclaveActionLogTypes.js';
 import { mountSidebar } from '../../../void/browser/react/out/sidebar-tsx/index.js';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 
@@ -29,7 +31,9 @@ export class EnclaveManagerPart extends Part {
 
 	private webviewElement: IWebviewElement | undefined;
 	private readonly disposables = new DisposableStore();
-	private _currentView: 'manager' | 'audit' | 'chat' = 'manager';
+	private _currentView: 'manager' | 'audit' | 'actionlog' | 'chat' = 'manager';
+	private _actionLogCategoryFilter: string = 'all';
+	private _actionLogSourceFilter: string = 'all';
 
 	constructor(
 		@IThemeService themeService: IThemeService,
@@ -40,7 +44,8 @@ export class EnclaveManagerPart extends Part {
 		@IEnclaveFirewallService private readonly firewallService: IEnclaveFirewallService,
 		@IEnclaveSandboxService private readonly sandboxService: IEnclaveSandboxService,
 		@IEnclaveAuditTrailService private readonly auditTrailService: IEnclaveAuditTrailService,
-		@IEnclaveEnvironmentService private readonly enclaveEnv: IEnclaveEnvironmentService
+		@IEnclaveEnvironmentService private readonly enclaveEnv: IEnclaveEnvironmentService,
+		@IEnclaveActionLogService private readonly actionLogService: IEnclaveActionLogService
 	) {
 		super(EnclaveManagerPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
 	}
@@ -111,7 +116,13 @@ export class EnclaveManagerPart extends Part {
 		auditContainer.style.height = '100%';
 		body.appendChild(auditContainer);
 
-		// VIEW 3: Void Sidebar (Shared Chat)
+		// VIEW 3: Action Log Webview
+		const actionLogContainer = document.createElement('div');
+		actionLogContainer.style.width = '100%';
+		actionLogContainer.style.height = '100%';
+		body.appendChild(actionLogContainer);
+
+		// VIEW 4: Void Sidebar (Shared Chat)
 		const voidContainer = document.createElement('div');
 		voidContainer.style.width = '100%';
 		voidContainer.style.height = '100%';
@@ -120,18 +131,21 @@ export class EnclaveManagerPart extends Part {
 
 		// State Management
 
-		const updateView = (view: 'manager' | 'audit' | 'chat') => {
+		const updateView = (view: 'manager' | 'audit' | 'actionlog' | 'chat') => {
 			this._currentView = view;
 			enclaveContainer.style.display = view === 'manager' ? 'block' : 'none';
 			auditContainer.style.display = view === 'audit' ? 'block' : 'none';
+			actionLogContainer.style.display = view === 'actionlog' ? 'block' : 'none';
 			voidContainer.style.display = view === 'chat' ? 'block' : 'none';
 
 			styleInactive(tabEnclave);
 			styleInactive(tabAudit);
+			styleInactive(tabActionLog);
 			styleInactive(tabChat);
 
 			if (view === 'manager') { styleActive(tabEnclave); }
 			else if (view === 'audit') { styleActive(tabAudit); }
+			else if (view === 'actionlog') { styleActive(tabActionLog); }
 			else { styleActive(tabChat); }
 
 			this.updateWebviewContent();
@@ -151,10 +165,12 @@ export class EnclaveManagerPart extends Part {
 
 		const tabEnclave = createTab('Enclave', () => updateView('manager'));
 		const tabAudit = createTab('Audit Trail', () => updateView('audit'));
+		const tabActionLog = createTab('Action Log', () => updateView('actionlog'));
 		const tabChat = createTab('Chat', () => updateView('chat'));
 
 		tabsContainer.appendChild(tabEnclave);
 		tabsContainer.appendChild(tabAudit);
+		tabsContainer.appendChild(tabActionLog);
 		tabsContainer.appendChild(tabChat);
 
 		// Initialize view
@@ -194,6 +210,33 @@ export class EnclaveManagerPart extends Part {
 
 		// Store audit webview for updates
 		(this as any)._auditWebview = auditWebview;
+
+		// Create Action Log webview
+		const actionLogWebview = this.webviewService.createWebviewElement({
+			title: 'Action Log',
+			options: {
+				enableFindWidget: true,
+				tryRestoreScrollPosition: true,
+				retainContextWhenHidden: true,
+			},
+			contentOptions: {
+				allowScripts: true,
+			},
+			extension: undefined
+		});
+		actionLogWebview.mountTo(actionLogContainer, getWindow(actionLogContainer));
+		this.disposables.add(actionLogWebview);
+
+		// Handle messages from Action Log webview (filter changes)
+		this.disposables.add(actionLogWebview.onMessage(e => {
+			if (e.message?.type === 'filterChange') {
+				this._actionLogCategoryFilter = e.message.category ?? 'all';
+				this._actionLogSourceFilter = e.message.source ?? 'all';
+				this.updateWebviewContent();
+			}
+		}));
+
+		(this as any)._actionLogWebview = actionLogWebview;
 
 		// Mount Void Sidebar
 		// HACK: Override createElement to bypass "Not allowed to create elements in child window" error
@@ -294,6 +337,17 @@ export class EnclaveManagerPart extends Part {
 		this._register(this.auditTrailService.onDidAddEntry(() => this.updateWebviewContent()));
 		this._register(this.enclaveEnv.onDidChangeMode(() => this.updateWebviewContent()));
 
+		// Throttled action log updates (fires frequently — only update if tab is visible)
+		let actionLogUpdateTimer: any;
+		this._register(this.actionLogService.onDidLogAction(() => {
+			if (this._currentView !== 'actionlog') { return; }
+			if (actionLogUpdateTimer) { clearTimeout(actionLogUpdateTimer); }
+			actionLogUpdateTimer = setTimeout(() => {
+				actionLogUpdateTimer = undefined;
+				this.updateWebviewContent();
+			}, 500);
+		}));
+
 		return parent;
 	}
 
@@ -306,6 +360,10 @@ export class EnclaveManagerPart extends Part {
 		const auditWebview = (this as any)._auditWebview as IWebviewElement | undefined;
 		if (auditWebview && this._currentView === 'audit') {
 			auditWebview.setHtml(this.getAuditTrailHtml());
+		}
+		const actionLogWebview = (this as any)._actionLogWebview as IWebviewElement | undefined;
+		if (actionLogWebview && this._currentView === 'actionlog') {
+			actionLogWebview.setHtml(this.getActionLogHtml());
 		}
 	}
 
@@ -636,6 +694,333 @@ export class EnclaveManagerPart extends Part {
 			</table>
 		</body>
 		</html>`;
+	}
+
+	private getActionLogHtml(): string {
+		const mode = this.enclaveEnv.mode;
+		const stats = this.actionLogService.getStats();
+
+		// Build filter for query
+		const filter: IActionLogFilter = {
+			limit: 100,
+		};
+		if (this._actionLogCategoryFilter !== 'all') {
+			filter.categories = [this._actionLogCategoryFilter as ActionCategory];
+		}
+		if (this._actionLogSourceFilter !== 'all') {
+			filter.sources = [this._actionLogSourceFilter as ActionSource];
+		}
+
+		const entries = this.actionLogService.query(filter);
+
+		const modeColors: Record<string, string> = {
+			open: '#4fc1ff',
+			standard: '#ffa500',
+			locked_down: '#f14c4c'
+		};
+		const modeColor = modeColors[mode] || '#4fc1ff';
+
+		// Category color map
+		const catColors: Record<string, string> = {
+			command: '#569cd6',
+			editor: '#4ec9b0',
+			file: '#dcdcaa',
+			terminal: '#ce9178',
+			debug: '#c586c0',
+			configuration: '#9cdcfe',
+			lifecycle: '#608b4e',
+			ai: '#b5cea8',
+			agent: '#c586c0',
+			checks: '#f14c4c',
+			powermode: '#ff8c00',
+			enclave: '#e0a84e',
+			search: '#d7ba7d',
+			window: '#6a9955',
+			keyboard: '#d4d4d4',
+			scm: '#4fc1ff',
+			extension: '#c586c0',
+		};
+
+		// Severity icons
+		const sevIcons: Record<string, string> = {
+			trace: '·',
+			info: '●',
+			warning: '▲',
+			error: '✗',
+			critical: '⬤',
+		};
+		const sevColors: Record<string, string> = {
+			trace: 'var(--vscode-descriptionForeground)',
+			info: 'var(--vscode-charts-blue, #569cd6)',
+			warning: 'var(--vscode-charts-orange, #ffa500)',
+			error: 'var(--vscode-errorForeground)',
+			critical: '#ff0000',
+		};
+
+		// Build stat boxes
+		const topCategories = Object.entries(stats.entriesByCategory)
+			.sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+			.slice(0, 5);
+
+		let statBoxes = `
+			<div class="stat-box">
+				<div class="stat-value">${stats.totalEntries}</div>
+				<div class="stat-label">Total Actions</div>
+			</div>`;
+		for (const [cat, count] of topCategories) {
+			const color = catColors[cat] ?? '#888';
+			statBoxes += `
+			<div class="stat-box">
+				<div class="stat-value" style="color: ${color};">${count}</div>
+				<div class="stat-label">${cat}</div>
+			</div>`;
+		}
+
+		// Build category filter options
+		const allCategories = ['all', 'command', 'editor', 'file', 'terminal', 'debug', 'configuration', 'lifecycle', 'ai', 'agent', 'checks', 'powermode', 'enclave', 'search', 'window', 'scm'];
+		let categoryOptions = '';
+		for (const c of allCategories) {
+			const selected = c === this._actionLogCategoryFilter ? ' selected' : '';
+			categoryOptions += `<option value="${c}"${selected}>${c === 'all' ? 'All Categories' : c.toUpperCase()}</option>`;
+		}
+
+		// Build source filter options
+		const allSources = ['all', 'user', 'agent', 'system', 'extension'];
+		let sourceOptions = '';
+		for (const s of allSources) {
+			const selected = s === this._actionLogSourceFilter ? ' selected' : '';
+			sourceOptions += `<option value="${s}"${selected}>${s === 'all' ? 'All Sources' : s.toUpperCase()}</option>`;
+		}
+
+		// Build table rows (newest first)
+		let tableRows = '';
+		if (entries.length > 0) {
+			const reversed = [...entries].reverse();
+			for (const e of reversed) {
+				const timeStr = new Date(e.timestamp).toLocaleTimeString();
+				const catColor = catColors[e.category] ?? '#888';
+				const sevIcon = sevIcons[e.severity] ?? '·';
+				const sevColor = sevColors[e.severity] ?? 'inherit';
+				const targetStr = e.target
+					? (e.target.length > 60 ? e.target.substring(e.target.length - 60) : e.target)
+					: '—';
+
+				tableRows += `
+					<tr>
+						<td class="col-time">${timeStr}</td>
+						<td class="col-sev"><span style="color: ${sevColor};" title="${e.severity}">${sevIcon}</span></td>
+						<td class="col-cat"><span class="category-badge" style="background: ${catColor}18; color: ${catColor}; border: 1px solid ${catColor}33;">${e.category}</span></td>
+						<td class="col-source">${e.source}</td>
+						<td class="col-label" title="${this._escapeHtml(e.label)}">${this._escapeHtml(e.label)}</td>
+						<td class="col-target" title="${this._escapeHtml(targetStr)}">${this._escapeHtml(targetStr)}</td>
+					</tr>`;
+			}
+		} else {
+			tableRows = `<tr><td colspan="6" class="empty-state">No actions logged yet. Actions will appear here as you use the IDE.</td></tr>`;
+		}
+
+		return `<!DOCTYPE html>
+		<html lang="en">
+		<head>
+			<meta charset="UTF-8">
+			<meta name="viewport" content="width=device-width, initial-scale=1.0">
+			<title>Action Log</title>
+			<style>
+				body {
+					font-family: var(--vscode-font-family);
+					font-size: var(--vscode-font-size);
+					padding: 16px 20px;
+					background-color: var(--vscode-editor-background);
+					color: var(--vscode-editor-foreground);
+					margin: 0;
+				}
+				.header-row {
+					display: flex;
+					align-items: center;
+					gap: 16px;
+					margin-bottom: 16px;
+					padding-bottom: 12px;
+					border-bottom: 1px solid var(--vscode-panel-border);
+				}
+				.header-title {
+					font-size: 1.3em;
+					font-weight: 500;
+					flex: 1;
+				}
+				.mode-badge {
+					display: inline-flex;
+					align-items: center;
+					gap: 6px;
+					padding: 4px 12px;
+					border-radius: 4px;
+					font-size: 11px;
+					font-weight: 700;
+					letter-spacing: 1px;
+					text-transform: uppercase;
+				}
+				.stat-row {
+					display: flex;
+					gap: 10px;
+					margin-bottom: 16px;
+				}
+				.stat-box {
+					background: rgba(255,255,255,0.03);
+					border: 1px solid var(--vscode-widget-border);
+					padding: 8px 12px;
+					border-radius: 4px;
+					min-width: 80px;
+					flex: 1;
+				}
+				.stat-value {
+					font-size: 1.4em;
+					font-weight: 700;
+					font-family: monospace;
+				}
+				.stat-label {
+					font-size: 9px;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+					opacity: 0.6;
+					margin-top: 2px;
+				}
+				.filter-row {
+					display: flex;
+					gap: 10px;
+					margin-bottom: 12px;
+					align-items: center;
+				}
+				.filter-row label {
+					font-size: 10px;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+					color: var(--vscode-descriptionForeground);
+				}
+				.filter-row select {
+					background: var(--vscode-input-background);
+					color: var(--vscode-input-foreground);
+					border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+					padding: 3px 8px;
+					font-size: 11px;
+					border-radius: 3px;
+					outline: none;
+					font-family: var(--vscode-font-family);
+				}
+				.entries-count {
+					font-size: 11px;
+					color: var(--vscode-descriptionForeground);
+					margin-left: auto;
+				}
+				table {
+					width: 100%;
+					border-collapse: collapse;
+					font-size: 12px;
+					table-layout: fixed;
+				}
+				th {
+					text-align: left;
+					padding: 6px 8px;
+					font-size: 10px;
+					text-transform: uppercase;
+					letter-spacing: 0.5px;
+					color: var(--vscode-descriptionForeground);
+					border-bottom: 1px solid var(--vscode-panel-border);
+					position: sticky;
+					top: 0;
+					background: var(--vscode-editor-background);
+				}
+				td {
+					padding: 3px 8px;
+					vertical-align: middle;
+					overflow: hidden;
+					text-overflow: ellipsis;
+					white-space: nowrap;
+				}
+				tr:hover {
+					background: rgba(255,255,255,0.03);
+				}
+				.col-time { width: 80px; font-family: monospace; font-size: 11px; color: var(--vscode-descriptionForeground); }
+				.col-sev { width: 24px; text-align: center; }
+				.col-cat { width: 110px; }
+				.col-source { width: 70px; font-size: 11px; opacity: 0.7; }
+				.col-label { }
+				.col-target { width: 180px; font-family: monospace; font-size: 11px; opacity: 0.6; }
+				.category-badge {
+					display: inline-block;
+					padding: 1px 6px;
+					border-radius: 3px;
+					font-size: 10px;
+					font-weight: 600;
+					text-transform: uppercase;
+					letter-spacing: 0.3px;
+				}
+				.empty-state {
+					padding: 24px 8px !important;
+					color: var(--vscode-descriptionForeground);
+					text-align: center;
+				}
+				.table-wrap {
+					overflow-y: auto;
+					max-height: calc(100vh - 200px);
+				}
+			</style>
+		</head>
+		<body>
+			<div class="header-row">
+				<div class="header-title">Action Log</div>
+				<span style="font-size: 12px; color: var(--vscode-testing-iconPassed);">● Live</span>
+				<div class="mode-badge" style="background: ${modeColor}22; color: ${modeColor}; border: 1px solid ${modeColor}44;">
+					● ${mode.toUpperCase()}
+				</div>
+			</div>
+
+			<div class="stat-row">${statBoxes}</div>
+
+			<div class="filter-row">
+				<label>Category</label>
+				<select id="categoryFilter" onchange="sendFilter()">
+					${categoryOptions}
+				</select>
+				<label>Source</label>
+				<select id="sourceFilter" onchange="sendFilter()">
+					${sourceOptions}
+				</select>
+				<div class="entries-count">Showing ${entries.length} of ${stats.totalEntries} entries</div>
+			</div>
+
+			<div class="table-wrap">
+				<table>
+					<thead>
+						<tr>
+							<th style="width: 80px;">Time</th>
+							<th style="width: 24px;"></th>
+							<th style="width: 110px;">Category</th>
+							<th style="width: 70px;">Source</th>
+							<th>Action</th>
+							<th style="width: 180px;">Target</th>
+						</tr>
+					</thead>
+					<tbody>${tableRows}</tbody>
+				</table>
+			</div>
+
+			<script>
+				const vscode = acquireVsCodeApi();
+				function sendFilter() {
+					const category = document.getElementById('categoryFilter').value;
+					const source = document.getElementById('sourceFilter').value;
+					vscode.postMessage({ type: 'filterChange', category, source });
+				}
+			</script>
+		</body>
+		</html>`;
+	}
+
+	private _escapeHtml(str: string): string {
+		return str
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;');
 	}
 
 	override layout(width: number, height: number, top: number, left: number): void {

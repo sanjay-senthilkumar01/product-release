@@ -138,3 +138,7 @@ import '../../neuralInverseEnclave/common/services/firewall/enclaveFirewallServi
 import '../../neuralInverseEnclave/common/services/sandbox/enclaveSandboxService.js';
 import '../../neuralInverseEnclave/common/services/environment/enclaveEnvironmentService.js';
 
+// Action Log — tracks every IDE action (commands, edits, files, terminals, debug, config, lifecycle)
+import '../common/services/actionLog/enclaveActionLogStorageService.js'; // Storage layer (must load before ActionLogService)
+import './services/actionLog/enclaveActionLogService.js';                // Core action tracker (Eager — hooks all event buses on startup)
+
