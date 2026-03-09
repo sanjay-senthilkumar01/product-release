@@ -38,6 +38,8 @@ import './engine/services/externalCommandExecutor.js'; // External tool command 
 import './engine/services/externalResultCache.js';     // Content-hash cache for external tool results
 import './engine/services/externalToolService.js';     // External tool orchestration (CodeQL, Semgrep, Polyspace, ...)
 import './checksAgent/checksAgentService.js';          // GRC specialist AI (Checks Agent TUI)
+import './dependencyTracker/dependencyTrackerService.js'; // Universal dependency tracker + enforcer
+import './extensionTracker/extensionTrackerService.js';   // Extension tracker + enforcer
 import './projectConfigSyncService.js';                // Sync GRC frameworks + extension policy from web console
 import { IChecksSocketService } from './checksSocket/checksSocketService.js'; // Enterprise checks-socket integration
 import { GRCDiagnosticsContribution } from './diagnostics/grcDiagnosticsContribution.js';

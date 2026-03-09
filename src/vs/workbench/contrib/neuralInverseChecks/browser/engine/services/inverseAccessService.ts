@@ -93,8 +93,7 @@ export class InverseAccessService extends Disposable implements IInverseAccessSe
 			config: {
 				name: TERMINAL_NAME,
 				isTransient: true,
-				// Keep it out of the way; users should not need to interact with it
-				hideFromUser: false,
+				hideFromUser: true,
 			},
 		});
 	}

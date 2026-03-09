@@ -140,7 +140,7 @@ export class HistoryService extends Disposable {
 	private async runCommand(cmd: string, waitFile: URI): Promise<void> {
 		let terminal = this.terminalService.instances.find(t => t.title === this.terminalName);
 		if (!terminal) {
-			terminal = await this.terminalService.createTerminal({ config: { name: this.terminalName, isTransient: true } });
+			terminal = await this.terminalService.createTerminal({ config: { name: this.terminalName, isTransient: true, hideFromUser: true } });
 		}
 
 		// Ensure we are in .inverse

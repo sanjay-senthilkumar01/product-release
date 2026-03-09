@@ -503,7 +503,7 @@ export class ProjectAnalyzer extends Disposable {
 		const terminalName = 'Nano Agent Ops';
 		let terminal = this.terminalService.instances.find(t => t.title === terminalName);
 		if (!terminal) {
-			terminal = await this.terminalService.createTerminal({ config: { name: terminalName, isTransient: true } });
+			terminal = await this.terminalService.createTerminal({ config: { name: terminalName, isTransient: true, hideFromUser: true } });
 		}
 		return terminal;
 	}

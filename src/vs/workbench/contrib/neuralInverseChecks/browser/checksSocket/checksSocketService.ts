@@ -33,6 +33,9 @@ import { ICheckResult } from '../engine/types/grcTypes.js';
 import { CHECKS_API_URL } from '../../../void/common/neuralInverseConfig.js';
 import { IProjectConfigSyncService } from '../projectConfigSyncService.js';
 import { GRC_BUILTIN_DOMAINS } from '../engine/types/grcTypes.js';
+import { IExternalToolService } from '../engine/services/externalToolService.js';
+import { IExtensionTrackerService } from '../extensionTracker/extensionTrackerService.js';
+import { IDependencyTrackerService } from '../dependencyTracker/dependencyTrackerService.js';
 
 // ─── Service Interface ────────────────────────────────────────────────────────
 
@@ -91,6 +94,7 @@ class ChecksSocketService extends Disposable implements IChecksSocketService {
 	/** Pending violations waiting to be flushed */
 	private readonly _pendingViolations: ICheckResult[] = [];
 	private _debounceTimer: any = null;
+	private _ideStatePushTimer: any = null;
 
 	/** Violation dedup: key = ruleId:filePath:line — prevents reporting the same violation twice per session */
 	private readonly _reportedViolations = new Set<string>();
@@ -115,6 +119,9 @@ class ChecksSocketService extends Disposable implements IChecksSocketService {
 		@IFileService private readonly _fileService: IFileService,
 		@IInverseAccessService private readonly _inverseAccessService: IInverseAccessService,
 		@IProjectConfigSyncService private readonly _projectConfigSync: IProjectConfigSyncService,
+		@IExternalToolService private readonly _externalToolService: IExternalToolService,
+		@IExtensionTrackerService private readonly _extensionTracker: IExtensionTrackerService,
+		@IDependencyTrackerService private readonly _dependencyTracker: IDependencyTrackerService,
 	) {
 		super();
 
@@ -146,6 +153,16 @@ class ChecksSocketService extends Disposable implements IChecksSocketService {
 		this._register(this._projectConfigSync.onDidChangeSuppressedViolations(newlySuppressed => {
 			this._clearSuppressedDiagnostics(newlySuppressed);
 		}));
+
+		// Push IDE state (external tools, ignore/context patterns, impact) when tools update or checks complete
+		this._register(this._externalToolService.onDidJobUpdate(() => {
+			if (this._ideStatePushTimer) clearTimeout(this._ideStatePushTimer);
+			this._ideStatePushTimer = setTimeout(() => this._pushIdeState(), 8_000);
+		}));
+		this._register(this._grcEngine.onDidCheckComplete(() => {
+			if (this._ideStatePushTimer) clearTimeout(this._ideStatePushTimer);
+			this._ideStatePushTimer = setTimeout(() => this._pushIdeState(), 10_000);
+		}));
 	}
 
 	// ─── Connection lifecycle ─────────────────────────────────────────────────
@@ -159,6 +176,8 @@ class ChecksSocketService extends Disposable implements IChecksSocketService {
 			// Load saved violations from DB — makes DB the source of truth instead of
 			// the fragile local IStorageService cache, so AI scan results survive IDE restarts.
 			setTimeout(() => this._loadViolationsFromDB(), 2_000);
+			// Push IDE state after a short delay to allow engine to settle
+			setTimeout(() => this._pushIdeState(), 5_000);
 		});
 		this._startPoll();
 	}
@@ -479,6 +498,112 @@ class ChecksSocketService extends Disposable implements IChecksSocketService {
 		}
 	}
 
+	// ─── IDE State push ───────────────────────────────────────────────────────
+
+	/**
+	 * Collect IDE state (external tools, ignore patterns, context files, cross-file impact,
+	 * extensions, dependencies) and push to checks-socket for the web console.
+	 */
+	private async _pushIdeState(): Promise<void> {
+		if (!this._isConnected || !this._registeredProjectId) return;
+		const token = await this._authService.getToken();
+		if (!token) return;
+
+		// External tools — group jobs by toolName, take most recent per tool
+		const toolMap = new Map<string, { lastStatus: string; lastRun?: number; resultCount: number; toolVersion?: string }>();
+		for (const job of this._externalToolService.getJobs()) {
+			const existing = toolMap.get(job.toolName);
+			if (!existing || (job.completedAt ?? job.startedAt ?? job.queuedAt) > (existing.lastRun ?? 0)) {
+				toolMap.set(job.toolName, {
+					lastStatus: job.status,
+					lastRun: job.completedAt ?? job.startedAt,
+					resultCount: job.resultCount,
+					toolVersion: job.toolVersion,
+				});
+			}
+		}
+		const externalTools = [...toolMap.entries()].map(([toolName, v]) => ({ toolName, ...v }));
+
+		// Ignore patterns + context files
+		const ignorePatterns = this._grcEngine.getIgnorePatterns();
+		const contextFiles = this._grcEngine.getContextOnlyPatterns();
+
+		// Cross-file impact summary — always include files with violations
+		const impactSummary: Array<{ filePath: string; violations: number; impactedFileCount: number }> = [];
+		try {
+			const allResults = this._grcEngine.getAllResults();
+			const fileViolationMap = new Map<string, number>();
+			for (const r of allResults) {
+				const fp = r.fileUri.path;
+				fileViolationMap.set(fp, (fileViolationMap.get(fp) ?? 0) + 1);
+			}
+			for (const [filePath, violationCount] of fileViolationMap) {
+				// Try to get dependents from import map; 0 if map not built yet
+				let impactedFileCount = 0;
+				try {
+					const chain = this._grcEngine.getImpactChain(URI.file(filePath), 2);
+					if (chain) {
+						// Count total nodes in the tree (excluding root)
+						const countDeps = (node: { dependents?: any[] }): number => {
+							if (!node.dependents) return 0;
+							return node.dependents.reduce((sum: number, d: any) => sum + 1 + countDeps(d), 0);
+						};
+						impactedFileCount = countDeps(chain);
+					}
+				} catch { /* import map not ready */ }
+				impactSummary.push({ filePath, violations: violationCount, impactedFileCount });
+			}
+			impactSummary.sort((a, b) => b.impactedFileCount - a.impactedFileCount || b.violations - a.violations);
+		} catch { /* engine not ready */ }
+
+		// Extensions — from extensionTrackerService
+		let extensions: any = null;
+		try {
+			const extStats = this._extensionTracker.getStats();
+			const exts = this._extensionTracker.getExtensions();
+			extensions = {
+				stats: extStats,
+				blocked: exts.filter(e => e.status === 'blocked').map(e => ({ id: e.id, displayName: e.displayName, reason: e.reason })),
+				flagged: exts.filter(e => e.status === 'flagged').map(e => ({ id: e.id, displayName: e.displayName, reason: e.reason })),
+				policyRules: this._extensionTracker.getPolicyRules(),
+			};
+		} catch { /* not ready */ }
+
+		// Dependencies — from dependencyTrackerService
+		let dependencies: any = null;
+		try {
+			const depStats = this._dependencyTracker.getStats();
+			const deps = this._dependencyTracker.getDependencies();
+			dependencies = {
+				stats: depStats,
+				blocked: deps.filter(d => d.status === 'blocked').map(d => ({ name: d.name, ecosystem: d.ecosystem, version: d.versionConstraint, reason: d.reason })),
+				flagged: deps.filter(d => d.status === 'flagged').map(d => ({ name: d.name, ecosystem: d.ecosystem, version: d.versionConstraint, reason: d.reason })),
+				policyRules: this._dependencyTracker.getPolicyRules(),
+				all: deps.slice(0, 100).map(d => ({ name: d.name, ecosystem: d.ecosystem, version: d.versionConstraint, isDev: d.isDev, status: d.status })),
+			};
+		} catch { /* not ready */ }
+
+		try {
+			await this._nativeHostService.request(`${CHECKS_API_URL}/ide-state`, {
+				type: 'POST',
+				headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+				data: JSON.stringify({
+					projectId: this._registeredProjectId,
+					externalTools,
+					ignorePatterns,
+					contextFiles,
+					impactSummary: impactSummary.slice(0, 30),
+					extensions,
+					dependencies,
+					updatedAt: Date.now(),
+				}),
+			});
+			this._logService.info('[ChecksSocket] IDE state pushed');
+		} catch (err) {
+			this._logService.warn('[ChecksSocket] Failed to push IDE state:', err);
+		}
+	}
+
 	// ─── Polling ──────────────────────────────────────────────────────────────
 
 	private _startPoll(): void {
@@ -507,6 +632,7 @@ class ChecksSocketService extends Disposable implements IChecksSocketService {
 	override dispose(): void {
 		this._stopPoll();
 		if (this._debounceTimer) clearTimeout(this._debounceTimer);
+		if (this._ideStatePushTimer) clearTimeout(this._ideStatePushTimer);
 		super.dispose();
 	}
 }
