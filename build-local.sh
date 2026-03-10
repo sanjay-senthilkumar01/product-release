@@ -84,13 +84,13 @@ ok "React UI built"
 
 # ── Compile TypeScript ────────────────────────────────────────────────────────
 step "Compile TypeScript (compile-build)"
-NODE_OPTIONS="--max-old-space-size=12288" \
+NODE_OPTIONS="--max-old-space-size=6144" \
 node node_modules/.bin/gulp compile-build-with-mangling
 ok "TypeScript compiled"
 
 # ── Minify ────────────────────────────────────────────────────────────────────
 step "Minify — produces out-vscode-min/"
-NODE_OPTIONS="--max-old-space-size=12288" \
+NODE_OPTIONS="--max-old-space-size=6144" \
 node node_modules/.bin/gulp minify-vscode
 ok "Minification done"
 
