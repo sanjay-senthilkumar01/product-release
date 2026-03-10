@@ -30,7 +30,7 @@ jobs:
   ############################################################################
   build-macos-x64:
     name: macOS x64 (.dmg + .pkg + .zip)
-    runs-on: macos-12
+    runs-on: macos-13
     timeout-minutes: 180
 
     steps:
