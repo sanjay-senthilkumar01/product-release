@@ -246,6 +246,7 @@ stages:
             env:
               VSCODE_QUALITY: $(NI_QUALITY)
               npm_config_arch: arm64
+              VSCODE_BUILD_WIN32_MSI: "1"
 
           - powershell: |
               $version = "$(NI_VERSION)"
@@ -253,7 +254,7 @@ stages:
               $releaseDir = ".build\release"
               New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
-              $exts = @('.exe', '.zip')
+              $exts = @('.exe', '.msi', '.zip')
               Get-ChildItem -Path "." -Recurse -File -ErrorAction SilentlyContinue |
                 Where-Object {
                   $exts -contains $_.Extension -and
@@ -268,6 +269,42 @@ stages:
                   Write-Host "Collected: $dest"
                 }
             displayName: "Collect .exe and .zip"
+
+          - powershell: |
+              $version = "$(NI_VERSION)"
+              $releaseDir = ".build\release"
+              $msiDest = Join-Path $releaseDir "$(NI_DISPLAY_NAME)-$version-win32-arm64.msi"
+
+              if (Test-Path $msiDest) {
+                Write-Host ".msi already present - skipping WiX fallback"
+                exit 0
+              }
+
+              $appDir = Get-ChildItem -Path ".", ".." -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "arm64" -and $_.Name -notmatch "node_modules" } |
+                Select-Object -First 1
+
+              if (-not $appDir) {
+                Write-Host "##[warning]App directory not found - .msi will not be produced"
+                exit 0
+              }
+
+              $wixOut = ".build\wix-arm64"
+              New-Item -ItemType Directory -Force -Path $wixOut | Out-Null
+              $harvestedWxs = Join-Path $wixOut "NeuralInverseFiles.wxs"
+              $msiTmp = Join-Path $wixOut "NeuralInverse.msi"
+
+              & heat dir $appDir.FullName -nologo -srd -gg -sreg -cg NeuralInverseFiles -dr INSTALLFOLDER "-var:var.SourceDir" "-out:$harvestedWxs"
+              & candle -nologo -arch arm64 "-dProductVersion=$version" "-dSourceDir=$($appDir.FullName)" "build\win32\NeuralInverse.wxs" $harvestedWxs "-out:$wixOut\"
+              & light -nologo -ext WixUIExtension (Get-ChildItem $wixOut -Filter "*.wixobj").FullName "-out:$msiTmp"
+
+              if (Test-Path $msiTmp) {
+                Copy-Item $msiTmp $msiDest
+                Write-Host "Produced: $msiDest"
+              } else {
+                Write-Host "##[warning]WiX build did not produce arm64 .msi"
+              }
+            displayName: "Build .msi — WiX fallback (arm64)"
 
           - powershell: Get-ChildItem .build\release\ | Format-Table Name, Length
             displayName: "List Windows arm64 artifacts"
@@ -360,6 +397,7 @@ stages:
                 | File | Use case |
                 |---|---|
                 | `NeuralInverse-*-win32-arm64.exe` | Standard install wizard |
+                | `NeuralInverse-*-win32-arm64.msi` | Enterprise / Group Policy / SCCM — `msiexec /i NeuralInverse.msi /quiet` |
                 | `NeuralInverse-*-win32-arm64.zip` | Developers / CI environments |
               assets: "$(Build.ArtifactStagingDirectory)/release/*"
               isDraft: false
