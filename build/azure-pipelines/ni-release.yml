@@ -97,24 +97,8 @@ stages:
             env:
               NODE_OPTIONS: "--max-old-space-size=65536"
 
-          # ── Resolve + validate version ────────────────────────────────────
-          # FIX: validate version looks like semver, not a branch name like 'main'
-          - script: |
-              set -e
-              PARAM_VER="$RELEASE_VERSION_PARAM"
-              TAG="$(NI_TAG)"
-              VERSION="${PARAM_VER:-$TAG}"
-              VERSION="${VERSION#v}"
-              if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]'; then
-                echo "##[error]Version '$VERSION' does not look like a semver (x.y.z)."
-                echo "##[error]Set RELEASE_VERSION parameter or trigger via a v* tag."
-                exit 1
-              fi
-              echo "##vso[task.setvariable variable=NI_VERSION]$VERSION"
-              echo "NI_VERSION = $VERSION"
-            displayName: "Resolve and validate version"
-            env:
-              RELEASE_VERSION_PARAM: ${{ parameters.RELEASE_VERSION }}
+          - script: echo "NI_VERSION = $(NI_VERSION)"
+            displayName: "Confirm version"
 
           # ── Patch product.json for production build ───────────────────────
           # FIX: agentSocketUrl in product.json defaults to localhost — patch it
