@@ -39,43 +39,43 @@ export enum ThemeSettings {
 }
 
 export enum ThemeSettingDefaults {
-	COLOR_THEME_DARK = 'Default Dark+', // Void changed this from 'Default Dark Modern'
+	COLOR_THEME_DARK = 'Default Dark Modern',
 	COLOR_THEME_LIGHT = 'Default Light Modern',
 	COLOR_THEME_HC_DARK = 'Default High Contrast',
 	COLOR_THEME_HC_LIGHT = 'Default High Contrast Light',
 
-	COLOR_THEME_DARK_OLD = 'Default Dark Modern', // Void changed this from 'Default Dark+'
+	COLOR_THEME_DARK_OLD = 'Default Dark+',
 	COLOR_THEME_LIGHT_OLD = 'Default Light+',
 
 	FILE_ICON_THEME = 'vs-seti',
 	PRODUCT_ICON_THEME = 'Default',
 }
 
-export const COLOR_THEME_DARK_INITIAL_COLORS = { // Void changed this to match dark+
-	'activityBar.activeBorder': '#ffffff',
-	'activityBar.background': '#333333',
-	'activityBar.border': '#454545',
-	'activityBar.foreground': '#ffffff',
+export const COLOR_THEME_DARK_INITIAL_COLORS = {
+	'activityBar.activeBorder': '#0078d4',
+	'activityBar.background': '#181818',
+	'activityBar.border': '#2b2b2b',
+	'activityBar.foreground': '#d7d7d7',
 	'activityBar.inactiveForeground': '#ffffff66',
-	'editorGroup.border': '#444444',
-	'editorGroupHeader.tabsBackground': '#252526',
-	'editorGroupHeader.tabsBorder': '#252526',
-	'statusBar.background': '#007ACC',
-	'statusBar.border': '#454545',
-	'statusBar.foreground': '#ffffff',
-	'statusBar.noFolderBackground': '#68217A',
-	'tab.activeBackground': '#2D2D2D',
-	'tab.activeBorder': '#ffffff',
-	'tab.activeBorderTop': '#007ACC',
+	'editorGroup.border': '#2b2b2b',
+	'editorGroupHeader.tabsBackground': '#181818',
+	'editorGroupHeader.tabsBorder': '#2b2b2b',
+	'statusBar.background': '#181818',
+	'statusBar.border': '#2b2b2b',
+	'statusBar.foreground': '#cccccc',
+	'statusBar.noFolderBackground': '#181818',
+	'tab.activeBackground': '#1f1f1f',
+	'tab.activeBorder': '#0078d4',
+	'tab.activeBorderTop': '#0078d4',
 	'tab.activeForeground': '#ffffff',
-	'tab.border': '#252526',
+	'tab.border': '#2b2b2b',
 	'textLink.foreground': '#3794ff',
-	'titleBar.activeBackground': '#3C3C3C',
-	'titleBar.activeForeground': '#CCCCCC',
-	'titleBar.border': '#454545',
-	'titleBar.inactiveBackground': '#2C2C2C',
-	'titleBar.inactiveForeground': '#999999',
-	'welcomePage.tileBackground': '#252526'
+	'titleBar.activeBackground': '#181818',
+	'titleBar.activeForeground': '#cccccc',
+	'titleBar.border': '#2b2b2b',
+	'titleBar.inactiveBackground': '#181818',
+	'titleBar.inactiveForeground': '#cccccc99',
+	'welcomePage.tileBackground': '#1f1f1f'
 };
 
 export const COLOR_THEME_LIGHT_INITIAL_COLORS = {
