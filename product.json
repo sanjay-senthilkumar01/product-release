@@ -1,7 +1,7 @@
 {
 	"nameShort": "NeuralInverse",
 	"nameLong": "NeuralInverse",
-	"voidVersion": "1.4.9",
+	"voidVersion": "0.1.0",
 	"voidRelease": "0044",
 	"agentSocketUrl": "http://localhost:3002",
 	"applicationName": "neuralinverse",

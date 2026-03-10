@@ -21,8 +21,17 @@
 #
 #  Required Azure DevOps setup (one-time):
 #    1. GitHub service connection named: github-neuralinverse
-#    2. Azure service connection named:  azure-neuralinverse  (for pilot uploads)
-#    3. Pipeline variable: NI_GITHUB_REPO = neuralinverse/neuralinverse
+#    2. Azure service connection named:  azure-neuralinverse
+#    3. Pipeline variables:
+#         NI_GITHUB_REPO      = neuralinverse/neuralinverse
+#         NI_STORAGE_ACCOUNT  = <azure storage account name>
+#         NI_STORAGE_KEY      = <storage account key>  (mark as secret)
+#
+#  Safety checkpoints:
+#    Each platform uploads its artifacts to Azure Blob immediately on completion:
+#      releases/0.1.0/NeuralInverse-0.1.0-darwin-arm64.dmg  etc.
+#    If Windows fails, macOS artifacts are already in blob. Re-run failed jobs
+#    in Azure DevOps — only Windows rebuilds. GitHub Release pulls from blob.
 ################################################################################
 
 trigger:
@@ -35,11 +44,6 @@ trigger:
 
 pr: none
 
-parameters:
-  - name: RELEASE_VERSION
-    displayName: "Release version (e.g. 1.4.9) — required for manual runs, leave blank when triggered by a tag"
-    type: string
-    default: ""
 
 variables:
   NODE_VERSION: "20.x"
@@ -47,7 +51,7 @@ variables:
   NI_APP_NAME: "neuralinverse"
   NI_DISPLAY_NAME: "NeuralInverse"
   NI_BUNDLE_ID: "com.neuralinverse.code"
-  # Build.SourceBranchName = tag name (e.g. v1.4.9) when triggered by a tag push
+  NI_VERSION: "0.1.0"
   NI_TAG: $(Build.SourceBranchName)
 
 ################################################################################
@@ -204,6 +208,24 @@ stages:
               artifact: "NeuralInverse-darwin-arm64"
               publishLocation: pipeline
 
+          # Safety checkpoint — push macOS artifacts to blob immediately.
+          # If Windows or Linux fails later, macOS is already saved.
+          - task: AzureCLI@2
+            displayName: "Checkpoint — upload macOS to Azure Blob"
+            inputs:
+              azureSubscription: "azure-neuralinverse"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                az storage blob upload-batch \
+                  --account-name "$(NI_STORAGE_ACCOUNT)" \
+                  --account-key "$(NI_STORAGE_KEY)" \
+                  --destination "releases" \
+                  --destination-path "$(NI_VERSION)" \
+                  --source ".build/release" \
+                  --overwrite true
+                echo "macOS checkpoint saved to releases/$(NI_VERSION)/"
+
 ################################################################################
 #  STAGE 2 — Windows x64  (.exe + .msi + .zip)
 ################################################################################
@@ -260,21 +282,8 @@ stages:
               NODE_OPTIONS: "--max-old-space-size=65536"
 
           # ── Resolve + validate version ────────────────────────────────────
-          - powershell: |
-              $paramVer = "$env:RELEASE_VERSION_PARAM"
-              $tag = "$(NI_TAG)"
-              $version = if ($paramVer) { $paramVer } else { $tag }
-              $version = $version -replace '^v', ''
-              if ($version -notmatch '^\d+\.\d+\.\d+') {
-                Write-Host "##[error]Version '$version' does not look like semver (x.y.z)."
-                Write-Host "##[error]Set RELEASE_VERSION parameter or trigger via a v* tag."
-                exit 1
-              }
-              Write-Host "##vso[task.setvariable variable=NI_VERSION]$version"
-              Write-Host "NI_VERSION = $version"
-            displayName: "Resolve and validate version"
-            env:
-              RELEASE_VERSION_PARAM: ${{ parameters.RELEASE_VERSION }}
+          - powershell: Write-Host "NI_VERSION = $(NI_VERSION)"
+            displayName: "Confirm version"
 
           # ── Patch product.json for production build ───────────────────────
           - powershell: |
@@ -365,6 +374,23 @@ stages:
               artifact: "NeuralInverse-win32-x64"
               publishLocation: pipeline
 
+          # Safety checkpoint — push Windows artifacts to blob immediately.
+          - task: AzureCLI@2
+            displayName: "Checkpoint — upload Windows to Azure Blob"
+            inputs:
+              azureSubscription: "azure-neuralinverse"
+              scriptType: "pscore"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                az storage blob upload-batch `
+                  --account-name "$(NI_STORAGE_ACCOUNT)" `
+                  --account-key "$(NI_STORAGE_KEY)" `
+                  --destination "releases" `
+                  --destination-path "$(NI_VERSION)" `
+                  --source ".build/release" `
+                  --overwrite true
+                Write-Host "Windows checkpoint saved to releases/$(NI_VERSION)/"
+
 ################################################################################
 #  STAGE 3 — Linux x64  (.deb + .rpm + .tar.gz + .AppImage)
 ################################################################################
@@ -418,21 +444,8 @@ stages:
               NODE_OPTIONS: "--max-old-space-size=65536"
 
           # ── Resolve + validate version ────────────────────────────────────
-          - script: |
-              set -e
-              PARAM_VER="$RELEASE_VERSION_PARAM"
-              TAG="$(NI_TAG)"
-              VERSION="${PARAM_VER:-$TAG}"
-              VERSION="${VERSION#v}"
-              if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]'; then
-                echo "##[error]Version '$VERSION' is not semver. Use RELEASE_VERSION param or trigger via a v* tag."
-                exit 1
-              fi
-              echo "##vso[task.setvariable variable=NI_VERSION]$VERSION"
-              echo "Version resolved: $VERSION"
-            displayName: "Resolve and validate version"
-            env:
-              RELEASE_VERSION_PARAM: ${{ parameters.RELEASE_VERSION }}
+          - script: echo "NI_VERSION = $(NI_VERSION)"
+            displayName: "Confirm version"
 
           # ── Patch product.json for production build ───────────────────────
           - script: |
@@ -540,6 +553,23 @@ stages:
               artifact: "NeuralInverse-linux-x64"
               publishLocation: pipeline
 
+          # Safety checkpoint — push Linux artifacts to blob immediately.
+          - task: AzureCLI@2
+            displayName: "Checkpoint — upload Linux to Azure Blob"
+            inputs:
+              azureSubscription: "azure-neuralinverse"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                az storage blob upload-batch \
+                  --account-name "$(NI_STORAGE_ACCOUNT)" \
+                  --account-key "$(NI_STORAGE_KEY)" \
+                  --destination "releases" \
+                  --destination-path "$(NI_VERSION)" \
+                  --source ".build/release" \
+                  --overwrite true
+                echo "Linux checkpoint saved to releases/$(NI_VERSION)/"
+
 ################################################################################
 #  STAGE 4 — GitHub Release  (all formats)
 ################################################################################
@@ -558,26 +588,29 @@ stages:
         steps:
           - checkout: none
 
-          - task: DownloadPipelineArtifact@2
-            displayName: "Download macOS artifacts"
+          # Pull all platform artifacts from blob storage.
+          # Because each build stage uploaded its checkpoint immediately on
+          # completion, these files are available even after re-runs that only
+          # rebuilt the failed platform.
+          - task: AzureCLI@2
+            displayName: "Download all artifacts from Azure Blob"
             inputs:
-              artifact: "NeuralInverse-darwin-arm64"
-              path: "$(Build.ArtifactStagingDirectory)/release"
-
-          - task: DownloadPipelineArtifact@2
-            displayName: "Download Windows artifacts"
-            inputs:
-              artifact: "NeuralInverse-win32-x64"
-              path: "$(Build.ArtifactStagingDirectory)/release"
-
-          - task: DownloadPipelineArtifact@2
-            displayName: "Download Linux artifacts"
-            inputs:
-              artifact: "NeuralInverse-linux-x64"
-              path: "$(Build.ArtifactStagingDirectory)/release"
-
-          - bash: ls -lh "$(Build.ArtifactStagingDirectory)/release/"
-            displayName: "List all release artifacts"
+              azureSubscription: "azure-neuralinverse"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                DEST="$(Build.ArtifactStagingDirectory)/release"
+                mkdir -p "$DEST"
+                az storage blob download-batch \
+                  --account-name "$(NI_STORAGE_ACCOUNT)" \
+                  --account-key "$(NI_STORAGE_KEY)" \
+                  --source "releases" \
+                  --destination "$DEST" \
+                  --pattern "$(NI_VERSION)/*"
+                # Flatten: move files out of the version subdirectory
+                mv "$DEST/$(NI_VERSION)/"* "$DEST/" 2>/dev/null || true
+                rmdir "$DEST/$(NI_VERSION)" 2>/dev/null || true
+                ls -lh "$DEST/"
 
           # Requires:
           #   - GitHub service connection: github-neuralinverse
