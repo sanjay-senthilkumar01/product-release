@@ -93,6 +93,7 @@ stages:
             env:
               npm_config_arch: arm64
               ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+              GITHUB_TOKEN: $(GITHUB_TOKEN)
 
           - script: npm run buildreact
             displayName: "Build React UI"
@@ -256,6 +257,7 @@ stages:
             displayName: "Install dependencies"
             env:
               ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+              GITHUB_TOKEN: $(GITHUB_TOKEN)
 
           - script: npm run buildreact
             displayName: "Build React UI"
@@ -418,6 +420,7 @@ stages:
             displayName: "Install dependencies"
             env:
               ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+              GITHUB_TOKEN: $(GITHUB_TOKEN)
 
           - script: npm run buildreact
             displayName: "Build React UI"
