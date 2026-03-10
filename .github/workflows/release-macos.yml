@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 env:
-  NI_VERSION: "0.1.0"
+  NI_VERSION: "0.1.1"
   NI_DISPLAY_NAME: "NeuralInverse"
   NI_BUNDLE_ID: "com.neuralinverse.code"
   NI_QUALITY: "stable"
@@ -138,7 +138,7 @@ jobs:
   ############################################################################
   build-macos-x64:
     name: macOS x64 (.dmg + .pkg + .zip)
-    runs-on: macos-13-xlarge
+    runs-on: macos-13
     timeout-minutes: 180
 
     steps:
