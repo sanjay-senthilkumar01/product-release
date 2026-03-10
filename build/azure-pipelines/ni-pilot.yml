@@ -86,12 +86,12 @@ stages:
           - script: node node_modules/.bin/gulp compile-build-with-mangling
             displayName: "Compile TypeScript (production)"
             env:
-              NODE_OPTIONS: "--max-old-space-size=65536"
+              NODE_OPTIONS: "--max-old-space-size=12288"
 
           - script: node node_modules/.bin/gulp minify-vscode
             displayName: "Minify (produces out-vscode-min/)"
             env:
-              NODE_OPTIONS: "--max-old-space-size=65536"
+              NODE_OPTIONS: "--max-old-space-size=12288"
 
           - script: node node_modules/.bin/gulp vscode-darwin-arm64-min-ci
             displayName: "Gulp — package macOS arm64"
@@ -207,12 +207,12 @@ stages:
           - script: node node_modules/.bin/gulp compile-build-with-mangling
             displayName: "Compile TypeScript (production)"
             env:
-              NODE_OPTIONS: "--max-old-space-size=65536"
+              NODE_OPTIONS: "--max-old-space-size=12288"
 
           - script: node node_modules/.bin/gulp minify-vscode
             displayName: "Minify (produces out-vscode-min/)"
             env:
-              NODE_OPTIONS: "--max-old-space-size=65536"
+              NODE_OPTIONS: "--max-old-space-size=12288"
 
           - script: node node_modules/.bin/gulp vscode-win32-x64-min-ci
             displayName: "Gulp — package Windows x64"
