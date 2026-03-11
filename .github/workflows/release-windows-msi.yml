@@ -99,7 +99,7 @@ jobs:
           Write-Host "wixobj files: $wixObjs"
 
           Write-Host "=== light ==="
-          & light -nologo -ext WixUIExtension $wixObjs -out $msiTmp
+          & light -nologo -ext WixUIExtension $wixObjs -out $msiTmp -b $appDir
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::light failed"; exit 1 }
 
           Copy-Item $msiTmp $msiDest -Force
@@ -200,7 +200,7 @@ jobs:
           Write-Host "wixobj files: $wixObjs"
 
           Write-Host "=== light ==="
-          & light -nologo -ext WixUIExtension $wixObjs -out $msiTmp
+          & light -nologo -ext WixUIExtension $wixObjs -out $msiTmp -b $appDir
           if ($LASTEXITCODE -ne 0) { Write-Host "::error::light failed"; exit 1 }
 
           Copy-Item $msiTmp $msiDest -Force
