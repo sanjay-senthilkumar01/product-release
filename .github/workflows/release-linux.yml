@@ -117,16 +117,16 @@ jobs:
           RDIR=".build/release"
           mkdir -p "$RDIR"
 
-          DEB=$(find . -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
+          DEB=$(find . .. -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
           if [ -n "$DEB" ]; then cp "$DEB" "$RDIR/${NAME}-${VERSION}-linux-x64.deb"; echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.deb" | cut -f1)"; else echo "::warning::No .deb found"; fi
 
-          RPM=$(find . -maxdepth 10 -name "*.rpm" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
+          RPM=$(find . .. -maxdepth 10 -name "*.rpm" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
           if [ -n "$RPM" ]; then cp "$RPM" "$RDIR/${NAME}-${VERSION}-linux-x64.rpm"; echo "rpm: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.rpm" | cut -f1)"; else echo "::warning::No .rpm found"; fi
 
-          APPIMG=$(find . -maxdepth 10 -name "*.AppImage" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
+          APPIMG=$(find . .. -maxdepth 10 -name "*.AppImage" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
           if [ -n "$APPIMG" ]; then cp "$APPIMG" "$RDIR/${NAME}-${VERSION}-linux-x64.AppImage"; echo "AppImage: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.AppImage" | cut -f1)"; else echo "::warning::No .AppImage found"; fi
 
-          TGZ=$(find . -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
+          TGZ=$(find . .. -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
           if [ -n "$TGZ" ]; then cp "$TGZ" "$RDIR/${NAME}-${VERSION}-linux-x64.tar.gz"; echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.tar.gz" | cut -f1)"; else echo "::warning::No .tar.gz found"; fi
 
       - name: List artifacts
@@ -216,10 +216,10 @@ jobs:
           RDIR=".build/release"
           mkdir -p "$RDIR"
 
-          DEB=$(find . -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
+          DEB=$(find . .. -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
           if [ -n "$DEB" ]; then cp "$DEB" "$RDIR/${NAME}-${VERSION}-linux-arm64.deb"; echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-arm64.deb" | cut -f1)"; else echo "::warning::No .deb found"; fi
 
-          TGZ=$(find . -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
+          TGZ=$(find . .. -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
           if [ -n "$TGZ" ]; then cp "$TGZ" "$RDIR/${NAME}-${VERSION}-linux-arm64.tar.gz"; echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-arm64.tar.gz" | cut -f1)"; else echo "::warning::No .tar.gz found"; fi
 
       - name: List artifacts
@@ -309,10 +309,10 @@ jobs:
           RDIR=".build/release"
           mkdir -p "$RDIR"
 
-          DEB=$(find . -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
+          DEB=$(find . .. -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
           if [ -n "$DEB" ]; then cp "$DEB" "$RDIR/${NAME}-${VERSION}-linux-armhf.deb"; echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-armhf.deb" | cut -f1)"; else echo "::warning::No .deb found"; fi
 
-          TGZ=$(find . -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
+          TGZ=$(find . .. -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
           if [ -n "$TGZ" ]; then cp "$TGZ" "$RDIR/${NAME}-${VERSION}-linux-armhf.tar.gz"; echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-armhf.tar.gz" | cut -f1)"; else echo "::warning::No .tar.gz found"; fi
 
       - name: List artifacts
@@ -351,7 +351,7 @@ jobs:
           merge-multiple: true
 
       - name: List release artifacts
-        run: ls -lh release/
+        run: mkdir -p release/ && ls -lh release/
 
       - name: Upload to S3
         env:
