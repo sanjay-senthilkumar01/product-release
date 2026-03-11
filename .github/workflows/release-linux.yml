@@ -118,25 +118,95 @@ jobs:
           ls -la ../
           echo "=== All .deb .rpm .tar.gz .AppImage files ==="
           find . .. -maxdepth 8 \( -name "*.deb" -o -name "*.rpm" -o -name "*.tar.gz" -o -name "*.AppImage" \) ! -path "*/node_modules/*" 2>/dev/null || echo "none found"
+          echo "=== App directories produced by gulp ==="
+          find . .. -maxdepth 3 -type d \( -name "VSCode-linux-*" -o -name "NeuralInverse-linux-*" \) 2>/dev/null || echo "none found"
 
-      - name: Collect artifacts
+      - name: Create packages from app directory
         run: |
           VERSION="${{ env.NI_VERSION }}"
           NAME="${{ env.NI_DISPLAY_NAME }}"
+          NAME_LOWER=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
           RDIR=".build/release"
           mkdir -p "$RDIR"
 
-          DEB=$(find . .. -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
-          if [ -n "$DEB" ]; then cp "$DEB" "$RDIR/${NAME}-${VERSION}-linux-x64.deb"; echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.deb" | cut -f1)"; else echo "::warning::No .deb found"; fi
+          # Find the gulp-produced app directory
+          APP_DIR=$(find . .. -maxdepth 3 -type d \( -name "VSCode-linux-x64" -o -name "${NAME}-linux-x64" \) 2>/dev/null | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "::error::Could not find linux-x64 app directory — aborting"
+            exit 1
+          fi
+          echo "Found app dir: $APP_DIR"
+          ls "$APP_DIR" | head -20
 
-          RPM=$(find . .. -maxdepth 10 -name "*.rpm" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
-          if [ -n "$RPM" ]; then cp "$RPM" "$RDIR/${NAME}-${VERSION}-linux-x64.rpm"; echo "rpm: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.rpm" | cut -f1)"; else echo "::warning::No .rpm found"; fi
+          # ── .tar.gz ──────────────────────────────────────────────────────────
+          tar czf "$RDIR/${NAME}-${VERSION}-linux-x64.tar.gz" \
+            -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")"
+          echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.tar.gz" | cut -f1)"
 
-          APPIMG=$(find . .. -maxdepth 10 -name "*.AppImage" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
-          if [ -n "$APPIMG" ]; then cp "$APPIMG" "$RDIR/${NAME}-${VERSION}-linux-x64.AppImage"; echo "AppImage: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.AppImage" | cut -f1)"; else echo "::warning::No .AppImage found"; fi
+          # ── .deb ─────────────────────────────────────────────────────────────
+          DEB_TMP=$(mktemp -d)
+          mkdir -p "$DEB_TMP/usr/share/${NAME_LOWER}"
+          cp -rp "$APP_DIR/." "$DEB_TMP/usr/share/${NAME_LOWER}/"
+          mkdir -p "$DEB_TMP/usr/bin"
+          ln -sf "/usr/share/${NAME_LOWER}/${NAME_LOWER}" "$DEB_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || \
+            ln -sf "/usr/share/${NAME_LOWER}/code" "$DEB_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || true
+          mkdir -p "$DEB_TMP/usr/share/applications"
+          cat > "$DEB_TMP/usr/share/applications/${NAME_LOWER}.desktop" << DESKTOP
+          [Desktop Entry]
+          Name=${NAME}
+          Comment=AI-Native IDE for regulated and critical software development
+          Exec=/usr/share/${NAME_LOWER}/${NAME_LOWER} %F
+          Icon=${NAME_LOWER}
+          Type=Application
+          Categories=Development;IDE;
+          StartupWMClass=${NAME}
+          DESKTOP
+          mkdir -p "$DEB_TMP/DEBIAN"
+          cat > "$DEB_TMP/DEBIAN/control" << CTRL
+          Package: ${NAME_LOWER}
+          Version: ${VERSION}
+          Architecture: amd64
+          Maintainer: NeuralInverse <support@neuralinverse.ai>
+          Description: NeuralInverse IDE
+           AI-Native IDE for regulated and critical software development.
+          CTRL
+          fakeroot dpkg-deb --build "$DEB_TMP" "$RDIR/${NAME}-${VERSION}-linux-x64.deb"
+          echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.deb" | cut -f1)"
+          rm -rf "$DEB_TMP"
 
-          TGZ=$(find . .. -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
-          if [ -n "$TGZ" ]; then cp "$TGZ" "$RDIR/${NAME}-${VERSION}-linux-x64.tar.gz"; echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.tar.gz" | cut -f1)"; else echo "::warning::No .tar.gz found"; fi
+          # ── .AppImage ────────────────────────────────────────────────────────
+          APPDIR_TMP=$(mktemp -d)
+          mkdir -p "$APPDIR_TMP/usr/bin" "$APPDIR_TMP/usr/share/${NAME_LOWER}"
+          cp -rp "$APP_DIR/." "$APPDIR_TMP/usr/share/${NAME_LOWER}/"
+          ln -sf "../share/${NAME_LOWER}/${NAME_LOWER}" "$APPDIR_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || \
+            ln -sf "../share/${NAME_LOWER}/code" "$APPDIR_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || true
+          cat > "$APPDIR_TMP/${NAME_LOWER}.desktop" << DESKTOP
+          [Desktop Entry]
+          Name=${NAME}
+          Exec=${NAME_LOWER}
+          Icon=${NAME_LOWER}
+          Type=Application
+          Categories=Development;
+          DESKTOP
+          # Copy icon for AppImage
+          if [ -f "resources/linux/code.png" ]; then
+            cp "resources/linux/code.png" "$APPDIR_TMP/${NAME_LOWER}.png"
+          fi
+          # AppRun entrypoint
+          cat > "$APPDIR_TMP/AppRun" << 'APPRUN'
+          #!/bin/sh
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          EXEC=$(find "${HERE}/usr/share" -maxdepth 2 -name "code" -o -name "${NAME_LOWER}" 2>/dev/null | head -1)
+          exec "${EXEC:-${HERE}/usr/bin/${NAME_LOWER}}" "$@"
+          APPRUN
+          chmod +x "$APPDIR_TMP/AppRun"
+          ARCH=x86_64 appimagetool --appimage-extract-and-run \
+            "$APPDIR_TMP" "$RDIR/${NAME}-${VERSION}-linux-x64.AppImage" \
+            && echo "AppImage: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-x64.AppImage" | cut -f1)" \
+            || echo "::warning::AppImage creation failed — skipping"
+          rm -rf "$APPDIR_TMP"
 
       - name: List artifacts
         run: ls -lh .build/release/
@@ -218,18 +288,45 @@ jobs:
           VSCODE_QUALITY: ${{ env.NI_QUALITY }}
           npm_config_arch: arm64
 
-      - name: Collect artifacts
+      - name: Create packages from app directory
         run: |
           VERSION="${{ env.NI_VERSION }}"
           NAME="${{ env.NI_DISPLAY_NAME }}"
+          NAME_LOWER=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
           RDIR=".build/release"
           mkdir -p "$RDIR"
 
-          DEB=$(find . .. -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
-          if [ -n "$DEB" ]; then cp "$DEB" "$RDIR/${NAME}-${VERSION}-linux-arm64.deb"; echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-arm64.deb" | cut -f1)"; else echo "::warning::No .deb found"; fi
+          APP_DIR=$(find . .. -maxdepth 3 -type d \( -name "VSCode-linux-arm64" -o -name "${NAME}-linux-arm64" \) 2>/dev/null | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "::error::Could not find linux-arm64 app directory — aborting"
+            exit 1
+          fi
+          echo "Found app dir: $APP_DIR"
 
-          TGZ=$(find . .. -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
-          if [ -n "$TGZ" ]; then cp "$TGZ" "$RDIR/${NAME}-${VERSION}-linux-arm64.tar.gz"; echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-arm64.tar.gz" | cut -f1)"; else echo "::warning::No .tar.gz found"; fi
+          # .tar.gz
+          tar czf "$RDIR/${NAME}-${VERSION}-linux-arm64.tar.gz" \
+            -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")"
+          echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-arm64.tar.gz" | cut -f1)"
+
+          # .deb
+          DEB_TMP=$(mktemp -d)
+          mkdir -p "$DEB_TMP/usr/share/${NAME_LOWER}"
+          cp -rp "$APP_DIR/." "$DEB_TMP/usr/share/${NAME_LOWER}/"
+          mkdir -p "$DEB_TMP/usr/bin"
+          ln -sf "/usr/share/${NAME_LOWER}/${NAME_LOWER}" "$DEB_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || \
+            ln -sf "/usr/share/${NAME_LOWER}/code" "$DEB_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || true
+          mkdir -p "$DEB_TMP/DEBIAN"
+          cat > "$DEB_TMP/DEBIAN/control" << CTRL
+          Package: ${NAME_LOWER}
+          Version: ${VERSION}
+          Architecture: arm64
+          Maintainer: NeuralInverse <support@neuralinverse.ai>
+          Description: NeuralInverse IDE
+           AI-Native IDE for regulated and critical software development.
+          CTRL
+          fakeroot dpkg-deb --build "$DEB_TMP" "$RDIR/${NAME}-${VERSION}-linux-arm64.deb"
+          echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-arm64.deb" | cut -f1)"
+          rm -rf "$DEB_TMP"
 
       - name: List artifacts
         run: ls -lh .build/release/
@@ -311,18 +408,45 @@ jobs:
           VSCODE_QUALITY: ${{ env.NI_QUALITY }}
           npm_config_arch: armhf
 
-      - name: Collect artifacts
+      - name: Create packages from app directory
         run: |
           VERSION="${{ env.NI_VERSION }}"
           NAME="${{ env.NI_DISPLAY_NAME }}"
+          NAME_LOWER=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
           RDIR=".build/release"
           mkdir -p "$RDIR"
 
-          DEB=$(find . .. -maxdepth 10 -name "*.deb" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
-          if [ -n "$DEB" ]; then cp "$DEB" "$RDIR/${NAME}-${VERSION}-linux-armhf.deb"; echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-armhf.deb" | cut -f1)"; else echo "::warning::No .deb found"; fi
+          APP_DIR=$(find . .. -maxdepth 3 -type d \( -name "VSCode-linux-armhf" -o -name "${NAME}-linux-armhf" \) 2>/dev/null | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "::error::Could not find linux-armhf app directory — aborting"
+            exit 1
+          fi
+          echo "Found app dir: $APP_DIR"
 
-          TGZ=$(find . .. -maxdepth 10 -name "*.tar.gz" ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null | head -1)
-          if [ -n "$TGZ" ]; then cp "$TGZ" "$RDIR/${NAME}-${VERSION}-linux-armhf.tar.gz"; echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-armhf.tar.gz" | cut -f1)"; else echo "::warning::No .tar.gz found"; fi
+          # .tar.gz
+          tar czf "$RDIR/${NAME}-${VERSION}-linux-armhf.tar.gz" \
+            -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")"
+          echo "tar.gz: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-armhf.tar.gz" | cut -f1)"
+
+          # .deb
+          DEB_TMP=$(mktemp -d)
+          mkdir -p "$DEB_TMP/usr/share/${NAME_LOWER}"
+          cp -rp "$APP_DIR/." "$DEB_TMP/usr/share/${NAME_LOWER}/"
+          mkdir -p "$DEB_TMP/usr/bin"
+          ln -sf "/usr/share/${NAME_LOWER}/${NAME_LOWER}" "$DEB_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || \
+            ln -sf "/usr/share/${NAME_LOWER}/code" "$DEB_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || true
+          mkdir -p "$DEB_TMP/DEBIAN"
+          cat > "$DEB_TMP/DEBIAN/control" << CTRL
+          Package: ${NAME_LOWER}
+          Version: ${VERSION}
+          Architecture: armhf
+          Maintainer: NeuralInverse <support@neuralinverse.ai>
+          Description: NeuralInverse IDE
+           AI-Native IDE for regulated and critical software development.
+          CTRL
+          fakeroot dpkg-deb --build "$DEB_TMP" "$RDIR/${NAME}-${VERSION}-linux-armhf.deb"
+          echo "deb: $(du -sh "$RDIR/${NAME}-${VERSION}-linux-armhf.deb" | cut -f1)"
+          rm -rf "$DEB_TMP"
 
       - name: List artifacts
         run: ls -lh .build/release/
