@@ -123,7 +123,7 @@ jobs:
           npm config set fetch-timeout 300000
           npm ci --ignore-scripts
           node build/npm/postinstall.js
-          npm rebuild
+          npm rebuild @vscode/policy-watcher @vscode/spdlog @vscode/sqlite3 @vscode/deviceid @vscode/windows-mutex @vscode/windows-registry @vscode/windows-process-tree native-keymap native-watchdog native-is-elevated node-pty @parcel/watcher windows-foreground-love kerberos 2>&1 || echo "Some native modules failed to rebuild (non-fatal)"
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -302,7 +302,7 @@ jobs:
           npm config set fetch-timeout 300000
           npm ci --ignore-scripts
           node build/npm/postinstall.js
-          npm rebuild
+          npm rebuild @vscode/policy-watcher @vscode/spdlog @vscode/sqlite3 @vscode/deviceid @vscode/windows-mutex @vscode/windows-registry @vscode/windows-process-tree native-keymap native-watchdog native-is-elevated node-pty @parcel/watcher windows-foreground-love kerberos 2>&1 || echo "Some native modules failed to rebuild (non-fatal)"
         env:
           npm_config_arch: arm64
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
