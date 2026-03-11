@@ -110,6 +110,15 @@ jobs:
         env:
           VSCODE_QUALITY: ${{ env.NI_QUALITY }}
 
+      - name: Debug — list gulp output
+        run: |
+          echo "=== Files in workspace root ==="
+          ls -la
+          echo "=== Files in ../ ==="
+          ls -la ../
+          echo "=== All .deb .rpm .tar.gz .AppImage files ==="
+          find . .. -maxdepth 8 \( -name "*.deb" -o -name "*.rpm" -o -name "*.tar.gz" -o -name "*.AppImage" \) ! -path "*/node_modules/*" 2>/dev/null || echo "none found"
+
       - name: Collect artifacts
         run: |
           VERSION="${{ env.NI_VERSION }}"
