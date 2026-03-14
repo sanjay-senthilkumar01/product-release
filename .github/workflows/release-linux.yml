@@ -155,7 +155,7 @@ jobs:
           [Desktop Entry]
           Name=${NAME}
           Comment=AI-Native IDE for regulated and critical software development
-          Exec=/usr/share/${NAME_LOWER}/${NAME_LOWER} %F
+          Exec=/usr/share/${NAME_LOWER}/${NAME_LOWER} %U
           Icon=${NAME_LOWER}
           Type=Application
           Categories=Development;IDE;
