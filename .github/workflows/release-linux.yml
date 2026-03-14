@@ -160,7 +160,17 @@ jobs:
           Type=Application
           Categories=Development;IDE;
           StartupWMClass=${NAME}
+          MimeType=x-scheme-handler/${NAME_LOWER};
           DESKTOP
+          # postinst: register URL scheme handler after dpkg installs the desktop file
+          mkdir -p "$DEB_TMP/DEBIAN"
+          cat > "$DEB_TMP/DEBIAN/postinst" << POSTINST
+          #!/bin/sh
+          set -e
+          update-desktop-database /usr/share/applications 2>/dev/null || true
+          xdg-mime default ${NAME_LOWER}.desktop x-scheme-handler/${NAME_LOWER} 2>/dev/null || true
+          POSTINST
+          chmod 0755 "$DEB_TMP/DEBIAN/postinst"
           mkdir -p "$DEB_TMP/DEBIAN"
           cat > "$DEB_TMP/DEBIAN/control" << CTRL
           Package: ${NAME_LOWER}
@@ -187,6 +197,7 @@ jobs:
           Icon=${NAME_LOWER}
           Type=Application
           Categories=Development;
+          MimeType=x-scheme-handler/${NAME_LOWER};
           DESKTOP
           # Copy icon for AppImage
           if [ -f "resources/linux/code.png" ]; then
