@@ -341,67 +341,77 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 	onText = newOnText
 	onFinalMessage = newOnFinalMessage
 
-	let fullReasoningSoFar = ''
-	let fullTextSoFar = ''
+	const MAX_EMPTY_RETRIES = 2
 
-	let toolCallsBuffer: { name: string, id: string, args: string }[] = []
+	const attemptStream = (attemptNum: number) => {
+		let fullReasoningSoFar = ''
+		let fullTextSoFar = ''
+		let toolCallsBuffer: { name: string, id: string, args: string }[] = []
 
-	openai.chat.completions
-		.create(options)
-		.then(async response => {
-			_setAborter(() => response.controller.abort())
-			// when receive text
-			for await (const chunk of response) {
-				// message
-				const newText = chunk.choices[0]?.delta?.content ?? ''
-				fullTextSoFar += newText
+		openai.chat.completions
+			.create(options)
+			.then(async response => {
+				_setAborter(() => response.controller.abort())
+				// when receive text
+				for await (const chunk of response) {
+					// message
+					const newText = chunk.choices[0]?.delta?.content ?? ''
+					fullTextSoFar += newText
 
-				// tool call
-				for (const tool of chunk.choices[0]?.delta?.tool_calls ?? []) {
-					const index = tool.index ?? 0
-					if (typeof index !== 'number' || index < 0) continue; // skip malformed entries
-					while (toolCallsBuffer.length <= index) {
-						toolCallsBuffer.push({ name: '', id: '', args: '' })
+					// tool call
+					for (const tool of chunk.choices[0]?.delta?.tool_calls ?? []) {
+						const index = tool.index ?? 0
+						if (typeof index !== 'number' || index < 0) continue; // skip malformed entries
+						while (toolCallsBuffer.length <= index) {
+							toolCallsBuffer.push({ name: '', id: '', args: '' })
+						}
+
+						toolCallsBuffer[index].name += tool.function?.name ?? ''
+						toolCallsBuffer[index].args += tool.function?.arguments ?? '';
+						if (tool.id) toolCallsBuffer[index].id += tool.id
 					}
 
-					toolCallsBuffer[index].name += tool.function?.name ?? ''
-					toolCallsBuffer[index].args += tool.function?.arguments ?? '';
-					if (tool.id) toolCallsBuffer[index].id += tool.id
+
+					// reasoning
+					let newReasoning = ''
+					if (nameOfReasoningFieldInDelta) {
+						// @ts-ignore
+						newReasoning = (chunk.choices[0]?.delta?.[nameOfReasoningFieldInDelta] || '') + ''
+						fullReasoningSoFar += newReasoning
+					}
+
+					// call onText
+					const toolCalls = toolCallsBuffer.map(t => t.name ? { name: t.name as ToolName, rawParams: {}, isDone: false, doneParams: [], id: t.id } : null).filter(Boolean) as RawToolCallObj[]
+
+					onText({
+						fullText: fullTextSoFar,
+						fullReasoning: fullReasoningSoFar,
+						toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+					})
+
 				}
-
-
-				// reasoning
-				let newReasoning = ''
-				if (nameOfReasoningFieldInDelta) {
-					// @ts-ignore
-					newReasoning = (chunk.choices[0]?.delta?.[nameOfReasoningFieldInDelta] || '') + ''
-					fullReasoningSoFar += newReasoning
+				// on final
+				if (!fullTextSoFar && !fullReasoningSoFar && toolCallsBuffer.length === 0) {
+					// Bedrock/proxy can return an empty stream under throttling — retry with backoff
+					if (attemptNum < MAX_EMPTY_RETRIES) {
+						setTimeout(() => attemptStream(attemptNum + 1), 800 * (attemptNum + 1))
+					} else {
+						onError({ message: 'Void: Response from model was empty.', fullError: null })
+					}
 				}
+				else {
+					const toolCalls = toolCallsBuffer.map(t => rawToolCallObjOfParamsStr(t.name, t.args, t.id)).filter(Boolean) as RawToolCallObj[]
+					onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, toolCalls: toolCalls.length > 0 ? toolCalls : undefined });
+				}
+			})
+			// when error/fail - this catches errors of both .create() and .then(for await)
+			.catch(error => {
+				if (error instanceof OpenAI.APIError && error.status === 401) { onError({ message: invalidApiKeyMessage(providerName), fullError: error }); }
+				else { onError({ message: error + '', fullError: error }); }
+			})
+	}
 
-				// call onText
-				const toolCalls = toolCallsBuffer.map(t => t.name ? { name: t.name as ToolName, rawParams: {}, isDone: false, doneParams: [], id: t.id } : null).filter(Boolean) as RawToolCallObj[]
-
-				onText({
-					fullText: fullTextSoFar,
-					fullReasoning: fullReasoningSoFar,
-					toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-				})
-
-			}
-			// on final
-			if (!fullTextSoFar && !fullReasoningSoFar && toolCallsBuffer.length === 0) {
-				onError({ message: 'Void: Response from model was empty.', fullError: null })
-			}
-			else {
-				const toolCalls = toolCallsBuffer.map(t => rawToolCallObjOfParamsStr(t.name, t.args, t.id)).filter(Boolean) as RawToolCallObj[]
-				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, toolCalls: toolCalls.length > 0 ? toolCalls : undefined });
-			}
-		})
-		// when error/fail - this catches errors of both .create() and .then(for await)
-		.catch(error => {
-			if (error instanceof OpenAI.APIError && error.status === 401) { onError({ message: invalidApiKeyMessage(providerName), fullError: error }); }
-			else { onError({ message: error + '', fullError: error }); }
-		})
+	attemptStream(0)
 }
 
 
