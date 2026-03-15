@@ -151,13 +151,25 @@ jobs:
           ln -sf "/usr/share/${NAME_LOWER}/${NAME_LOWER}" "$DEB_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || \
             ln -sf "/usr/share/${NAME_LOWER}/code" "$DEB_TMP/usr/bin/${NAME_LOWER}" 2>/dev/null || true
           mkdir -p "$DEB_TMP/usr/share/applications"
+          # Main launcher desktop file (opens files/workspaces)
           cat > "$DEB_TMP/usr/share/applications/${NAME_LOWER}.desktop" << DESKTOP
           [Desktop Entry]
           Name=${NAME}
           Comment=AI-Native IDE for regulated and critical software development
-          Exec=/usr/share/${NAME_LOWER}/${NAME_LOWER} %U
+          Exec=/usr/share/${NAME_LOWER}/${NAME_LOWER} %F
           Icon=${NAME_LOWER}
           Type=Application
+          Categories=Development;IDE;
+          StartupWMClass=${NAME}
+          DESKTOP
+          # URL handler desktop file — passes --open-url so app.ts routes it as OAuth callback
+          cat > "$DEB_TMP/usr/share/applications/${NAME_LOWER}-url-handler.desktop" << DESKTOP
+          [Desktop Entry]
+          Name=${NAME} - URL Handler
+          Exec=/usr/share/${NAME_LOWER}/${NAME_LOWER} --open-url -- %U
+          Icon=${NAME_LOWER}
+          Type=Application
+          NoDisplay=true
           Categories=Development;IDE;
           StartupWMClass=${NAME}
           MimeType=x-scheme-handler/${NAME_LOWER};
@@ -168,7 +180,7 @@ jobs:
           #!/bin/sh
           set -e
           update-desktop-database /usr/share/applications 2>/dev/null || true
-          xdg-mime default ${NAME_LOWER}.desktop x-scheme-handler/${NAME_LOWER} 2>/dev/null || true
+          xdg-mime default ${NAME_LOWER}-url-handler.desktop x-scheme-handler/${NAME_LOWER} 2>/dev/null || true
           POSTINST
           chmod 0755 "$DEB_TMP/DEBIAN/postinst"
           mkdir -p "$DEB_TMP/DEBIAN"
