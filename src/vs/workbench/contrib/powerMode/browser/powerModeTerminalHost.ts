@@ -16,12 +16,14 @@
  */
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { Color, RGBA } from '../../../../base/common/color.js';
+import { Color } from '../../../../base/common/color.js';
 import { IColorTheme } from '../../../../platform/theme/common/themeService.js';
 import { ITerminalService, IDetachedTerminalInstance, IXtermColorProvider } from '../../terminal/browser/terminal.js';
 import { DetachedProcessInfo } from '../../terminal/browser/detachedTerminal.js';
 import { IPowerModeService } from './powerModeService.js';
 import { PowerModeUIEvent, IPermissionRequest } from '../common/powerModeTypes.js';
+import { TERMINAL_BACKGROUND_COLOR } from '../../terminal/common/terminalColorRegistry.js';
+import { PANEL_BACKGROUND } from '../../../common/theme.js';
 
 // ── ANSI escape helpers ─────────────────────────────────────────────────
 const ESC = '\x1b[';
@@ -30,16 +32,16 @@ const BOLD = `${ESC}1m`;
 const DIM = `${ESC}2m`;
 const ITALIC = `${ESC}3m`;
 
-// Colors (24-bit true color)
-const CYAN = `${ESC}38;2;125;211;252m`;     // #7dd3fc
-const GREEN = `${ESC}38;2;94;201;144m`;      // #5ec990
-const RED = `${ESC}38;2;248;113;113m`;        // #f87171
-const MAGENTA = `${ESC}38;2;176;140;214m`;    // #b08cd6
-const YELLOW = `${ESC}38;2;253;230;138m`;     // #fde68a
-const WHITE = `${ESC}38;2;255;255;255m`;      // #ffffff
-const GRAY = `${ESC}38;2;140;160;190m`;       // muted
-const DARK = `${ESC}38;2;90;106;126m`;        // very muted
-const BLUE_LIGHT = `${ESC}38;2;130;160;230m`; // lighter blue for accents
+// Colors (ANSI standard - inherits from VS Code terminal theme)
+const CYAN = `${ESC}36m`;        // terminal.ansiCyan
+const GREEN = `${ESC}32m`;       // terminal.ansiGreen
+const RED = `${ESC}31m`;         // terminal.ansiRed
+const MAGENTA = `${ESC}35m`;     // terminal.ansiMagenta
+const YELLOW = `${ESC}33m`;      // terminal.ansiYellow
+const WHITE = `${ESC}97m`;       // terminal.ansiBrightWhite
+const GRAY = `${ESC}90m`;        // terminal.ansiBrightBlack (gray)
+const DARK = `${ESC}90m`;        // terminal.ansiBrightBlack
+const BLUE_LIGHT = `${ESC}94m`;  // terminal.ansiBrightBlue
 
 function line(text: string = ''): string {
 	return text + '\r\n';
@@ -104,6 +106,7 @@ export class PowerModeTerminalHost extends Disposable {
 	private _isStreaming = false;
 	private _streamingPartId: string | undefined;
 	private readonly _streamedPartIds = new Set<string>();
+	private _streamTimeout: any = undefined;
 	private _cols = 120;
 	private _showingSlashMenu = false;
 	private _slashFilteredCommands: SlashCommand[] = [];
@@ -118,8 +121,16 @@ export class PowerModeTerminalHost extends Disposable {
 	private _inPermissionPrompt = false;
 	private _pendingPermissionRequest: IPermissionRequest | undefined;
 
+	// Question prompt state (ask_user tool)
+	private _inQuestionPrompt = false;
+	private _pendingQuestion: { questionId: string; question: string } | undefined;
+	private _questionBuffer = '';
+
 	// Tool dedup — track which tool part IDs have been drawn as running
 	private readonly _drawnRunningTools = new Set<string>();
+
+	// Alert deduplication - track last blocking violation alert
+	private _lastBlockingAlertHash: string | undefined;
 
 	// Animated thinking dots
 	private _thinkingInterval: ReturnType<typeof setInterval> | undefined;
@@ -127,6 +138,9 @@ export class PowerModeTerminalHost extends Disposable {
 
 	// Streaming cursor (▋ appended at end of active line)
 	private _streamingCursor = false;
+
+	// Streaming buffer for markdown formatting across deltas
+	private _streamingLineBuffer = '';
 
 	constructor(
 		private readonly terminalService: ITerminalService,
@@ -140,8 +154,8 @@ export class PowerModeTerminalHost extends Disposable {
 		this._container = container;
 
 		const colorProvider: IXtermColorProvider = {
-			getBackgroundColor(_theme: IColorTheme): Color | undefined {
-				return new Color(new RGBA(68, 101, 196, 255)); // #4465c4
+			getBackgroundColor(theme: IColorTheme): Color | undefined {
+				return theme.getColor(TERMINAL_BACKGROUND_COLOR) || theme.getColor(PANEL_BACKGROUND);
 			}
 		};
 
@@ -274,8 +288,7 @@ export class PowerModeTerminalHost extends Disposable {
 		this._streamingCursor = false;
 
 		// ── Minimal prompt ────────────────────────────────────
-		this._write(line());
-		this._write(`  ${CYAN}${BOLD}❯ ${RESET}`);
+		this._write(`${CYAN}${BOLD}> ${RESET}`);
 	}
 
 	// ── Slash Command Menu ──────────────────────────────────────────────
@@ -295,7 +308,7 @@ export class PowerModeTerminalHost extends Disposable {
 		if (this._slashFilteredCommands.length === 0) {
 			this._menuLineCount = 0;
 			this._showingSlashMenu = false;
-			this._write(`${CYAN}${BOLD}❯ ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
+			this._write(`${CYAN}${BOLD}> ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
 			return;
 		}
 
@@ -306,7 +319,7 @@ export class PowerModeTerminalHost extends Disposable {
 		this._menuLineCount = this._slashFilteredCommands.length;
 
 		// Reprint prompt with current input
-		this._write(`${CYAN}${BOLD}❯ ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
+		this._write(`${CYAN}${BOLD}> ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
 		this._showingSlashMenu = true;
 	}
 
@@ -320,7 +333,7 @@ export class PowerModeTerminalHost extends Disposable {
 		this._menuLineCount = 0;
 		this._showingSlashMenu = false;
 		// Reprint prompt
-		this._write(`${CYAN}${BOLD}❯ ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
+		this._write(`${CYAN}${BOLD}> ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
 	}
 
 	private _executeSlashCommand(cmd: string): void {
@@ -335,7 +348,7 @@ export class PowerModeTerminalHost extends Disposable {
 				this._write(`${ESC}2J${ESC}H`); // clear screen + move to top
 				this._drawTopBar();
 				this._write(line());
-				this._write(line(`  ${GREEN}✓${RESET} ${GRAY}Conversation cleared${RESET}`));
+				this._write(line(`  ${GRAY}Conversation cleared${RESET}`));
 				this._write(line());
 				this._drawPrompt();
 				break;
@@ -347,7 +360,7 @@ export class PowerModeTerminalHost extends Disposable {
 				this._write(`${ESC}2J${ESC}H`);
 				this._drawTopBar();
 				this._write(line());
-				this._write(line(`  ${GREEN}✓${RESET} ${GRAY}New session created${RESET}`));
+				this._write(line(`  ${GRAY}New session created${RESET}`));
 				this._write(line());
 				this._drawPrompt();
 				break;
@@ -356,7 +369,7 @@ export class PowerModeTerminalHost extends Disposable {
 			case '/stop': {
 				if (this._isBusy && this._currentSessionId) {
 					this.powerModeService.cancel(this._currentSessionId);
-					this._write(line(`  ${RED}■${RESET} ${GRAY}Response stopped${RESET}`));
+					this._write(line(`  ${GRAY}Response stopped${RESET}`));
 				} else {
 					this._write(line(`  ${DARK}Nothing to stop${RESET}`));
 				}
@@ -470,7 +483,7 @@ export class PowerModeTerminalHost extends Disposable {
 						this.powerModeService.setModel(sel);
 						this._write(line());
 						this._write(line());
-						this._write(line(`  ${GREEN}✓${RESET} Model set to ${CYAN}${chosen.model}${RESET}  ${DARK}${chosen.provider}${RESET}`));
+						this._write(line(`  Model set to ${CYAN}${chosen.model}${RESET}  ${DARK}${chosen.provider}${RESET}`));
 					}
 				} else if (this._modelPickerBuffer.trim()) {
 					this._write(line());
@@ -511,7 +524,7 @@ export class PowerModeTerminalHost extends Disposable {
 
 		this._write(line());
 		this._write(line(`  ${YELLOW}⚠${RESET}  ${MAGENTA}${BOLD}${request.toolName}${RESET}  ${GRAY}${request.preview}${RESET}`));
-		this._write(`  ${DARK}y · yes   a · yes all   n · no   ${CYAN}${BOLD}❯ ${RESET}`);
+		this._write(`  ${DARK}y · yes   a · yes all   n · no   ${CYAN}${BOLD}> ${RESET}`);
 	}
 
 	private _handlePermissionInput(data: string): void {
@@ -522,7 +535,7 @@ export class PowerModeTerminalHost extends Disposable {
 			this._resolvePermission('allow');
 		} else if (ch === 'a') {
 			this._write(line(`${WHITE}a${RESET}`));
-			this._write(line(`  ${GREEN}✓${RESET} ${GRAY}All tools approved for this session${RESET}`));
+			this._write(line(`  ${GRAY}All tools approved for this session${RESET}`));
 			this._resolvePermission('allow-all');
 		} else if (ch === 'n' || ch === '\x1b' || ch === '\x03') {
 			this._write(line(`${WHITE}n${RESET}`));
@@ -541,6 +554,61 @@ export class PowerModeTerminalHost extends Disposable {
 		// Don't call _drawPrompt here — agent loop will fire session-updated when done
 	}
 
+	// ── Question Prompt (ask_user tool) ─────────────────────────────────
+
+	private _showQuestionPrompt(questionId: string, question: string): void {
+		this._inQuestionPrompt = true;
+		this._pendingQuestion = { questionId, question };
+		this._questionBuffer = '';
+		this._inputActive = false;
+
+		this._write(line());
+		this._write(line(`  ${BLUE_LIGHT}?${RESET}  ${WHITE}${BOLD}${question}${RESET}`));
+		this._write(`  ${CYAN}${BOLD}> ${RESET}`);
+	}
+
+	private _handleQuestionInput(data: string): void {
+		for (const ch of data) {
+			if (ch === '\r' || ch === '\n') {
+				// Enter pressed
+				const answer = this._questionBuffer.trim();
+				if (!answer) { return; } // require non-empty answer
+
+				this._write(line());
+				this._resolveQuestion(answer);
+
+			} else if (ch === '\x7f' || ch === '\b') {
+				// Backspace
+				if (this._questionBuffer.length > 0) {
+					this._questionBuffer = this._questionBuffer.slice(0, -1);
+					this._write('\b \b');
+				}
+
+			} else if (ch === '\x1b' || ch === '\x03') {
+				// Escape or Ctrl+C — cancel
+				this._write(line(`${RED}^C${RESET}`));
+				this._resolveQuestion('[Cancelled]');
+
+			} else if (ch >= ' ') {
+				// Regular character
+				this._questionBuffer += ch;
+				this._write(`${WHITE}${ch}${RESET}`);
+			}
+		}
+	}
+
+	private _resolveQuestion(answer: string): void {
+		const pending = this._pendingQuestion;
+		this._inQuestionPrompt = false;
+		this._pendingQuestion = undefined;
+		this._questionBuffer = '';
+
+		if (pending) {
+			this.powerModeService.resolveQuestion(pending.questionId, answer);
+		}
+		// Don't call _drawPrompt here — agent loop will continue automatically
+	}
+
 	// ── Drawing ──────────────────────────────────────────────────────────
 
 	private _write(data: string): void {
@@ -548,16 +616,17 @@ export class PowerModeTerminalHost extends Disposable {
 	}
 
 	private _drawUserMessage(text: string): void {
-		// Clear the ❯ prompt line, replace with styled user message
+		// Clear the > prompt line, replace with styled user message
 		this._write(`\r${ESC}2K`);
+		this._write(line()); // spacing above
 		const msgLines = text.split('\n');
 		for (const l of msgLines) {
-			this._write(line(`  ${WHITE}${BOLD}${l}${RESET}`));
+			this._write(line(`  ${CYAN}>${RESET} ${WHITE}${l}${RESET}`));
 		}
+		this._write(line()); // spacing below
 	}
 
 	private _drawThinking(): void {
-		this._write(line());
 		this._thinkingFrame = 0;
 		this._write(`  ${DARK}·${RESET}`);
 		this._thinkingInterval = setInterval(() => {
@@ -571,15 +640,27 @@ export class PowerModeTerminalHost extends Disposable {
 		if (this._thinkingInterval !== undefined) {
 			clearInterval(this._thinkingInterval);
 			this._thinkingInterval = undefined;
-			this._write(`\r${ESC}2K`); // clear the dots line
+			this._write(`\r${ESC}2K\r`); // clear the dots line and return to start
 		}
 	}
 
 	private _endStreaming(): void {
 		if (this._isStreaming) {
+			if (this._streamTimeout) {
+				clearTimeout(this._streamTimeout);
+				this._streamTimeout = undefined;
+			}
 			if (this._streamingCursor) {
 				this._write('\b \b'); // erase ▋
 				this._streamingCursor = false;
+			}
+			// Flush any remaining buffered text
+			if (this._streamingLineBuffer) {
+				const formatted = this._formatMarkdownLine(this._streamingLineBuffer);
+				// Clear current line and rewrite with formatting
+				this._write(`\r${ESC}K`);
+				this._write(formatted.colored);
+				this._streamingLineBuffer = '';
 			}
 			this._write(line());
 			this._isStreaming = false;
@@ -589,17 +670,53 @@ export class PowerModeTerminalHost extends Disposable {
 
 	private _drawText(text: string): void {
 		this._endStreaming();
+
+		// Skip empty or whitespace-only text parts
+		if (!text || text.trim().length === 0) {
+			return;
+		}
+
 		const lines = text.split('\n');
 		for (const l of lines) {
-			this._write(line(`  ${WHITE}${l}${RESET}`));
+			if (l.trim()) {
+				const formatted = this._formatMarkdownLine(l);
+				// For long lines, just output formatted version without wrapping to preserve markdown
+				this._write(line(formatted.colored));
+			} else {
+				this._write(line());
+			}
 		}
+	}
+
+	private _wrapText(text: string, width: number): string[] {
+		if (text.length <= width) { return [text]; }
+		const words = text.split(' ');
+		const result: string[] = [];
+		let current = '';
+		for (const word of words) {
+			if (current.length + word.length + 1 <= width) {
+				current += (current ? ' ' : '') + word;
+			} else {
+				if (current) { result.push(current); }
+				current = word;
+			}
+		}
+		if (current) { result.push(current); }
+		return result;
 	}
 
 	private _drawReasoning(text: string): void {
 		this._endStreaming();
 		const lines = text.split('\n');
 		for (const l of lines) {
-			this._write(line(`  ${DIM}${ITALIC}${DARK}${l}${RESET}`));
+			if (l.trim()) {
+				const wrapped = this._wrapText(l, 100);
+				for (const w of wrapped) {
+					this._write(line(`${DIM}${ITALIC}${DARK}${w}${RESET}`));
+				}
+			} else {
+				this._write(line());
+			}
 		}
 	}
 
@@ -607,37 +724,87 @@ export class PowerModeTerminalHost extends Disposable {
 		// Skip if already drawn, or if title hasn't arrived yet (will re-fire when it does)
 		if (this._drawnRunningTools.has(partId) || !title) { return; }
 		this._drawnRunningTools.add(partId);
+		this._stopThinking();
 		this._endStreaming();
-		this._write(line(`  ${YELLOW}⟳ ${MAGENTA}${BOLD}${toolName}${RESET} ${GRAY}${title}${RESET}`));
+		this._write(line(`${MAGENTA}${BOLD}${toolName}${RESET} ${GRAY}${title}${RESET}`));
 	}
 
 	private _drawToolComplete(toolName: string, title: string | undefined, duration: string): void {
-		this._write(line(`  ${GREEN}✓ ${MAGENTA}${toolName}${RESET} ${GRAY}${title || ''}${RESET} ${DARK}${duration}${RESET}`));
+		this._write(line(`${MAGENTA}${toolName}${RESET} ${GRAY}${title || ''}${RESET} ${DARK}${duration}${RESET}`));
 	}
 
 	private _drawToolError(toolName: string, error: string): void {
-		this._write(line(`  ${RED}✗ ${MAGENTA}${toolName}${RESET} ${RED}${error}${RESET}`));
+		this._write(line(`${MAGENTA}${toolName}${RESET} ${RED}${error}${RESET}`));
 	}
 
 	private _drawToolOutput(output: string): void {
 		const MAX_LINES = 15;
 		const allLines = output.split('\n');
 		const showLines = allLines.slice(0, MAX_LINES);
+
+		// Draw top border
+		this._write(line(`${DARK}┌─ output${RESET}`));
+
 		for (const l of showLines) {
-			this._write(line(this._colorizeOutputLine(l)));
+			const formatted = this._formatMarkdownLine(l);
+			// Output formatted line - let terminal wrap naturally to preserve markdown
+			this._write(line(`${DARK}│${RESET} ${formatted.colored}`));
 		}
+
 		if (allLines.length > MAX_LINES) {
-			this._write(line(`    ${DARK}··· +${allLines.length - MAX_LINES} lines${RESET}`));
+			this._write(line(`${DARK}│${RESET} ${DARK}... +${allLines.length - MAX_LINES} lines${RESET}`));
 		}
+
+		// Draw bottom border
+		this._write(line(`${DARK}└─${RESET}`));
 	}
 
-	private _colorizeOutputLine(l: string): string {
-		const t = l.trimStart();
-		if (t.startsWith('+++ ') || t.startsWith('--- ')) { return `    ${DIM}${DARK}${l}${RESET}`; }
-		if (t.startsWith('@@')) { return `    ${CYAN}${l}${RESET}`; }
-		if (t.startsWith('+')) { return `    ${GREEN}${l}${RESET}`; }
-		if (t.startsWith('-')) { return `    ${RED}${l}${RESET}`; }
-		return `    ${DARK}${l}${RESET}`;
+	private _formatMarkdownLine(line: string): { colored: string; plain: string } {
+		let plain = line;
+		let colored = line;
+
+		// Strip code blocks
+		plain = plain.replace(/```[\w]*$/g, '');
+		colored = colored.replace(/```[\w]*$/g, '');
+
+		// Headers: ## Text -> Text (bold/colored)
+		if (plain.match(/^\s*#{1,6}\s+/)) {
+			plain = plain.replace(/^\s*#{1,6}\s+/, '');
+			colored = `${CYAN}${BOLD}${plain}${RESET}`;
+			return { colored, plain };
+		}
+
+		// Horizontal rules
+		if (plain.match(/^\s*[-─]{3,}\s*$/)) {
+			colored = `${DARK}${plain}${RESET}`;
+			return { colored, plain };
+		}
+
+		// Bold: **text** -> text (bold) - re-apply WHITE after RESET
+		colored = colored.replace(/\*\*([^*]+)\*\*/g, `${BOLD}$1${RESET}${WHITE}`);
+		plain = plain.replace(/\*\*([^*]+)\*\*/g, '$1');
+
+		// Special prefix patterns like **+** or ☑
+		colored = colored.replace(/^(\s*)(\*\*[+*☑✓✗─→←]+\*\*)/g, `$1${CYAN}${BOLD}$2${RESET}${WHITE}`);
+
+		// Inline code: `text` -> text (highlighted) - re-apply WHITE after RESET
+		colored = colored.replace(/`([^`]+)`/g, `${YELLOW}$1${RESET}${WHITE}`);
+		plain = plain.replace(/`([^`]+)`/g, '$1');
+
+		// Links: [text](url) -> text - re-apply WHITE after RESET
+		colored = colored.replace(/\[([^\]]+)\]\([^)]+\)/g, `${CYAN}$1${RESET}${WHITE}`);
+		plain = plain.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+
+		// Bullets: - text or • text
+		if (plain.match(/^\s*[-*•]\s+/)) {
+			plain = plain.replace(/^\s*[-*•]\s+/, '• ');
+			colored = `${WHITE}${plain}${RESET}`;
+			return { colored, plain };
+		}
+
+		// Default: use white for normal text
+		colored = `${WHITE}${colored}${RESET}`;
+		return { colored, plain };
 	}
 
 	private _drawEditDiff(oldStr: string, newStr: string): void {
@@ -646,10 +813,13 @@ export class PowerModeTerminalHost extends Disposable {
 		const newLines = newStr.split('\n');
 		const oldShow = oldLines.slice(0, MAX);
 		const newShow = newLines.slice(0, MAX);
-		if (oldLines.length > MAX) { oldShow.push(`··· +${oldLines.length - MAX} more`); }
-		if (newLines.length > MAX) { newShow.push(`··· +${newLines.length - MAX} more`); }
-		for (const l of oldShow) { this._write(line(`    ${RED}${DIM}- ${l}${RESET}`)); }
-		for (const l of newShow) { this._write(line(`    ${GREEN}+ ${l}${RESET}`)); }
+		if (oldLines.length > MAX) { oldShow.push(`... +${oldLines.length - MAX} more`); }
+		if (newLines.length > MAX) { newShow.push(`... +${newLines.length - MAX} more`); }
+
+		this._write(line(`${DARK}┌─ diff${RESET}`));
+		for (const l of oldShow) { this._write(line(`${DARK}│${RESET} ${RED}- ${l}${RESET}`)); }
+		for (const l of newShow) { this._write(line(`${DARK}│${RESET} ${GREEN}+ ${l}${RESET}`)); }
+		this._write(line(`${DARK}└─${RESET}`));
 	}
 
 	private _drawStepFinish(tokens?: { input: number; output: number }, cost?: number): void {
@@ -658,7 +828,7 @@ export class PowerModeTerminalHost extends Disposable {
 		if (tokens) { info += `${tokens.input} in / ${tokens.output} out`; }
 		if (cost) { info += ` $${cost.toFixed(4)}`; }
 		if (info) {
-			this._write(line(`  ${DARK}─── ${info} ───${RESET}`));
+			this._write(line(`${DARK}${info}${RESET}`));
 		}
 	}
 
@@ -674,9 +844,9 @@ export class PowerModeTerminalHost extends Disposable {
 		if (msgType === 'tool-request') {
 			// Animate: show a pulsing "agent knock" with 3 frames then settle
 			const frames = [
-				`  ${BLUE_LIGHT}◈ agent-bus${RESET}  ${CYAN}${from}${RESET} ${DARK}───${RESET}${YELLOW}→${RESET} ${toStr}`,
-				`  ${BLUE_LIGHT}◈ agent-bus${RESET}  ${CYAN}${from}${RESET} ${YELLOW}───→${RESET} ${toStr}`,
-				`  ${BLUE_LIGHT}◈ agent-bus${RESET}  ${CYAN}${from}${RESET} ${GREEN}───→${RESET} ${toStr}`,
+				`  ${BLUE_LIGHT}[agent-bus]${RESET}  ${CYAN}${from}${RESET} ${DARK}--->${RESET} ${toStr}`,
+				`  ${BLUE_LIGHT}[agent-bus]${RESET}  ${CYAN}${from}${RESET} ${YELLOW}--->${RESET} ${toStr}`,
+				`  ${BLUE_LIGHT}[agent-bus]${RESET}  ${CYAN}${from}${RESET} ${GREEN}--->${RESET} ${toStr}`,
 			];
 			let frame = 0;
 			this._write(line());
@@ -689,23 +859,32 @@ ${frames[frame]}${ESC}K`);
 				} else {
 					clearInterval(iv);
 					this._write(line());
-					this._write(line(`  ${DARK}  ⊳ ${preview}${RESET}`));
+					this._write(line(`  ${DARK}  > ${preview}${RESET}`));
 				}
 			}, 160);
 		} else if (msgType === 'tool-result') {
 			this._write(line());
-			this._write(line(`  ${BLUE_LIGHT}◈ agent-bus${RESET}  ${toStr} ${GREEN}←───${RESET} ${CYAN}${from}${RESET}  ${DARK}[result]${RESET}`));
-			this._write(line(`  ${DARK}  ⊳ ${preview}${RESET}`));
+			this._write(line(`  ${BLUE_LIGHT}[agent-bus]${RESET}  ${toStr} ${GREEN}<---${RESET} ${CYAN}${from}${RESET}  ${DARK}[result]${RESET}`));
+			this._write(line(`  ${DARK}  > ${preview}${RESET}`));
 		} else if (msgType === 'broadcast') {
 			// Show blocking violation alerts prominently; suppress routine posture pings
 			try {
 				const data = JSON.parse(content);
 				if (data.type === 'blocking-violations-alert' && data.blockingCount > 0) {
+					// Deduplicate - only show if count or violations changed
+					const alertHash = `${data.blockingCount}:${data.topViolations || ''}`;
+					if (this._lastBlockingAlertHash === alertHash) {
+						return; // Skip duplicate
+					}
+					this._lastBlockingAlertHash = alertHash;
+
 					this._write(line());
-					this._write(line(`  ${RED}⚠ checks-agent${RESET}  ${RED}${BOLD}${data.blockingCount} blocking violation${data.blockingCount > 1 ? 's' : ''}${RESET} ${DARK}— commit is gated${RESET}`));
+					this._write(line(`${RED}[checks-agent]${RESET} ${data.blockingCount} blocking violation${data.blockingCount > 1 ? 's' : ''}${RESET} ${DARK}(commit gated)${RESET}`));
 					if (data.topViolations) {
 						for (const v of String(data.topViolations).split('\n').slice(0, 3)) {
-							this._write(line(`  ${DARK}  · ${v}${RESET}`));
+							// Truncate long paths
+							const truncated = v.length > 80 ? v.substring(0, 77) + '...' : v;
+							this._write(line(`  ${DARK}${truncated}${RESET}`));
 						}
 					}
 				}
@@ -713,7 +892,7 @@ ${frames[frame]}${ESC}K`);
 			} catch { /* not JSON */ }
 		} else {
 			this._write(line());
-			this._write(line(`  ${BLUE_LIGHT}◈ bus${RESET}  ${CYAN}${from}${RESET} ${DARK}→${RESET} ${toStr}  ${DARK}[${msgType}]${RESET}`));
+			this._write(line(`  ${BLUE_LIGHT}[bus]${RESET}  ${CYAN}${from}${RESET} ${DARK}-->${RESET} ${toStr}  ${DARK}[${msgType}]${RESET}`));
 			this._write(line(`  ${DARK}  ${preview}${RESET}`));
 		}
 	}
@@ -721,7 +900,6 @@ ${frames[frame]}${ESC}K`);
 	private _drawDone(): void {
 		this._stopThinking();
 		this._endStreaming();
-		this._write(line());
 	}
 
 	// ── Input handling ──────────────────────────────────────────────────
@@ -729,6 +907,11 @@ ${frames[frame]}${ESC}K`);
 	private _handleInput(data: string): void {
 		if (this._inPermissionPrompt) {
 			this._handlePermissionInput(data);
+			return;
+		}
+
+		if (this._inQuestionPrompt) {
+			this._handleQuestionInput(data);
 			return;
 		}
 
@@ -853,8 +1036,8 @@ ${frames[frame]}${ESC}K`);
 				// User messages already drawn by _handleInput
 				// For assistant messages, clear the "thinking..." text
 				if (event.message.role === 'assistant') {
-					// Clear the thinking line
-					this._write(`\r${ESC}2K`);
+					// Clear the thinking line and stay on same line for streaming
+					this._write(`\r${ESC}2K\r`);
 				}
 				break;
 
@@ -908,21 +1091,74 @@ ${frames[frame]}${ESC}K`);
 					this._endStreaming();
 					this._isStreaming = true;
 					this._streamingPartId = event.partId;
-					this._write(`\r\n  `);
+					this._streamingLineBuffer = '';
+					// Start on a new line
+					this._write(`\r\n`);
 				}
+
+				// Reset stream timeout (30s)
+				if (this._streamTimeout) {
+					clearTimeout(this._streamTimeout);
+				}
+				this._streamTimeout = setTimeout(() => {
+					if (this._isStreaming) {
+						this._endStreaming();
+						this._write(line());
+						this._write(line(`${RED}[Stream timeout - response incomplete]${RESET}`));
+						this._write(line());
+						this._drawPrompt();
+					}
+				}, 30000);
+
+				// Remove cursor before writing
 				if (this._streamingCursor) {
 					this._write('\b \b');
 					this._streamingCursor = false;
 				}
-				const delta = event.delta.replace(/\n/g, `\r\n  `);
-				this._write(`${WHITE}${delta}${RESET}`);
-				this._write(`${CYAN}▋${RESET}`);
-				this._streamingCursor = true;
+
+				// Just append the delta and let terminal handle wrapping
+				const delta = event.delta;
+
+				// Check if delta contains newlines
+				if (delta.includes('\n')) {
+					const lines = delta.split('\n');
+					for (let i = 0; i < lines.length; i++) {
+						if (i > 0) {
+							// Complete the previous line with formatting
+							if (this._streamingLineBuffer.trim()) {
+								const formatted = this._formatMarkdownLine(this._streamingLineBuffer);
+								// Clear line, write formatted, newline
+								this._write(`\r${ESC}K  ${formatted.colored}\r\n`);
+							} else {
+								this._write(`\r\n`);
+							}
+							this._streamingLineBuffer = '';
+						}
+						this._streamingLineBuffer += lines[i];
+					}
+				} else {
+					// No newline - just accumulate
+					this._streamingLineBuffer += delta;
+				}
+
+				// Show current unformatted buffer (raw text flows naturally)
+				if (this._streamingLineBuffer) {
+					// For very long lines, let xterm wrap naturally
+					this._write(`\r${ESC}K  ${WHITE}${this._streamingLineBuffer}${RESET}${CYAN}▋${RESET}`);
+					this._streamingCursor = true;
+				} else {
+					this._write(`\r${ESC}K  ${CYAN}▋${RESET}`);
+					this._streamingCursor = true;
+				}
 				break;
 			}
 
 			case 'permission-request':
 				this._showPermissionPrompt(event.request);
+				break;
+
+			case 'user-question':
+				this._showQuestionPrompt((event as any).questionId, (event as any).question);
 				break;
 
 			case 'bus-message':

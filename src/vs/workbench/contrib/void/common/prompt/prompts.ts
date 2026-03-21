@@ -523,6 +523,76 @@ export const builtinTools: {
 		}
 	},
 
+	// --- Workflow tools ---
+
+	ask_user: {
+		name: 'ask_user',
+		description: 'Pause execution and ask the user a question. Use when you need a decision, clarification, or input that you cannot reasonably assume. The user will be prompted to respond.',
+		params: {
+			question: { description: 'The question to ask the user.' },
+		},
+	},
+
+	web_fetch: {
+		name: 'web_fetch',
+		description: 'Fetch content from a URL. Useful for fetching documentation, API references, standards, or other web resources. Automatically strips HTML tags and limits content to 100KB. Times out after 30 seconds.',
+		params: {
+			url: { description: 'The URL to fetch.' },
+			description: { description: 'Brief description of why you are fetching this URL.' },
+		},
+	},
+
+	memory_write: {
+		name: 'memory_write',
+		description: 'Write data to persistent memory that survives across IDE restarts. Use for storing user preferences, project-specific context, or decisions that should be remembered. Memory is stored in the .void-memory directory.',
+		params: {
+			key: { description: 'Unique key for this memory entry (e.g. "user_preference_theme").' },
+			content: { description: 'The content to store (can be text, JSON, etc.).' },
+		},
+	},
+
+	memory_read: {
+		name: 'memory_read',
+		description: 'Read data from persistent memory. Use to recall information stored in previous sessions.',
+		params: {
+			key: { description: 'The key of the memory entry to retrieve.' },
+		},
+	},
+
+	tasks_create: {
+		name: 'tasks_create',
+		description: 'Create a new task in the workflow task tracker. Use for tracking multi-step work items, background tasks, or async workflows. For simple task lists, prefer generate_document instead.',
+		params: {
+			title: { description: 'Task title.' },
+			description: { description: 'Optional. Detailed description of the task.' },
+		},
+	},
+
+	tasks_list: {
+		name: 'tasks_list',
+		description: 'List all tasks in the workflow task tracker with their current status.',
+		params: {},
+	},
+
+	tasks_update: {
+		name: 'tasks_update',
+		description: 'Update an existing task status, title, or description.',
+		params: {
+			task_id: { description: 'The ID of the task to update.' },
+			status: { description: 'Optional. New status: pending, in_progress, completed, or cancelled.' },
+			title: { description: 'Optional. New title.' },
+			description: { description: 'Optional. New description.' },
+		},
+	},
+
+	tasks_get: {
+		name: 'tasks_get',
+		description: 'Get details of a specific task by ID.',
+		params: {
+			task_id: { description: 'The ID of the task to retrieve.' },
+		},
+	},
+
 	// go_to_definition
 	// go_to_usages
 
@@ -560,7 +630,7 @@ export const availableTools = (chatMode: ChatMode | null, mcpTools: InternalTool
 		);
 	}
 
-	const effectiveMCPTools = (chatMode === 'power' || chatMode === 'checks' || chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'reason' || chatMode === 'ask') ? mcpTools : undefined
+	const effectiveMCPTools = (chatMode === 'power' || chatMode === 'checks' || chatMode === 'agent' || chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'reason' || chatMode === 'ask') ? mcpTools : undefined
 
 	const tools: InternalToolInfo[] | undefined = !(builtinToolNames || mcpTools) ? undefined
 		: [
@@ -739,6 +809,11 @@ CRITICAL: Do NOT place your tool calls inside the <thought> block! Tool calls mu
 - **\`ask_checksagent\`** — delegates to the Checks Agent, which runs its own **full multi-tool agent loop** internally (scan → reason → cross-reference rules → report). Use when you need reasoning or interpretation: "is this change compliant?", "how do I fix this?", "which pattern satisfies this rule?". This is a true sub-agent — it executes autonomously and returns a complete answer.
 - **\`ask_powermode\`** — delegates to Power Mode, which runs its own **full coding agent loop** internally (bash, read, write, edit, glob, grep). Use to delegate execution subtasks in parallel: "find all callers of X", "does this build?", "run the tests". Also a true sub-agent.
 - **\`query_ni_agent\`** — runs a named Neural Inverse agent from the .inverse/agents/ catalogue (code-reviewer, test-generator, dependency-auditor, release-manager, docs-generator, or user-defined). Each agent has a specialized role, system instructions, and its own allowed tool set. Use \`agentId: "list"\` to discover available agents. These agents are persistent, reusable, and configurable via the Agent Control Center.
+- **Workflow tools:**
+  - \`web_fetch\` — fetch external documentation, API references, standards, or web content (automatically strips HTML, 30s timeout, 100KB limit)
+  - \`ask_user\` — pause execution and ask the user a question when you need a decision or clarification you cannot assume
+  - \`memory_write\` / \`memory_read\` — persist information across sessions (use for user preferences, project-specific decisions, or context that should survive IDE restarts)
+  - \`tasks_create\` / \`tasks_list\` / \`tasks_update\` / \`tasks_get\` — track multi-step workflows, background tasks, or async work items (use sparingly; prefer \`generate_document\` for task lists)
 
 **Parallel sub-agent execution** — \`ask_checksagent\`, \`ask_powermode\`, and \`query_ni_agent\` run as independent sub-agents tracked by the system. You can call them in the same response and they execute simultaneously:
 - While editing a file → call \`grc_rescan\` + \`ask_checksagent "verify compliance of my changes to auth.ts"\` in parallel.

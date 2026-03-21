@@ -173,6 +173,7 @@ export type PowerModeUIEvent =
 	| { type: 'part-delta'; sessionId: string; messageId: string; partId: string; field: string; delta: string }
 	| { type: 'sessions-list'; sessions: IPowerSession[] }
 	| { type: 'permission-request'; request: IPermissionRequest }
+	| { type: 'user-question'; questionId: string; sessionId: string; question: string }
 	| { type: 'bus-message'; from: string; to: string | '*'; messageType: string; content: string }
 	| { type: 'error'; error: string };
 

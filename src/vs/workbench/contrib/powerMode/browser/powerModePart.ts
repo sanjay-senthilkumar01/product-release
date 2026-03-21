@@ -57,7 +57,7 @@ export class PowerModePart extends Part {
 		].join(';');
 
 		const brand = document.createElement('span');
-		brand.textContent = '⚡ Neural Inverse · Power Mode';
+		brand.textContent = 'Neural Inverse · Power Mode';
 		brand.style.cssText = 'color:#5eaed6;font-weight:bold;letter-spacing:0.03em;';
 		topbar.appendChild(brand);
 

@@ -69,6 +69,15 @@ export type BuiltinToolCallParams = {
 	'grc_ai_scan': { files: string | null },
 	'ask_checksagent': { question: string },
 	'query_ni_agent': { agentId: string, input: string },
+	// --- Workflow tools ---
+	'ask_user': { question: string },
+	'web_fetch': { url: string, description: string },
+	'memory_write': { key: string, content: string },
+	'memory_read': { key: string },
+	'tasks_create': { title: string, description: string | null },
+	'tasks_list': {},
+	'tasks_update': { taskId: string, status: string | null, title: string | null, description: string | null },
+	'tasks_get': { taskId: string },
 	// ---
 	'read_file': { uri: URI, startLine: number | null, endLine: number | null, pageNumber: number },
 	'ls_dir': { uri: URI, pageNumber: number },
@@ -115,6 +124,15 @@ export type BuiltinToolResultType = {
 	'grc_ai_scan': { result: string },
 	'ask_checksagent': { result: string },
 	'query_ni_agent': { result: string },
+	// --- Workflow tools ---
+	'ask_user': { result: string },
+	'web_fetch': { result: string },
+	'memory_write': { result: string },
+	'memory_read': { result: string },
+	'tasks_create': { result: string },
+	'tasks_list': { result: string },
+	'tasks_update': { result: string },
+	'tasks_get': { result: string },
 	// ---
 	'read_file': { fileContents: string, totalFileLen: number, totalNumLines: number, hasNextPage: boolean },
 	'ls_dir': { children: ShallowDirectoryItem[] | null, hasNextPage: boolean, hasPrevPage: boolean, itemsRemaining: number },

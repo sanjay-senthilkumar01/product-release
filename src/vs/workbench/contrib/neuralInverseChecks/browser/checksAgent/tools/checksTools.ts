@@ -13,6 +13,7 @@
  */
 
 import { URI } from '../../../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { ISearchService, ITextQuery, QueryType, IFileQuery } from '../../../../../services/search/common/search.js';
 import { IGRCEngineService } from '../../engine/services/grcEngineService.js';
@@ -22,6 +23,15 @@ import { IChecksAgentService } from '../checksAgentService.js';
 import { IInvariantDefinition } from '../../engine/types/invariantTypes.js';
 import { defineChecksTool } from '../checksToolRegistry.js';
 import { IChecksTool } from '../checksAgentTypes.js';
+import {
+	createWebFetchTool,
+	createMemoryWriteTool,
+	createMemoryReadTool,
+	createTaskCreateTool,
+	createTaskListTool,
+	createTaskUpdateTool,
+	createTaskGetTool,
+} from '../../../../powerMode/browser/tools/advancedTools.js';
 
 /**
  * Build and return all GRC + file access tools, each bound to the live engine instances.
@@ -693,6 +703,57 @@ export function buildChecksTools(
 				}
 			}
 		),
+
+		// ── General workflow tools (shared with Power Mode) ──────────────────
+
+		// web_fetch - Fetch external documentation
+		...[createWebFetchTool()].map(tool => defineChecksTool(
+			tool.id,
+			tool.description,
+			tool.parameters.map(p => ({ name: p.name, type: p.type as any, description: p.description, required: p.required })),
+			async (args) => {
+				const result = await tool.execute(args, {} as any);
+				return result.output;
+			}
+		)),
+
+		// memory_write - Write compliance decisions
+		...[createMemoryWriteTool(workingDirectory, fileService)].map(tool => defineChecksTool(
+			tool.id,
+			tool.description,
+			tool.parameters.map(p => ({ name: p.name, type: p.type as any, description: p.description, required: p.required })),
+			async (args) => {
+				const result = await tool.execute(args, {} as any);
+				return result.output;
+			}
+		)),
+
+		// memory_read - Read compliance decisions
+		...[createMemoryReadTool(workingDirectory, fileService)].map(tool => defineChecksTool(
+			tool.id,
+			tool.description,
+			tool.parameters.map(p => ({ name: p.name, type: p.type as any, description: p.description, required: p.required })),
+			async (args) => {
+				const result = await tool.execute(args, {} as any);
+				return result.output;
+			}
+		)),
+
+		// Task management tools
+		...[
+			createTaskCreateTool(),
+			createTaskListTool(),
+			createTaskUpdateTool(),
+			createTaskGetTool(),
+		].map(tool => defineChecksTool(
+			tool.id,
+			tool.description,
+			tool.parameters.map(p => ({ name: p.name, type: p.type as any, description: p.description, required: p.required })),
+			async (args) => {
+				const result = await tool.execute(args, {} as any);
+				return result.output;
+			}
+		)),
 
 	];
 }

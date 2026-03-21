@@ -39,6 +39,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IDirectoryStrService } from '../common/directoryStrService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IMCPService } from '../common/mcpService.js';
+import { IVoidInternalToolService } from './voidInternalToolService.js';
 import { RawMCPToolCall } from '../common/mcpServiceTypes.js';
 import { INeuralInverseAgentService } from './neuralInverseAgentService.js';
 
@@ -167,6 +168,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		@IDirectoryStrService private readonly _directoryStringService: IDirectoryStrService,
 		@IFileService private readonly _fileService: IFileService,
 		@IMCPService private readonly _mcpService: IMCPService,
+		@IVoidInternalToolService private readonly _internalToolService: IVoidInternalToolService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super()
@@ -522,6 +524,12 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 				toolResult = await result
 			}
+			else if (this._internalToolService.has(toolName)) {
+				resolveInterruptor(() => { })
+				const resultStr = await this._internalToolService.execute(toolName, toolParams as Record<string, any>)
+				toolResult = resultStr as any
+				toolResultStr = resultStr
+			}
 			else {
 				const mcpTools = this._mcpService.getMCPTools()
 				const mcpTool = mcpTools?.find(t => t.name === toolName)
@@ -551,6 +559,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		try {
 			if (isBuiltInTool) {
 				toolResultStr = this._toolsService.stringOfResult[toolName](toolParams as any, toolResult as any)
+			}
+			// For internal tools the result is already a string (set during execution)
+			else if (this._internalToolService.has(toolName)) {
+				toolResultStr = toolResult as any as string
 			}
 			// For MCP tools, handle the result based on its type
 			else {

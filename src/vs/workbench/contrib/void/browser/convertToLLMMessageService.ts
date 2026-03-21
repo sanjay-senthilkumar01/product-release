@@ -18,6 +18,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { EndOfLinePreference } from '../../../../editor/common/model.js';
 import { ToolName } from '../common/toolsServiceTypes.js';
 import { IMCPService } from '../common/mcpService.js';
+import { IVoidInternalToolService } from './voidInternalToolService.js';
 import { INeuralInverseAgentService } from './neuralInverseAgentService.js';
 import { IGRCEngineService } from '../../neuralInverseChecks/browser/engine/services/grcEngineService.js';
 
@@ -544,6 +545,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IVoidModelService private readonly voidModelService: IVoidModelService,
 		@IMCPService private readonly mcpService: IMCPService,
+		@IVoidInternalToolService private readonly internalToolService: IVoidInternalToolService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) {
 		super()
@@ -666,9 +668,17 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 		const mcpTools = this.mcpService.getMCPTools()
 
+		// Augment with internal tools (discovery, modernisation) for agentic modes
+		const internalToolInfos = (chatMode === 'agent' || chatMode === 'copilot' || chatMode === 'validate')
+			? this.internalToolService.getToolInfos()
+			: [];
+		const allMcpTools = mcpTools || internalToolInfos.length > 0
+			? [...(mcpTools ?? []), ...internalToolInfos]
+			: undefined;
+
 		const persistentTerminalIDs = this.terminalToolService.listPersistentTerminalIds()
 		const grcPosture = (chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'agent') ? this._buildGRCPosture() : undefined;
-		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, allowedToolNames, grcPosture })
+		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools: allMcpTools, includeXMLToolDefinitions, allowedToolNames, grcPosture })
 		return systemMessage
 	}
 

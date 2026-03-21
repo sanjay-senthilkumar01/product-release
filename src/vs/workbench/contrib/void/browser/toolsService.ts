@@ -30,6 +30,15 @@ import { IChecksAgentService } from '../../neuralInverseChecks/browser/checksAge
 import { IExternalCommandExecutor } from '../../neuralInverseChecks/browser/engine/services/externalCommandExecutor.js';
 import { IPowerModeService } from '../../powerMode/browser/powerModeService.js';
 import { IWorkflowAgentService } from '../../neuralInverse/browser/workflowAgentService.js';
+import {
+	createWebFetchTool,
+	createMemoryWriteTool,
+	createMemoryReadTool,
+	createTaskCreateTool,
+	createTaskListTool,
+	createTaskUpdateTool,
+	createTaskGetTool,
+} from '../../powerMode/browser/tools/advancedTools.js';
 
 
 // tool use for AI
@@ -271,6 +280,44 @@ export class ToolsService implements IToolsService {
 				const agentId = validateStr('agent_id', params.agent_id)
 				const input = isFalsy(params.input) ? '' : validateStr('input', params.input)
 				return { agentId, input }
+			},
+			// --- Workflow tools ---
+			ask_user: (params: RawToolParamsObj) => {
+				const question = validateStr('question', params.question)
+				return { question }
+			},
+			web_fetch: (params: RawToolParamsObj) => {
+				const url = validateStr('url', params.url)
+				const description = validateStr('description', params.description)
+				return { url, description }
+			},
+			memory_write: (params: RawToolParamsObj) => {
+				const key = validateStr('key', params.key)
+				const content = validateStr('content', params.content)
+				return { key, content }
+			},
+			memory_read: (params: RawToolParamsObj) => {
+				const key = validateStr('key', params.key)
+				return { key }
+			},
+			tasks_create: (params: RawToolParamsObj) => {
+				const title = validateStr('title', params.title)
+				const description = validateOptionalStr('description', params.description)
+				return { title, description }
+			},
+			tasks_list: (_params: RawToolParamsObj) => {
+				return {}
+			},
+			tasks_update: (params: RawToolParamsObj) => {
+				const taskId = validateStr('task_id', params.task_id)
+				const status = validateOptionalStr('status', params.status)
+				const title = validateOptionalStr('title', params.title)
+				const description = validateOptionalStr('description', params.description)
+				return { taskId, status, title, description }
+			},
+			tasks_get: (params: RawToolParamsObj) => {
+				const taskId = validateStr('task_id', params.task_id)
+				return { taskId }
 			},
 			// ---
 			read_file: (params: RawToolParamsObj) => {
@@ -717,6 +764,107 @@ export class ToolsService implements IToolsService {
 					return { result: { result: `[query_ni_agent error: ${e.message ?? 'unknown'}]` } };
 				}
 			},
+			// --- Workflow tools ---
+			ask_user: async ({ question }) => {
+				// ask_user in main chat should behave like a regular chat message
+				// Rather than pausing, we return a prompt asking the user to respond
+				return { result: { result: `[ask_user] ${question}\n\nPlease respond to continue.` } };
+			},
+			web_fetch: async ({ url, description }) => {
+				try {
+					const controller = new AbortController();
+					const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+					const response = await fetch(url, {
+						signal: controller.signal,
+						headers: { 'User-Agent': 'Neural-Inverse-Void-Chat/1.0' },
+					});
+					clearTimeout(timeoutId);
+
+					if (!response.ok) {
+						return { result: { result: `HTTP ${response.status}: ${response.statusText}` } };
+					}
+
+					const contentType = response.headers.get('content-type') || '';
+					let content = await response.text();
+
+					// Strip HTML tags
+					if (contentType.includes('text/html')) {
+						content = content
+							.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+							.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+							.replace(/<[^>]+>/g, ' ')
+							.replace(/\s+/g, ' ')
+							.trim();
+					}
+
+					// Truncate if too large
+					const MAX_SIZE = 100 * 1024;
+					if (content.length > MAX_SIZE) {
+						content = content.substring(0, MAX_SIZE) + '\n[Content truncated at 100KB]';
+					}
+
+					return { result: { result: content } };
+				} catch (err: any) {
+					return { result: { result: `Error fetching URL: ${err.message}` } };
+				}
+			},
+			memory_write: async ({ key, content }) => {
+				const memoryDir = `${workspaceDir}/.void-memory`;
+				const memoryFile = `${memoryDir}/${key}.md`;
+
+				try {
+					// Ensure directory exists
+					const dirUri = URI.file(memoryDir);
+					await fileService.createFolder(dirUri).catch(() => { /* already exists */ });
+
+					// Write memory
+					const fileUri = URI.file(memoryFile);
+					const buffer = VSBuffer.fromString(content);
+					await fileService.writeFile(fileUri, buffer);
+
+					return { result: { result: `Memory saved: ${key}` } };
+				} catch (err: any) {
+					return { result: { result: `Error saving memory: ${err.message}` } };
+				}
+			},
+			memory_read: async ({ key }) => {
+				const memoryFile = `${workspaceDir}/.void-memory/${key}.md`;
+
+				try {
+					const fileUri = URI.file(memoryFile);
+					const content = await fileService.readFile(fileUri);
+					const text = content.value.toString();
+					return { result: { result: text } };
+				} catch (err: any) {
+					return { result: { result: `No memory found for key: ${key}` } };
+				}
+			},
+			tasks_create: async ({ title, description }) => {
+				// Use the shared task store from advancedTools
+				const tool = createTaskCreateTool();
+				const result = await tool.execute({ title, description: description || undefined }, {} as any);
+				return { result: { result: result.output } };
+			},
+			tasks_list: async (_params) => {
+				const tool = createTaskListTool();
+				const result = await tool.execute({}, {} as any);
+				return { result: { result: result.output } };
+			},
+			tasks_update: async ({ taskId, status, title, description }) => {
+				const tool = createTaskUpdateTool();
+				const args: Record<string, any> = { taskId };
+				if (status) args.status = status;
+				if (title) args.title = title;
+				if (description) args.description = description;
+				const result = await tool.execute(args, {} as any);
+				return { result: { result: result.output } };
+			},
+			tasks_get: async ({ taskId }) => {
+				const tool = createTaskGetTool();
+				const result = await tool.execute({ taskId }, {} as any);
+				return { result: { result: result.output } };
+			},
 			// ---
 			read_file: async ({ uri, startLine, endLine, pageNumber }) => {
 				await voidModelService.initializeModel(uri)
@@ -1003,6 +1151,15 @@ export class ToolsService implements IToolsService {
 			ask_checksagent: (_params, result) => result.result,
 			ask_powermode: (_params, result) => result.result,
 			query_ni_agent: (_params, result) => result.result,
+			// --- Workflow tools ---
+			ask_user: (_params, result) => result.result,
+			web_fetch: (_params, result) => result.result,
+			memory_write: (_params, result) => result.result,
+			memory_read: (_params, result) => result.result,
+			tasks_create: (_params, result) => result.result,
+			tasks_list: (_params, result) => result.result,
+			tasks_update: (_params, result) => result.result,
+			tasks_get: (_params, result) => result.result,
 			// ---
 			read_file: (params, result) => {
 				return `${params.uri.fsPath}\n\`\`\`\n${result.fileContents}\n\`\`\`${nextPageStr(result.hasNextPage)}${result.hasNextPage ? `\nMore info because truncated: this file has ${result.totalNumLines} lines, or ${result.totalFileLen} characters.` : ''}`

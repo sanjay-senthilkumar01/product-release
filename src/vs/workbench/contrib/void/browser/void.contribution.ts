@@ -45,6 +45,9 @@ import './extensionTransferService.js'
 // register MCP Service
 import '../common/mcpService.js'
 
+// internal tool registry (must load before chatThreadService and contributions that register tools)
+import './voidInternalToolService.js'
+
 // tools
 import './toolsService.js'
 import './terminalToolService.js'

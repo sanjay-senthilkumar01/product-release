@@ -47,6 +47,10 @@ import {
 } from './checksAgentTypes.js';
 import { ChecksToolRegistry } from './checksToolRegistry.js';
 import { buildChecksTools } from './tools/checksTools.js';
+import { buildModernisationChecksTools } from './tools/modernisationChecksTools.js';
+import { buildDiscoveryChecksTools } from './tools/discoveryChecksTools.js';
+import { IDiscoveryService } from '../../../neuralInverseModernisation/browser/engine/discovery/discoveryService.js';
+import { IModernisationSessionService } from '../../../neuralInverseModernisation/browser/modernisationSessionService.js';
 import { ChecksAgentLLMBridge } from './checksAgentLLMBridge.js';
 import { runChecksAgentLoop, IProcessorCallbacks } from './checksAgentProcessor.js';
 
@@ -161,6 +165,8 @@ export class ChecksAgentService extends Disposable implements IChecksAgentServic
 		@IExternalToolService private readonly externalToolService: IExternalToolService,
 		@IContractReasonService contractReasonService: IContractReasonService,
 		@IPowerBusService private readonly powerBus: IPowerBusService,
+		@IDiscoveryService private readonly discoveryService: IDiscoveryService,
+		@IModernisationSessionService private readonly modernisationSessionService: IModernisationSessionService,
 	) {
 		super();
 		const directory = this.workspaceContext.getWorkspace().folders[0]?.uri.fsPath ?? '/';
@@ -169,6 +175,12 @@ export class ChecksAgentService extends Disposable implements IChecksAgentServic
 		this._toolRegistry = new ChecksToolRegistry();
 		this._toolRegistry.registerMany(
 			buildChecksTools(grcEngine, externalToolService, contractReasonService, this, fileService, searchService, directory)
+		);
+		this._toolRegistry.registerMany(
+			buildDiscoveryChecksTools(this.discoveryService)
+		);
+		this._toolRegistry.registerMany(
+			buildModernisationChecksTools(this.discoveryService, this.modernisationSessionService)
 		);
 		this._restoreSession();
 		this._registerOnBus();

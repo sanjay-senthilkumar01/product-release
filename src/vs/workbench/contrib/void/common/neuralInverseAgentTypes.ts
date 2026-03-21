@@ -186,6 +186,16 @@ export const defaultApprovalTiers: Record<BuiltinToolName, ApprovalTier> = {
 	'ask_checksagent': 'auto',
 	'ask_powermode': 'auto',
 	'query_ni_agent': 'auto',
+
+	// Workflow tools
+	'ask_user': 'auto',
+	'web_fetch': 'auto',
+	'memory_read': 'auto',
+	'memory_write': 'notify',
+	'tasks_create': 'notify',
+	'tasks_list': 'auto',
+	'tasks_update': 'notify',
+	'tasks_get': 'auto',
 };
 
 

@@ -17,6 +17,11 @@ import { ModelSelection } from '../../void/common/voidSettingsTypes.js';
 import { IExternalCommandExecutor } from '../../neuralInverseChecks/browser/engine/services/externalCommandExecutor.js';
 import { IGRCEngineService } from '../../neuralInverseChecks/browser/engine/services/grcEngineService.js';
 import { buildGRCTools } from './tools/grcTools.js';
+import { buildModernisationPowerTools } from './tools/modernisationTools.js';
+import { buildDiscoveryTools } from './tools/discoveryTools.js';
+import { IDiscoveryService } from '../../neuralInverseModernisation/browser/engine/discovery/discoveryService.js';
+import { IMigrationPlannerService } from '../../neuralInverseModernisation/browser/engine/migrationPlannerService.js';
+import { IModernisationSessionService } from '../../neuralInverseModernisation/browser/modernisationSessionService.js';
 import {
 	IPowerSession,
 	IPowerMessage,
@@ -40,6 +45,20 @@ import {
 	createBrowserGrepTool,
 	createBrowserListTool,
 } from './tools/browserTools.js';
+import {
+	createAskUserTool,
+	createWebFetchTool,
+	createTaskCreateTool,
+	createTaskListTool,
+	createTaskUpdateTool,
+	createTaskGetTool,
+	createGitStatusTool,
+	createGitDiffTool,
+	createGitCommitTool,
+	createMemoryWriteTool,
+	createMemoryReadTool,
+	createRunTestsTool,
+} from './tools/advancedTools.js';
 import { IPowerBusService } from './powerBusService.js';
 import type { IRegisteredAgent, IAgentBusMessage } from '../common/powerBusTypes.js';
 
@@ -85,6 +104,9 @@ export interface IPowerModeService {
 
 	/** Resolve a pending tool permission request from the terminal */
 	resolvePermission(requestId: string, decision: ToolPermissionDecision): void;
+
+	/** Resolve a pending ask_user question */
+	resolveQuestion(questionId: string, answer: string): void;
 
 	// ─── Agents ─────────────────────────────────────────────────────────
 
@@ -153,6 +175,11 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 
 	private _approvalCounter = 0;
 
+	/** Pending ask_user questions: questionId → resolver */
+	private readonly _pendingQuestions = new Map<string, (answer: string) => void>();
+
+	private _questionCounter = 0;
+
 	/** LLM bridge for processor */
 	private readonly _llmBridge: PowerModeLLMBridge;
 
@@ -210,6 +237,9 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 		@IVoidSettingsService private readonly voidSettingsService: IVoidSettingsService,
 		@IPowerBusService private readonly powerBusService: IPowerBusService,
 		@IGRCEngineService private readonly grcEngine: IGRCEngineService,
+		@IDiscoveryService private readonly discoveryService: IDiscoveryService,
+		@IMigrationPlannerService private readonly migrationPlannerService: IMigrationPlannerService,
+		@IModernisationSessionService private readonly modernisationSessionService: IModernisationSessionService,
 	) {
 		super();
 		this._llmBridge = new PowerModeLLMBridge(llmMessageService, voidSettingsService);
@@ -391,6 +421,7 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 		if (!registry) {
 			registry = new PowerToolRegistry();
 			registry.registerMany([
+				// Core filesystem tools
 				createBrowserBashTool(directory, this.commandExecutor),
 				createBrowserReadTool(directory, this.fileService),
 				createBrowserWriteTool(directory, this.fileService),
@@ -398,7 +429,29 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 				createBrowserListTool(directory, this.fileService),
 				createBrowserGlobTool(directory, this.searchService),
 				createBrowserGrepTool(directory, this.searchService),
+				// GRC compliance tools
 				...buildGRCTools(this.grcEngine, (q) => this._queryChecksAgent(q)),
+				// Standalone discovery tools (key findings on any codebase)
+				...buildDiscoveryTools(this.discoveryService),
+				// Modernisation tools (migration workflow context)
+				...buildModernisationPowerTools(this.discoveryService, this.migrationPlannerService, this.modernisationSessionService),
+				// High-priority workflow tools
+				createAskUserTool((question, sessionId) => this._askUser(question, sessionId)),
+				createWebFetchTool(),
+				// Workflow task management (renamed to avoid confusion with 'list')
+				createTaskCreateTool(),   // tasks_create
+				createTaskListTool(),     // tasks_list
+				createTaskUpdateTool(),   // tasks_update
+				createTaskGetTool(),      // tasks_get
+				// Git tools
+				createGitStatusTool(directory, this.commandExecutor),
+				createGitDiffTool(directory, this.commandExecutor),
+				createGitCommitTool(directory, this.commandExecutor),
+				// Memory tools
+				createMemoryWriteTool(directory, this.fileService),
+				createMemoryReadTool(directory, this.fileService),
+				// Test execution
+				createRunTestsTool(directory, this.commandExecutor, this.fileService),
 			]);
 			this._toolRegistries.set(directory, registry);
 		}
@@ -637,6 +690,13 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 				this._pendingApprovals.delete(requestId);
 			}
 		}
+		// Cancel any pending questions for this session
+		for (const [questionId, resolve] of this._pendingQuestions) {
+			if (questionId.startsWith('question_')) {
+				resolve('[Cancelled by user]');
+				this._pendingQuestions.delete(questionId);
+			}
+		}
 		const session = this._sessions.get(sessionId);
 		if (session && session.status === 'busy') {
 			session.status = 'idle';
@@ -652,6 +712,39 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 			this._pendingApprovals.delete(requestId);
 			resolve(decision);
 		}
+	}
+
+	resolveQuestion(questionId: string, answer: string): void {
+		const resolve = this._pendingQuestions.get(questionId);
+		if (resolve) {
+			this._pendingQuestions.delete(questionId);
+			resolve(answer);
+		}
+	}
+
+	private _askUser(question: string, sessionId: string): Promise<string> {
+		const questionId = `question_${++this._questionCounter}`;
+
+		return new Promise<string>((resolve) => {
+			this._pendingQuestions.set(questionId, resolve);
+
+			// Fire UI event for terminal to show question prompt
+			this._onDidEmitUIEvent.fire({
+				type: 'user-question',
+				questionId,
+				sessionId,
+				question,
+			} as any);
+
+			// Timeout after 5 minutes
+			setTimeout(() => {
+				const pending = this._pendingQuestions.get(questionId);
+				if (pending) {
+					this._pendingQuestions.delete(questionId);
+					pending('[User did not respond within 5 minutes]');
+				}
+			}, 300000);
+		});
 	}
 
 	// ─── Agents ──────────────────────────────────────────────────────────────

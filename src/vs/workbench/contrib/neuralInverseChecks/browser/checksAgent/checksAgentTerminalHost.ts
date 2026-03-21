@@ -19,26 +19,28 @@
  */
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { Color, RGBA } from '../../../../../base/common/color.js';
+import { Color } from '../../../../../base/common/color.js';
 import { IColorTheme } from '../../../../../platform/theme/common/themeService.js';
 import { ITerminalService, IDetachedTerminalInstance, IXtermColorProvider } from '../../../terminal/browser/terminal.js';
 import { DetachedProcessInfo } from '../../../terminal/browser/detachedTerminal.js';
 import { IChecksAgentService } from './checksAgentService.js';
 import { ChecksAgentUIEvent } from './checksAgentTypes.js';
+import { TERMINAL_BACKGROUND_COLOR } from '../../../terminal/common/terminalColorRegistry.js';
+import { PANEL_BACKGROUND } from '../../../../common/theme.js';
 
 // ── ANSI helpers ───────────────────────────────────────────────────────
 const ESC = '\x1b[';
 const RESET = `${ESC}0m`;
 const BOLD = `${ESC}1m`;
 
-// Checks Agent palette (24-bit true color)
-const TEAL   = `${ESC}38;2;100;180;255m`;   // #64b4ff  brand / accent (soft blue)
-const AMBER  = `${ESC}38;2;230;170;80m`;    // #e6aa50  tools / audit
-const RED    = `${ESC}38;2;240;100;100m`;   // #f06464  errors
-const WHITE  = `${ESC}38;2;210;218;230m`;   // #d2dae6  main text
-const GRAY   = `${ESC}38;2;130;145;165m`;   // #8291a5  muted
-const DARK   = `${ESC}38;2;70;82;100m`;     // #465264  very muted
-const BLUE   = `${ESC}38;2;90;120;170m`;    // #5a78aa  box borders
+// Checks Agent palette (ANSI standard - inherits from VS Code terminal theme)
+const TEAL   = `${ESC}36m`;      // terminal.ansiCyan
+const AMBER  = `${ESC}33m`;      // terminal.ansiYellow
+const RED    = `${ESC}31m`;      // terminal.ansiRed
+const WHITE  = `${ESC}97m`;      // terminal.ansiBrightWhite
+const GRAY   = `${ESC}90m`;      // terminal.ansiBrightBlack
+const DARK   = `${ESC}90m`;      // terminal.ansiBrightBlack
+const BLUE   = `${ESC}34m`;      // terminal.ansiBlue
 
 function line(text: string = ''): string { return text + '\r\n'; }
 
@@ -99,6 +101,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 	private _inputActive = true;
 	private _isStreaming = false;
 	private _streamingPartId: string | undefined;
+	private _streamTimeout: any = undefined;
 	private readonly _streamedPartIds = new Set<string>();
 	private _cols = 120;
 	private _showingSlashMenu = false;
@@ -107,6 +110,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 	private _thinkingInterval: ReturnType<typeof setInterval> | undefined;
 	private _thinkingFrame = 0;
 	private _streamingCursor = false;
+	private _streamingLineBuffer = '';
 	private readonly _drawnRunningTools = new Set<string>();
 	// Agent-link animation (for ask_power_mode — queries to Power Mode)
 	private _agentLinkInterval: ReturnType<typeof setInterval> | undefined;
@@ -129,8 +133,8 @@ export class ChecksAgentTerminalHost extends Disposable {
 		this._container = container;
 
 		const colorProvider: IXtermColorProvider = {
-			getBackgroundColor(_theme: IColorTheme): Color | undefined {
-				return new Color(new RGBA(22, 27, 36, 255)); // #161b24 — dark neutral background
+			getBackgroundColor(theme: IColorTheme): Color | undefined {
+				return theme.getColor(TERMINAL_BACKGROUND_COLOR) || theme.getColor(PANEL_BACKGROUND);
 			}
 		};
 
@@ -220,7 +224,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 			const allResults = this.checksAgentService.queryViolations();
 			const blocking = this.checksAgentService.getBlockingViolations();
 			const errCount = allResults.filter(r => (r.severity ?? '').toLowerCase() === 'error').length;
-			const postureStr = allResults.length === 0 ? `${TEAL}✓ Clean${RESET}` : `${RED}${errCount} errors${RESET} ${GRAY}/ ${allResults.length} total${RESET}`;
+			const postureStr = allResults.length === 0 ? `${TEAL} Clean${RESET}` : `${RED}${errCount} errors${RESET} ${GRAY}/ ${allResults.length} total${RESET}`;
 			const blockStr = blocking.length > 0 ? `${RED}${blocking.length} blocking${RESET}` : `${TEAL}none blocking${RESET}`;
 			this._write(line(`  ${BLUE}│${RESET}  ${DARK}Posture${RESET}${''.padEnd(leftW - 7)}  ${BLUE}│${RESET}  ${postureStr}  ${DARK}·${RESET}  ${blockStr}`));
 		} catch { /* engine not ready */ }
@@ -244,8 +248,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 		this._drawnRunningTools.clear();
 		this._streamingCursor = false;
 
-		this._write(line());
-		this._write(`  ${TEAL}${BOLD}❯ ${RESET}`);
+		this._write(`${TEAL}${BOLD}> ${RESET}`);
 	}
 
 	// ── Slash menu ─────────────────────────────────────────────────────
@@ -264,7 +267,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 		if (this._slashFilteredCommands.length === 0) {
 			this._menuLineCount = 0;
 			this._showingSlashMenu = false;
-			this._write(`${TEAL}${BOLD}❯ ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
+			this._write(`${TEAL}${BOLD}> ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
 			return;
 		}
 
@@ -272,7 +275,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 			this._write(line(`  ${WHITE}${BOLD}${cmd.name}${RESET}  ${DARK}${cmd.description}${RESET}`));
 		}
 		this._menuLineCount = this._slashFilteredCommands.length;
-		this._write(`${TEAL}${BOLD}❯ ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
+		this._write(`${TEAL}${BOLD}> ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
 		this._showingSlashMenu = true;
 	}
 
@@ -284,7 +287,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 		}
 		this._menuLineCount = 0;
 		this._showingSlashMenu = false;
-		this._write(`${TEAL}${BOLD}❯ ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
+		this._write(`${TEAL}${BOLD}> ${RESET}${WHITE}${this._inputBuffer}${RESET}`);
 	}
 
 	// ── Slash command execution ─────────────────────────────────────────
@@ -301,7 +304,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 				this._write(`${ESC}2J${ESC}H`);
 				this._drawWelcome();
 				this._write(line());
-				this._write(line(`  ${TEAL}✓${RESET} ${GRAY}New session started${RESET}`));
+				this._write(line(`  ${TEAL}${RESET} ${GRAY}New session started${RESET}`));
 				this._write(line());
 				this._drawPrompt();
 				break;
@@ -327,7 +330,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 				this._write(`${ESC}2J${ESC}H`);
 				this._drawWelcome();
 				this._write(line());
-				this._write(line(`  ${TEAL}✓${RESET} ${GRAY}Conversation cleared${RESET}`));
+				this._write(line(`  ${TEAL}${RESET} ${GRAY}Conversation cleared${RESET}`));
 				this._write(line());
 				this._drawPrompt();
 				break;
@@ -453,7 +456,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 						this.checksAgentService.setModel(sel);
 						this._write(line());
 						this._write(line());
-						this._write(line(`  ${TEAL}✓${RESET} Model set to ${TEAL}${chosen.model}${RESET}  ${DARK}${chosen.provider}${RESET}`));
+						this._write(line(`  ${TEAL}${RESET} Model set to ${TEAL}${chosen.model}${RESET}  ${DARK}${chosen.provider}${RESET}`));
 					}
 				} else if (this._modelPickerBuffer.trim()) {
 					this._write(line());
@@ -504,13 +507,14 @@ export class ChecksAgentTerminalHost extends Disposable {
 
 	private _drawUserMessage(text: string): void {
 		this._write(`\r${ESC}2K`);
+		this._write(line()); // spacing above
 		for (const l of text.split('\n')) {
-			this._write(line(`  ${WHITE}${BOLD}${l}${RESET}`));
+			this._write(line(`  ${TEAL}>${RESET} ${WHITE}${l}${RESET}`));
 		}
+		this._write(line()); // spacing below
 	}
 
 	private _drawThinking(): void {
-		this._write(line());
 		this._thinkingFrame = 0;
 		this._write(`  ${DARK}·${RESET}`);
 		this._thinkingInterval = setInterval(() => {
@@ -524,7 +528,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 		if (this._thinkingInterval !== undefined) {
 			clearInterval(this._thinkingInterval);
 			this._thinkingInterval = undefined;
-			this._write(`\r${ESC}2K`);
+			this._write(`\r${ESC}2K\r`); // clear the dots line and return to start
 		}
 	}
 
@@ -590,9 +594,21 @@ export class ChecksAgentTerminalHost extends Disposable {
 
 	private _endStreaming(): void {
 		if (this._isStreaming) {
+			if (this._streamTimeout) {
+				clearTimeout(this._streamTimeout);
+				this._streamTimeout = undefined;
+			}
 			if (this._streamingCursor) {
 				this._write('\b \b');
 				this._streamingCursor = false;
+			}
+			// Flush any remaining buffered text
+			if (this._streamingLineBuffer) {
+				const formatted = this._formatMarkdownLine(this._streamingLineBuffer);
+				// Clear current line and rewrite with formatting
+				this._write(`\r${ESC}K`);
+				this._write(formatted.colored);
+				this._streamingLineBuffer = '';
 			}
 			this._write(line());
 			this._isStreaming = false;
@@ -602,56 +618,127 @@ export class ChecksAgentTerminalHost extends Disposable {
 
 	private _drawText(text: string): void {
 		this._endStreaming();
-		for (const l of text.split('\n')) {
-			this._write(line(`  ${WHITE}${l}${RESET}`));
+
+		// Skip empty or whitespace-only text parts
+		if (!text || text.trim().length === 0) {
+			return;
+		}
+
+		const lines = text.split('\n');
+		for (const l of lines) {
+			if (l.trim()) {
+				const formatted = this._formatMarkdownLine(l);
+				// For long lines, just output formatted version without wrapping to preserve markdown
+				this._write(line(formatted.colored));
+			} else {
+				this._write(line());
+			}
 		}
 	}
 
 	private _drawToolStart(partId: string, toolName: string, title?: string): void {
 		if (this._drawnRunningTools.has(partId) || !title) { return; }
 		this._drawnRunningTools.add(partId);
+		this._stopThinking();
 		this._endStreaming();
-		this._write(line(`  ${AMBER}⟳ ${AMBER}${BOLD}${toolName}${RESET} ${GRAY}${title}${RESET}`));
+		this._write(line(`${AMBER}${BOLD}${toolName}${RESET} ${GRAY}${title}${RESET}`));
 	}
 
 	private _drawToolComplete(toolName: string, title: string | undefined, duration: string): void {
-		this._write(line(`  ${TEAL}✓ ${AMBER}${toolName}${RESET} ${GRAY}${title ?? ''}${RESET} ${DARK}${duration}${RESET}`));
+		this._write(line(`${AMBER}${toolName}${RESET} ${GRAY}${title ?? ''}${RESET} ${DARK}${duration}${RESET}`));
 	}
 
 	private _drawToolError(toolName: string, error: string): void {
-		this._write(line(`  ${RED}✗ ${AMBER}${toolName}${RESET} ${RED}${error}${RESET}`));
+		this._write(line(`${AMBER}${toolName}${RESET} ${RED}${error}${RESET}`));
 	}
 
 	private _drawToolOutput(output: string): void {
 		const MAX = 20;
 		const allLines = output.split('\n');
 		const show = allLines.slice(0, MAX);
+
+		// Draw top border
+		this._write(line(`${DARK}┌─ output${RESET}`));
+
 		for (const l of show) {
-			this._write(line(`    ${DARK}${l}${RESET}`));
+			const formatted = this._formatMarkdownLine(l);
+			// Output formatted line - let terminal wrap naturally to preserve markdown
+			this._write(line(`${DARK}│${RESET} ${formatted.colored}`));
 		}
+
 		if (allLines.length > MAX) {
-			this._write(line(`    ${DARK}··· +${allLines.length - MAX} lines${RESET}`));
+			this._write(line(`${DARK}│${RESET} ${DARK}... +${allLines.length - MAX} lines${RESET}`));
 		}
+
+		// Draw bottom border
+		this._write(line(`${DARK}└─${RESET}`));
+	}
+
+	private _formatMarkdownLine(line: string): { colored: string; plain: string } {
+		let plain = line;
+		let colored = line;
+
+		// Strip code blocks
+		plain = plain.replace(/```[\w]*$/g, '');
+		colored = colored.replace(/```[\w]*$/g, '');
+
+		// Headers: ## Text -> Text (bold/colored)
+		if (plain.match(/^\s*#{1,6}\s+/)) {
+			plain = plain.replace(/^\s*#{1,6}\s+/, '');
+			colored = `${TEAL}${BOLD}${plain}${RESET}`;
+			return { colored, plain };
+		}
+
+		// Horizontal rules
+		if (plain.match(/^\s*[-─]{3,}\s*$/)) {
+			colored = `${DARK}${plain}${RESET}`;
+			return { colored, plain };
+		}
+
+		// Bold: **text** -> text (bold) - re-apply WHITE after RESET
+		colored = colored.replace(/\*\*([^*]+)\*\*/g, `${BOLD}$1${RESET}${WHITE}`);
+		plain = plain.replace(/\*\*([^*]+)\*\*/g, '$1');
+
+		// Special prefix patterns like **+** or ☑
+		colored = colored.replace(/^(\s*)(\*\*[+*☑✓✗─→←]+\*\*)/g, `$1${TEAL}${BOLD}$2${RESET}${WHITE}`);
+
+		// Inline code: `text` -> text (highlighted) - re-apply WHITE after RESET
+		colored = colored.replace(/`([^`]+)`/g, `${AMBER}$1${RESET}${WHITE}`);
+		plain = plain.replace(/`([^`]+)`/g, '$1');
+
+		// Links: [text](url) -> text - re-apply WHITE after RESET
+		colored = colored.replace(/\[([^\]]+)\]\([^)]+\)/g, `${TEAL}$1${RESET}${WHITE}`);
+		plain = plain.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+
+		// Bullets: - text or • text
+		if (plain.match(/^\s*[-*•]\s+/)) {
+			plain = plain.replace(/^\s*[-*•]\s+/, '• ');
+			colored = `${WHITE}${plain}${RESET}`;
+			return { colored, plain };
+		}
+
+		// Default: use white for normal text
+		colored = `${WHITE}${colored}${RESET}`;
+		return { colored, plain };
 	}
 
 	private _drawStepFinish(tokens?: { input: number; output: number }): void {
 		this._endStreaming();
 		if (tokens) {
-			this._write(line(`  ${DARK}─── ${tokens.input} in / ${tokens.output} out ───${RESET}`));
+			this._write(line(`${DARK}${tokens.input} in / ${tokens.output} out${RESET}`));
 		}
 	}
 
 	private _drawError(error: string): void {
 		this._endStreaming();
 		this._write(line());
-		this._write(line(`  ${RED}${BOLD}error:${RESET} ${RED}${error}${RESET}`));
+		this._write(line(`${RED}error: ${error}${RESET}`));
 	}
 
 	private _drawDone(): void {
 		this._stopThinking();
 		this._stopAgentLink();
 		this._endStreaming();
-		this._write(line());
 	}
 
 	// ── Input handling ─────────────────────────────────────────────────
@@ -761,7 +848,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 
 			case 'message-created':
 				if ((event as any).message?.role === 'assistant') {
-					this._write(`\r${ESC}2K`);
+					this._write(`\r${ESC}2K\r`);
 				}
 				break;
 
@@ -788,7 +875,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 								this._stopAgentLink();
 								const dur = st.time?.end && st.time?.start
 									? ((st.time.end - st.time.start) / 1000).toFixed(2) + 's' : '';
-								this._write(line(`  ${TEAL}✓ agent-bus${RESET} ${AMBER}power-mode${RESET} ${DARK}→ checks-agent${RESET}  ${DARK}${dur}${RESET}`));
+								this._write(line(`  ${TEAL} agent-bus${RESET} ${AMBER}power-mode${RESET} ${DARK}→ checks-agent${RESET}  ${DARK}${dur}${RESET}`));
 								if (st.output) { this._drawAgentLinkOutput(st.output); }
 							} else {
 								const dur = st.time?.end && st.time?.start
@@ -799,7 +886,7 @@ export class ChecksAgentTerminalHost extends Disposable {
 						} else if (st.status === 'error') {
 							if (isBusTool) {
 								this._stopAgentLink();
-								this._write(line(`  ${RED}✗ agent-bus${RESET} ${AMBER}power-mode${RESET} ${RED}${st.error || 'timed out'}${RESET}`));
+								this._write(line(`  ${RED} agent-bus${RESET} ${AMBER}power-mode${RESET} ${RED}${st.error || 'timed out'}${RESET}`));
 							} else {
 								this._drawToolError(part.toolName, st.error || 'unknown error');
 							}
@@ -823,16 +910,65 @@ export class ChecksAgentTerminalHost extends Disposable {
 					this._endStreaming();
 					this._isStreaming = true;
 					this._streamingPartId = ev.partId;
-					this._write(`\r\n  `);
+					this._streamingLineBuffer = '';
+					// Start on a new line
+					this._write(`\r\n`);
 				}
+
+				// Reset stream timeout (30s)
+				if (this._streamTimeout) {
+					clearTimeout(this._streamTimeout);
+				}
+				this._streamTimeout = setTimeout(() => {
+					if (this._isStreaming) {
+						this._endStreaming();
+						this._write(line());
+						this._write(line(`${RED}[Stream timeout - response incomplete]${RESET}`));
+						this._write(line());
+						this._drawPrompt();
+					}
+				}, 30000);
+
+				// Remove cursor before writing
 				if (this._streamingCursor) {
 					this._write('\b \b');
 					this._streamingCursor = false;
 				}
-				const delta = ev.delta.replace(/\n/g, `\r\n  `);
-				this._write(`${WHITE}${delta}${RESET}`);
-				this._write(`${TEAL}▋${RESET}`);
-				this._streamingCursor = true;
+
+				// Just append the delta and let terminal handle wrapping
+				const delta = ev.delta;
+
+				// Check if delta contains newlines
+				if (delta.includes('\n')) {
+					const lines = delta.split('\n');
+					for (let i = 0; i < lines.length; i++) {
+						if (i > 0) {
+							// Complete the previous line with formatting
+							if (this._streamingLineBuffer.trim()) {
+								const formatted = this._formatMarkdownLine(this._streamingLineBuffer);
+								// Clear line, write formatted, newline
+								this._write(`\r${ESC}K  ${formatted.colored}\r\n`);
+							} else {
+								this._write(`\r\n`);
+							}
+							this._streamingLineBuffer = '';
+						}
+						this._streamingLineBuffer += lines[i];
+					}
+				} else {
+					// No newline - just accumulate
+					this._streamingLineBuffer += delta;
+				}
+
+				// Show current unformatted buffer (raw text flows naturally)
+				if (this._streamingLineBuffer) {
+					// For very long lines, let xterm wrap naturally
+					this._write(`\r${ESC}K  ${WHITE}${this._streamingLineBuffer}${RESET}${TEAL}▋${RESET}`);
+					this._streamingCursor = true;
+				} else {
+					this._write(`\r${ESC}K  ${TEAL}▋${RESET}`);
+					this._streamingCursor = true;
+				}
 				break;
 			}
 
