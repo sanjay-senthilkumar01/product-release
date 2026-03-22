@@ -30,6 +30,7 @@ import { IChecksAgentService } from '../../neuralInverseChecks/browser/checksAge
 import { IExternalCommandExecutor } from '../../neuralInverseChecks/browser/engine/services/externalCommandExecutor.js';
 import { IPowerModeService } from '../../powerMode/browser/powerModeService.js';
 import { IWorkflowAgentService } from '../../neuralInverse/browser/workflowAgentService.js';
+import type { INeuralInverseSubAgentService } from './neuralInverseSubAgentService.js';
 import {
 	createTaskCreateTool,
 	createTaskListTool,
@@ -194,6 +195,19 @@ export class ToolsService implements IToolsService {
 			return _workflowAgent;
 		};
 
+		// Lazy-resolved to avoid circular DI (void → neuralInverse sub-agent)
+		let _subAgentService: INeuralInverseSubAgentService | null | undefined;
+		const getSubAgentService = (): INeuralInverseSubAgentService | null => {
+			if (_subAgentService === undefined) {
+				try {
+					const INeuralInverseSubAgentServiceId = createDecorator<INeuralInverseSubAgentService>('neuralInverseSubAgentService');
+					_subAgentService = instantiationService.invokeFunction(a => a.get(INeuralInverseSubAgentServiceId));
+				}
+				catch { _subAgentService = null; }
+			}
+			return _subAgentService;
+		};
+
 		this.validateParams = {
 			// --- Power Mode style tools ---
 			bash: (params: RawToolParamsObj) => {
@@ -319,15 +333,15 @@ export class ToolsService implements IToolsService {
 			spawn_agent: (params: RawToolParamsObj) => {
 				const role = validateStr('role', params.role)
 				const goal = validateStr('goal', params.goal)
-				const scopedFiles = validateOptionalStr('scopedFiles', params.scopedFiles)
+				const scopedFiles = validateOptionalStr('scoped_files', params.scoped_files)
 				return { role, goal, scopedFiles }
 			},
 			get_agent_status: (params: RawToolParamsObj) => {
-				const agentId = validateStr('agentId', params.agentId)
+				const agentId = validateStr('agent_id', params.agent_id)
 				return { agentId }
 			},
 			wait_for_agent: (params: RawToolParamsObj) => {
-				const agentId = validateStr('agentId', params.agentId)
+				const agentId = validateStr('agent_id', params.agent_id)
 				return { agentId }
 			},
 			list_agents: (params: RawToolParamsObj) => {
@@ -880,16 +894,187 @@ export class ToolsService implements IToolsService {
 				return { result: { result: result.output } };
 			},
 			spawn_agent: async ({ role, goal, scopedFiles }) => {
-				throw new Error('spawn_agent is only available in Power Mode. Please use Power Mode to spawn sub-agents.');
+				const subAgentService = getSubAgentService();
+				if (!subAgentService) {
+					throw new Error('Sub-agent service unavailable. This feature requires the Neural Inverse sub-agent service.');
+				}
+
+				// Parse scoped files if provided
+				const scopedFilesArray = scopedFiles
+					? scopedFiles.split(',').map(f => f.trim()).filter(f => f.length > 0)
+					: undefined;
+
+				// Let sub-agent service determine parent context from active agent task
+				// This will show the agent activity inline in the UI with tool calls
+				const agent = subAgentService.spawn({
+					role: role as any, // SubAgentRole
+					goal,
+					scopedFiles: scopedFilesArray,
+					// Don't pass parentContext - let it use the active agent task
+				});
+
+				if (!agent) {
+					throw new Error('Failed to spawn agent. Maximum concurrent agents reached or service unavailable.');
+				}
+
+				const shortId = agent.id.substring(0, 8);
+				const accessNote = (role === 'editor' || role === 'verifier')
+					? '\n⚠ Has write/edit/bash access'
+					: '';
+
+				return {
+					result: {
+						result: `Agent ${shortId} spawned and running in background${accessNote}\nGoal: ${goal}\n\nUse wait_for_agent with agent_id="${shortId}" to get results.`,
+					},
+				};
 			},
 			get_agent_status: async ({ agentId }) => {
-				throw new Error('get_agent_status is only available in Power Mode. Please use Power Mode to check agent status.');
+				const subAgentService = getSubAgentService();
+				if (!subAgentService) {
+					throw new Error('Sub-agent service unavailable.');
+				}
+
+				const agents = Array.from(subAgentService.subAgents.values());
+				// Support both full UUID and short ID (first 8 chars)
+				const agent = agents.find(a => a.id === agentId || a.id.startsWith(agentId));
+
+				if (!agent) {
+					throw new Error(`No agent found with ID: ${agentId}`);
+				}
+
+				const shortId = agent.id.substring(0, 8);
+				const statusIcon = agent.status === 'completed' ? '✓' : agent.status === 'failed' ? '✗' : agent.status === 'running' ? '●' : '○';
+
+				// Calculate elapsed time
+				const startTime = new Date(agent.createdAt).getTime();
+				const endTime = agent.completedAt ? new Date(agent.completedAt).getTime() : Date.now();
+				const elapsed = endTime - startTime;
+				const elapsedSeconds = Math.floor(elapsed / 1000);
+				const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+				const remainingSeconds = elapsedSeconds % 60;
+				const elapsedStr = elapsedMinutes > 0 ? `${elapsedMinutes}m ${remainingSeconds}s` : `${elapsedSeconds}s`;
+
+				let result = `Agent ${shortId} [${agent.role}]\nStatus: ${statusIcon} ${agent.status} · ${elapsedStr}`;
+
+				if (agent.status === 'running') {
+					result += `\n\nGoal: ${agent.goal}`;
+				} else if (agent.status === 'completed' && agent.result) {
+					result += `\n\nResult:\n${agent.result}`;
+				} else if (agent.status === 'failed' && agent.error) {
+					result += `\n\nError:\n${agent.error}`;
+				}
+
+				return { result: { result } };
 			},
 			wait_for_agent: async ({ agentId }) => {
-				throw new Error('wait_for_agent is only available in Power Mode. Please use Power Mode to wait for agents.');
+				const subAgentService = getSubAgentService();
+				if (!subAgentService) {
+					throw new Error('Sub-agent service unavailable.');
+				}
+
+				// Poll until complete (max 5 minutes)
+				const startTime = Date.now();
+				const timeout = 5 * 60 * 1000; // 5 minutes
+
+				while (Date.now() - startTime < timeout) {
+					const agents = Array.from(subAgentService.subAgents.values());
+					const agent = agents.find(a => a.id === agentId || a.id.startsWith(agentId));
+
+					if (!agent) {
+						throw new Error(`No agent found with ID: ${agentId}`);
+					}
+
+					// Terminal states
+					if (agent.status === 'completed' || agent.status === 'failed' || agent.status === 'cancelled') {
+						const shortId = agent.id.substring(0, 8);
+						const totalElapsed = Date.now() - startTime;
+						const elapsedSeconds = Math.floor(totalElapsed / 1000);
+						const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+						const remainingSeconds = elapsedSeconds % 60;
+						const elapsedStr = elapsedMinutes > 0 ? `${elapsedMinutes}m ${remainingSeconds}s` : `${elapsedSeconds}s`;
+
+						if (agent.status === 'completed' && agent.result) {
+							return {
+								result: {
+									result: `✓ Agent ${shortId} completed in ${elapsedStr}\n\nResult:\n${agent.result}`,
+								},
+							};
+						} else if (agent.status === 'failed' && agent.error) {
+							throw new Error(`Agent ${shortId} failed: ${agent.error}`);
+						} else {
+							throw new Error(`Agent ${shortId} was cancelled`);
+						}
+					}
+
+					// Still running, wait 2 seconds before checking again
+					await new Promise(resolve => setTimeout(resolve, 2000));
+				}
+
+				// Timeout
+				throw new Error(`Agent ${agentId} did not complete within 5 minutes`);
 			},
 			list_agents: async () => {
-				throw new Error('list_agents is only available in Power Mode. Please use Power Mode to list agents.');
+				const subAgentService = getSubAgentService();
+				if (!subAgentService) {
+					throw new Error('Sub-agent service unavailable.');
+				}
+
+				const agents = Array.from(subAgentService.subAgents.values());
+
+				if (agents.length === 0) {
+					return { result: { result: 'No sub-agents have been spawned yet.' } };
+				}
+
+				const running = agents.filter(a => a.status === 'running');
+				const pending = agents.filter(a => a.status === 'pending');
+				const completed = agents.filter(a => a.status === 'completed');
+				const failed = agents.filter(a => a.status === 'failed');
+
+				const formatElapsed = (createdAt: string, completedAt?: string) => {
+					const start = new Date(createdAt).getTime();
+					const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+					const elapsed = Math.floor((end - start) / 1000);
+					const minutes = Math.floor(elapsed / 60);
+					const seconds = elapsed % 60;
+					return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+				};
+
+				let output = `Total: ${agents.length} agents\n\n`;
+
+				if (running.length > 0) {
+					output += `● Running (${running.length})\n`;
+					for (const a of running) {
+						const elapsed = formatElapsed(a.createdAt);
+						output += `  ${a.id.substring(0, 8)} [${a.role}] · ${elapsed}\n  └─ ${a.goal.substring(0, 55)}${a.goal.length > 55 ? '...' : ''}\n\n`;
+					}
+				}
+
+				if (pending.length > 0) {
+					output += `○ Pending (${pending.length})\n`;
+					for (const a of pending) {
+						output += `  ${a.id.substring(0, 8)} [${a.role}]\n  └─ ${a.goal.substring(0, 60)}${a.goal.length > 60 ? '...' : ''}\n\n`;
+					}
+				}
+
+				if (completed.length > 0) {
+					output += `✓ Completed (${completed.length})\n`;
+					for (const a of completed) {
+						const elapsed = formatElapsed(a.createdAt, a.completedAt);
+						output += `  ${a.id.substring(0, 8)} [${a.role}] · ${elapsed}\n`;
+					}
+					output += '\n';
+				}
+
+				if (failed.length > 0) {
+					output += `✗ Failed (${failed.length})\n`;
+					for (const a of failed) {
+						const elapsed = formatElapsed(a.createdAt, a.completedAt);
+						const errorMsg = a.error?.substring(0, 40) || 'Unknown error';
+						output += `  ${a.id.substring(0, 8)} [${a.role}] · ${elapsed}\n  └─ ${errorMsg}${a.error && a.error.length > 40 ? '...' : ''}\n\n`;
+					}
+				}
+
+				return { result: { result: output } };
 			},
 			// ---
 			read_file: async ({ uri, startLine, endLine, pageNumber }) => {

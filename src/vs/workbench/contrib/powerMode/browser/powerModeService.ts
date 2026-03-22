@@ -69,6 +69,7 @@ import {
 } from './tools/subAgentTools.js';
 import { IPowerBusService } from './powerBusService.js';
 import type { IRegisteredAgent, IAgentBusMessage } from '../common/powerBusTypes.js';
+import { PowerModeChangeTracker, IPowerModeChangeTracker, IChangeGroup } from './powerModeChangeTracker.js';
 
 // ─── Service Interface ────────────────────────────────────────────────────────
 
@@ -153,6 +154,16 @@ export interface IPowerModeService {
 	 * @param allowWrite - If true, allows write/edit/bash tools (for editor/verifier sub-agents). Default: false (read-only)
 	 */
 	answerQuery(question: string, allowWrite?: boolean): Promise<string>;
+
+	/**
+	 * Get the change tracker (for review/rollback UI)
+	 */
+	getChangeTracker(): IPowerModeChangeTracker;
+
+	/**
+	 * Get latest change group (for "press /review" prompt)
+	 */
+	getLatestChanges(): IChangeGroup | null;
 }
 
 // ─── Implementation ───────────────────────────────────────────────────────────
@@ -194,6 +205,9 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 	/** LLM bridge for processor */
 	private readonly _llmBridge: PowerModeLLMBridge;
 
+	/** Change tracker (for review/rollback) */
+	private readonly _changeTracker: PowerModeChangeTracker;
+
 	/** Tool registries per working directory */
 	private readonly _toolRegistries = new Map<string, PowerToolRegistry>();
 
@@ -209,7 +223,7 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 			mode: 'primary',
 			maxSteps: 200,
 			permissions: {
-				tools: { '*': 'allow', bash: 'allow', write: 'allow', edit: 'allow' },
+				tools: { '*': 'allow', bash: 'allow', write: 'allow', edit: 'allow', spawn_agent: 'ask' },
 			},
 		},
 		{
@@ -270,6 +284,7 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 		super();
 		this._llmBridge = new PowerModeLLMBridge(llmMessageService, voidSettingsService);
 		this._contextBuilder = new PowerModeContextBuilder(fileService);
+		this._changeTracker = this._register(new PowerModeChangeTracker(fileService));
 
 		// ── PowerBus: register Power Mode as the central agent ──────────
 		this.powerBusService.register('power-mode', ['receive:all', 'send:query', 'broadcast'], 'Power Mode');
@@ -472,8 +487,8 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 				// Core filesystem tools
 				createBrowserBashTool(directory, this.commandExecutor),
 				createBrowserReadTool(directory, this.fileService),
-				createBrowserWriteTool(directory, this.fileService),
-				createBrowserEditTool(directory, this.fileService),
+				createBrowserWriteTool(directory, this.fileService, this._changeTracker),
+				createBrowserEditTool(directory, this.fileService, this._changeTracker),
 				createBrowserListTool(directory, this.fileService),
 				createBrowserGlobTool(directory, this.searchService),
 				createBrowserGrepTool(directory, this.searchService),
@@ -510,7 +525,7 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 					const agentTools = [
 						createSpawnAgentTool(subAgentService),
 						createGetAgentStatusTool(subAgentService),
-						createWaitForAgentTool(subAgentService),
+						createWaitForAgentTool(subAgentService, this),
 						createListAgentsTool(subAgentService),
 					];
 					registry.registerMany(agentTools);
@@ -1018,6 +1033,16 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 			}
 		} catch { /* ignore corrupt data */ }
 	}
+
+	// ─── Change Tracking & Review ────────────────────────────────────────────
+
+	getChangeTracker(): IPowerModeChangeTracker {
+		return this._changeTracker;
+	}
+
+	getLatestChanges(): IChangeGroup | null {
+		return this._changeTracker.getLatestChangeGroup();
+	}
 }
 
 registerSingleton(IPowerModeService, PowerModeService, InstantiationType.Eager);
@@ -1033,6 +1058,13 @@ function _buildToolPreview(toolName: string, input: Record<string, any>): string
 			return `${input.filePath ?? ''}  (${String(input.content ?? '').split('\n').length} lines)`;
 		case 'edit':
 			return `${input.filePath ?? ''}`;
+		case 'spawn_agent': {
+			const role = input.role ?? 'unknown';
+			const goal = String(input.goal ?? '').substring(0, 100);
+			const hasWriteAccess = role === 'editor' || role === 'verifier';
+			const accessLabel = hasWriteAccess ? ' [⚠️ WRITE ACCESS]' : ' [read-only]';
+			return `${role}${accessLabel}: ${goal}`;
+		}
 		default:
 			return JSON.stringify(input).substring(0, 200);
 	}

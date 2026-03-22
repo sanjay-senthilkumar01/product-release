@@ -14,6 +14,7 @@ import { IPowerTool, IToolContext, IToolResult } from '../../common/powerModeTyp
 import { definePowerTool } from './powerToolRegistry.js';
 import { INeuralInverseSubAgentService } from '../../../void/browser/neuralInverseSubAgentService.js';
 import { SubAgentRole } from '../../../void/common/subAgentTypes.js';
+import { IPowerModeService } from '../powerModeService.js';
 
 // ─── spawn_agent: Start a parallel sub-agent (non-blocking) ─────────────────
 
@@ -24,6 +25,8 @@ export function createSpawnAgentTool(
 		'spawn_agent',
 		`Spawn a temporary sub-agent that runs in parallel (NON-BLOCKING).
 
+⚠️  REQUIRES PERMISSION: This tool spawns agents with varying access levels. You will be prompted to approve.
+
 **Agentic Pattern:**
 1. Spawn agent → get agent ID immediately
 2. Continue with other work (don't wait!)
@@ -32,9 +35,9 @@ export function createSpawnAgentTool(
 
 **Available Roles:**
 - explorer:     Read-only research (read, search, list)
-- editor:       Code editing (read + edit/write)
-- verifier:     Testing (read + run tests/commands)
-- compliance:   GRC analysis (read + all GRC tools)
+- editor:       ⚠️ WRITE ACCESS (read + edit/write)
+- verifier:     ⚠️ WRITE ACCESS (read + bash + run tests)
+- compliance:   Read-only GRC analysis (read + all GRC tools)
 - checks-agent: Delegate to Checks Agent
 - power-mode:   Delegate to Power Mode
 
@@ -58,7 +61,12 @@ export function createSpawnAgentTool(
 				? scopedFilesStr.split(',').map(f => f.trim()).filter(f => f.length > 0)
 				: undefined;
 
-			ctx.metadata({ title: `Spawning ${role} agent...` });
+			// Show warning for write-capable agents
+			if (role === 'editor' || role === 'verifier') {
+				ctx.metadata({ title: `⚠ Spawning ${role} agent with write access...` });
+			} else {
+				ctx.metadata({ title: `Spawning ${role} agent...` });
+			}
 
 			// Get parent context from the service (set by Power Mode)
 			const parentContext = subAgentService.getParentContext();
@@ -79,11 +87,14 @@ export function createSpawnAgentTool(
 			}
 
 			const shortId = agent.id.substring(0, 8);
+			const accessNote = (role === 'editor' || role === 'verifier')
+				? '\n  ⚠ Has write/edit/bash access'
+				: '';
 
 			return {
 				title: `● Spawned ${role} agent`,
-				output: `Agent ${shortId} running in background\n  └─ ${goal.substring(0, 80)}${goal.length > 80 ? '...' : ''}\n\n  Use wait_for_agent to get results`,
-				metadata: { agentId: agent.id, role, goal, status: agent.status },
+				output: `Agent ${shortId} running in background${accessNote}\n  └─ ${goal.substring(0, 80)}${goal.length > 80 ? '...' : ''}\n\n  Use wait_for_agent to get results`,
+				metadata: { agentId: agent.id, role, goal, status: agent.status, canWrite: role === 'editor' || role === 'verifier' },
 			};
 		},
 	);
@@ -166,7 +177,8 @@ If completed, includes the result.`,
 // ─── wait_for_agent: Block until agent completes ──────────────────────────
 
 export function createWaitForAgentTool(
-	subAgentService: INeuralInverseSubAgentService
+	subAgentService: INeuralInverseSubAgentService,
+	powerModeService?: IPowerModeService
 ): IPowerTool {
 	return definePowerTool(
 		'wait_for_agent',
@@ -229,9 +241,24 @@ The tool will poll until the agent reaches a terminal state (completed/failed/ca
 					const elapsedStr = formatElapsedTime(totalElapsed);
 
 					if (agent.status === 'completed' && agent.result) {
+						// Check for file changes (for editor/verifier agents)
+						let changesSummary = '';
+						if (powerModeService && (agent.role === 'editor' || agent.role === 'verifier')) {
+							const changeGroup = powerModeService.getLatestChanges();
+							if (changeGroup && changeGroup.agentId === agent.id) {
+								changesSummary = `\n\nChanges:\n`;
+								for (const change of changeGroup.changes) {
+									const fileName = change.filePath.split('/').pop() || change.filePath;
+									const changeType = change.contentBefore === null ? 'NEW' : 'MODIFIED';
+									changesSummary += `  ${changeType === 'NEW' ? '+' : '~'} ${fileName} (${change.linesAdded} additions, ${change.linesRemoved} deletions)\n`;
+								}
+								changesSummary += `\nType /review to view changes`;
+							}
+						}
+
 						return {
 							title: `✓ ${agent.role} completed · ${elapsedStr}`,
-							output: `${agent.result}`,
+							output: `${agent.result}${changesSummary}`,
 							metadata: { agentId: agent.id, status: agent.status, role: agent.role, goal: agent.goal, elapsed: totalElapsed },
 						};
 					} else if (agent.status === 'failed' && agent.error) {

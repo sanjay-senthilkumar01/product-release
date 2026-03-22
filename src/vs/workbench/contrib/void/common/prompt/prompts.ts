@@ -595,11 +595,11 @@ export const builtinTools: {
 
 	spawn_agent: {
 		name: 'spawn_agent',
-		description: 'Spawn a parallel sub-agent that runs in the background (NON-BLOCKING). Available in Power Mode only.',
+		description: 'Spawn a parallel sub-agent (NON-BLOCKING). CRITICAL: This returns IMMEDIATELY - the agent runs in the background. To spawn N parallel agents, call spawn_agent N times in sequence (do NOT wait between calls). Then use wait_for_agent later to collect results. CORRECT: spawn_agent(task1) → spawn_agent(task2) → spawn_agent(task3) → do other work → wait_for_agent(id1) → wait_for_agent(id2) → wait_for_agent(id3). INCORRECT: spawn_agent(task1) → wait → spawn_agent(task2).',
 		params: {
-			role: { description: 'Agent role: explorer, editor, verifier, compliance, checks-agent, power-mode' },
-			goal: { description: 'Specific task for the agent to accomplish' },
-			scoped_files: { description: 'Optional: comma-separated file paths for editor role' },
+			role: { description: 'Agent role: explorer (read-only research), editor (file editing), verifier (testing/validation), compliance (GRC analysis)' },
+			goal: { description: 'Specific task for the agent to accomplish. Be clear and focused.' },
+			scoped_files: { description: 'Optional: comma-separated file paths to restrict editor agent access' },
 		},
 	},
 

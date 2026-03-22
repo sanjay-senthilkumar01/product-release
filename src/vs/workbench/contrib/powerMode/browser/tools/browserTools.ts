@@ -17,6 +17,7 @@ import { ISearchService, IFileQuery, ITextQuery, QueryType } from '../../../../s
 import { IExternalCommandExecutor } from '../../../neuralInverseChecks/browser/engine/services/externalCommandExecutor.js';
 import { IPowerTool, IToolContext, IToolResult } from '../../common/powerModeTypes.js';
 import { definePowerTool } from './powerToolRegistry.js';
+import { IPowerModeChangeTracker } from '../powerModeChangeTracker.js';
 
 const MAX_OUTPUT = 50 * 1024; // 50KB
 const MAX_LINES = 2000;
@@ -168,7 +169,8 @@ Rules:
 
 export function createBrowserWriteTool(
 	workingDirectory: string,
-	fileService: IFileService
+	fileService: IFileService,
+	changeTracker?: IPowerModeChangeTracker
 ): IPowerTool {
 	return definePowerTool(
 		'write',
@@ -193,11 +195,28 @@ Rules:
 			const fileName = filePath.split('/').pop() ?? filePath;
 			ctx.metadata({ title: `Write ${fileName}` });
 
+			// Track change before writing
+			let changeId: string | undefined;
+			if (changeTracker) {
+				changeId = await changeTracker.trackChange({
+					filePath,
+					changeType: 'write',
+					sessionId: ctx.sessionId,
+					agentId: ctx.agentId,
+				});
+			}
+
 			const uri = URI.file(filePath);
 			const buffer = VSBuffer.fromString(content);
 
 			try {
 				await fileService.writeFile(uri, buffer);
+
+				// Finalize change tracking
+				if (changeTracker && changeId) {
+					await changeTracker.finalizeChange(changeId, content);
+				}
+
 				const lineCount = content.split('\n').length;
 				return {
 					title: `Wrote ${fileName}`,
@@ -219,7 +238,8 @@ Rules:
 
 export function createBrowserEditTool(
 	workingDirectory: string,
-	fileService: IFileService
+	fileService: IFileService,
+	changeTracker?: IPowerModeChangeTracker
 ): IPowerTool {
 	return definePowerTool(
 		'edit',
@@ -248,6 +268,17 @@ Rules:
 
 			const uri = URI.file(filePath);
 
+			// Track change before editing
+			let changeId: string | undefined;
+			if (changeTracker) {
+				changeId = await changeTracker.trackChange({
+					filePath,
+					changeType: 'edit',
+					sessionId: ctx.sessionId,
+					agentId: ctx.agentId,
+				});
+			}
+
 			try {
 				const content = await fileService.readFile(uri);
 				const text = content.value.toString();
@@ -270,6 +301,11 @@ Rules:
 
 				const newText = text.replace(oldString, newString);
 				await fileService.writeFile(uri, VSBuffer.fromString(newText));
+
+				// Finalize change tracking
+				if (changeTracker && changeId) {
+					await changeTracker.finalizeChange(changeId, newText);
+				}
 
 				return {
 					title: `Edited ${fileName}`,

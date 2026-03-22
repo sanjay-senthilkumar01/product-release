@@ -303,20 +303,40 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 	private _startSubAgent(parentId: string, request: SubAgentSpawnRequest): SubAgentTask {
 		const subAgent = this._createSubAgentTask(parentId, request, 'running');
 
-		// Create a dedicated thread for the sub-agent
-		this._chatThreadService.openNewThread();
-		const threadId = this._chatThreadService.state.currentThreadId;
-		subAgent.threadId = threadId;
+		// Run headless - don't create UI messages
+		subAgent.threadId = `inline-${request.role}-${subAgent.id}`;
 
-		// Send the sub-agent's goal as a user message
-		// The tool scope is enforced via allowedToolNames in the system message
-		const systemPrefix = this._buildSubAgentPrefix(request);
-		const fullGoal = `${systemPrefix}\n\n${request.goal}`;
+		const runHeadless = async () => {
+			try {
+				const powerMode = this._getPowerMode();
+				if (!powerMode) throw new Error('Power Mode service not available');
 
-		this._chatThreadService.addUserMessageAndStreamResponse({
-			userMessage: fullGoal,
-			threadId,
-		});
+				// Build role-specific prompt
+				const rolePrefix = this._buildSubAgentPrefix(request);
+				const fullGoal = `${rolePrefix}\n\n${request.goal}`;
+
+				// Run with appropriate permissions
+				const allowWrite = request.role === 'editor' || request.role === 'verifier';
+				const result = await powerMode.answerQuery(fullGoal, allowWrite);
+
+				subAgent.status = 'completed';
+				subAgent.result = result;
+			} catch (err: any) {
+				subAgent.status = 'failed';
+				subAgent.error = err.message ?? 'Unknown error';
+			}
+			subAgent.completedAt = new Date().toISOString();
+
+			this._onDidChangeSubAgent.fire({
+				subAgentId: subAgent.id,
+				status: subAgent.status,
+			});
+
+			this._drainQueue();
+		};
+
+		// Fire and forget — runs in parallel
+		runHeadless();
 
 		return subAgent;
 	}

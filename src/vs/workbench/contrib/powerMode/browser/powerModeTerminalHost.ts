@@ -94,6 +94,8 @@ const SLASH_COMMANDS: SlashCommand[] = [
 	{ name: '/stop', description: 'Stop current response' },
 	{ name: '/model', description: 'Show current model' },
 	{ name: '/agents', description: 'Show connected agents on PowerBus' },
+	{ name: '/review', description: 'Review recent file changes' },
+	{ name: '/rollback [file]', description: 'Rollback all changes or specific file' },
 	{ name: '/help', description: 'Show available commands' },
 ];
 
@@ -417,6 +419,193 @@ export class PowerModeTerminalHost extends Disposable {
 				break;
 			}
 
+			case '/review': {
+				const changeGroup = this.powerModeService.getLatestChanges();
+				this._write(line());
+				if (!changeGroup || changeGroup.changes.length === 0) {
+					this._write(line(`  ${DARK}No recent changes to review${RESET}`));
+				} else {
+					this._write(line(`  ${WHITE}${BOLD}Recent Changes${RESET}  ${DARK}${changeGroup.changes.length} files${RESET}`));
+					this._write(line());
+
+					for (const change of changeGroup.changes) {
+						const fileName = change.filePath.split('/').pop() || change.filePath;
+						const changeType = change.contentBefore === null ? `${GREEN}NEW${RESET}` : `${YELLOW}MODIFIED${RESET}`;
+						const canRollback = !change.superseded ? `${GREEN}✓${RESET}` : `${DARK}✗${RESET}`;
+
+						this._write(line(`  ${canRollback} ${changeType}  ${CYAN}${fileName}${RESET}`));
+						this._write(line(`     ${DARK}+${change.linesAdded} -${change.linesRemoved}  ${change.filePath}${RESET}`));
+
+						// Show a preview of changes (first 3 lines)
+						if (change.contentAfter) {
+							const afterLines = change.contentAfter.split('\n').slice(0, 3);
+							for (const l of afterLines) {
+								const preview = l.length > 80 ? l.substring(0, 77) + '...' : l;
+								this._write(line(`     ${DARK}${preview}${RESET}`));
+							}
+							if (change.contentAfter.split('\n').length > 3) {
+								this._write(line(`     ${DARK}... ${change.contentAfter.split('\n').length - 3} more lines${RESET}`));
+							}
+						}
+						this._write(line());
+					}
+
+					// Show rollback options
+					const rollbackableCount = changeGroup.changes.filter(c => !c.superseded).length;
+					if (rollbackableCount > 0) {
+						this._write(line(`  ${WHITE}${BOLD}Rollback:${RESET}`));
+						this._write(line(`     ${DARK}Type ${WHITE}/rollback${DARK} to undo all ${rollbackableCount} changes${RESET}`));
+					} else {
+						this._write(line(`  ${DARK}These changes have been superseded (cannot rollback)${RESET}`));
+					}
+				}
+				this._write(line());
+				this._drawPrompt();
+				break;
+			}
+
+			default: {
+				// Check for /rollback with optional filename or "all"
+				if (command.startsWith('/rollback')) {
+					const args = cmd.trim().split(/\s+/);
+					const target = args[1]; // filename or "all" or undefined
+
+					const changeGroup = this.powerModeService.getLatestChanges();
+					if (!changeGroup) {
+						this._write(line());
+						this._write(line(`  ${DARK}No changes to rollback${RESET}`));
+						this._write(line());
+						this._drawPrompt();
+						break;
+					}
+
+					const rollbackableChanges = changeGroup.changes.filter(c => !c.superseded);
+					if (rollbackableChanges.length === 0) {
+						this._write(line());
+						this._write(line(`  ${DARK}No rollbackable changes (all superseded)${RESET}`));
+						this._write(line());
+						this._drawPrompt();
+						break;
+					}
+
+					const tracker = this.powerModeService.getChangeTracker();
+
+					// /rollback all - rollback everything
+					if (target === 'all' || !target) {
+						this._write(line());
+						this._write(line(`  ${YELLOW}⚠${RESET}  ${WHITE}Rolling back ${rollbackableChanges.length} files...${RESET}`));
+
+						tracker.rollbackGroup(changeGroup.sessionId, changeGroup.agentId).then(count => {
+							this._write(line(`  ${GREEN}✓${RESET}  Rolled back ${count} files`));
+							this._write(line());
+							this._drawPrompt();
+						}).catch(err => {
+							this._write(line(`  ${RED}✗${RESET}  Rollback failed: ${err.message}`));
+							this._write(line());
+							this._drawPrompt();
+						});
+						break;
+					}
+
+					// /rollback <filename> - rollback specific file
+					const targetChange = rollbackableChanges.find(c => {
+						const fileName = c.filePath.split('/').pop() || '';
+						return fileName === target || c.filePath.endsWith(target);
+					});
+
+					if (!targetChange) {
+						this._write(line());
+						this._write(line(`  ${RED}✗${RESET}  File not found: ${target}`));
+						this._write(line());
+						this._write(line(`  ${DARK}Available files:${RESET}`));
+						for (const c of rollbackableChanges) {
+							const fileName = c.filePath.split('/').pop() || c.filePath;
+							this._write(line(`    ${fileName}`));
+						}
+						this._write(line());
+						this._drawPrompt();
+						break;
+					}
+
+					this._write(line());
+					this._write(line(`  ${YELLOW}⚠${RESET}  ${WHITE}Rolling back ${target}...${RESET}`));
+
+					tracker.rollbackChange(targetChange.id).then(success => {
+						if (success) {
+							this._write(line(`  ${GREEN}✓${RESET}  Rolled back ${target}`));
+						} else {
+							this._write(line(`  ${RED}✗${RESET}  Rollback failed (file may have been modified)`));
+						}
+						this._write(line());
+						this._drawPrompt();
+					}).catch(err => {
+						this._write(line(`  ${RED}✗${RESET}  Rollback failed: ${err.message}`));
+						this._write(line());
+						this._drawPrompt();
+					});
+					break;
+				}
+
+				// Handle /switch command with dynamic argument
+				if (command.startsWith('/switch ')) {
+					const arg = cmd.trim().substring(8).trim(); // remove "/switch "
+					const allSessions = this.powerModeService.sessions;
+
+					// Try to parse as a number (1-indexed)
+					const num = parseInt(arg, 10);
+					if (!isNaN(num) && num >= 1 && num <= allSessions.length) {
+						const targetSession = allSessions[num - 1];
+						this._currentSessionId = targetSession.id;
+						this.powerModeService.switchSession(targetSession.id);
+
+						// Clear and redraw
+						this._write(`${ESC}2J${ESC}H`);
+						this._drawTopBar();
+						this._write(line());
+						this._write(line(`  ${GRAY}Switched to session: ${CYAN}${targetSession.title}${RESET}`));
+						this._write(line());
+
+						// Show message count
+						if (targetSession.messages.length > 0) {
+							const userCount = targetSession.messages.filter(m => m.role === 'user').length;
+							this._write(line(`  ${GRAY}── ${userCount} message${userCount !== 1 ? 's' : ''} in session history  ${DARK}(/clear to reset)${RESET}`));
+							this._write(line());
+						}
+
+						this._drawPrompt();
+						break;
+					}
+
+					// Try direct session ID match
+					const session = this.powerModeService.getSession(arg);
+					if (session) {
+						this._currentSessionId = session.id;
+						this.powerModeService.switchSession(session.id);
+
+						this._write(`${ESC}2J${ESC}H`);
+						this._drawTopBar();
+						this._write(line());
+						this._write(line(`  ${GRAY}Switched to session: ${CYAN}${session.title}${RESET}`));
+						this._write(line());
+						this._drawPrompt();
+						break;
+					}
+
+					// Not found
+					this._write(line(`  ${RED}Session not found: ${arg}${RESET} ${DARK}— type /sessions to list all${RESET}`));
+					this._drawPrompt();
+					break;
+				}
+
+				// Unknown command
+				this._write(line());
+				this._write(line(`  ${RED}Unknown command: ${command}${RESET}`));
+				this._write(line(`  ${DARK}Type /help for available commands${RESET}`));
+				this._write(line());
+				this._drawPrompt();
+				break;
+			}
+
 			case '/help': {
 				this._write(line());
 				this._write(line(`  ${WHITE}${BOLD}Available commands:${RESET}`));
@@ -433,86 +622,29 @@ export class PowerModeTerminalHost extends Disposable {
 				break;
 			}
 
-
-		case '/sessions': {
-			const allSessions = this.powerModeService.sessions;
-			this._write(line());
-			this._write(line(`  ${WHITE}${BOLD}All sessions (${allSessions.length}):${RESET}`));
-			this._write(line());
-			if (allSessions.length === 0) {
-				this._write(line(`  ${DARK}No sessions found${RESET}`));
-			} else {
-				for (let i = 0; i < allSessions.length; i++) {
-					const s = allSessions[i];
-					const isCurrent = s.id === this._currentSessionId;
-					const marker = isCurrent ? `${GREEN}●${RESET}` : `${DARK}○${RESET}`;
-					const age = Math.round((Date.now() - s.updatedAt) / 1000 / 60); // minutes ago
-					const ageStr = age < 1 ? 'just now' : age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
-					const msgCount = s.messages.length;
-					const title = s.title.length > 40 ? s.title.substring(0, 37) + '...' : s.title;
-					this._write(line(`  ${marker} ${WHITE}${String(i + 1).padStart(2)}.${RESET} ${CYAN}${title}${RESET}  ${DARK}(${msgCount} msgs, ${ageStr})${RESET}`));
-					this._write(line(`     ${DARK}${s.id}${RESET}`));
-				}
-			}
-			this._write(line());
-			this._write(line(`  ${DARK}Type ${WHITE}/switch <number>${DARK} to resume a session${RESET}`));
-			this._write(line());
-			this._drawPrompt();
-			break;
-		}
-			default: {
-			// Handle /switch command with dynamic argument
-			if (command.startsWith('/switch ')) {
-				const arg = cmd.trim().substring(8).trim(); // remove "/switch "
+			case '/sessions': {
 				const allSessions = this.powerModeService.sessions;
-
-				// Try to parse as a number (1-indexed)
-				const num = parseInt(arg, 10);
-				if (!isNaN(num) && num >= 1 && num <= allSessions.length) {
-					const targetSession = allSessions[num - 1];
-					this._currentSessionId = targetSession.id;
-					this.powerModeService.switchSession(targetSession.id);
-
-					// Clear and redraw
-					this._write(`${ESC}2J${ESC}H`);
-					this._drawTopBar();
-					this._write(line());
-					this._write(line(`  ${GRAY}Switched to session: ${CYAN}${targetSession.title}${RESET}`));
-					this._write(line());
-
-					// Show message count
-					if (targetSession.messages.length > 0) {
-						const userCount = targetSession.messages.filter(m => m.role === 'user').length;
-						this._write(line(`  ${GRAY}── ${userCount} message${userCount !== 1 ? 's' : ''} in session history  ${DARK}(/clear to reset)${RESET}`));
-						this._write(line());
+				this._write(line());
+				this._write(line(`  ${WHITE}${BOLD}All sessions (${allSessions.length}):${RESET}`));
+				this._write(line());
+				if (allSessions.length === 0) {
+					this._write(line(`  ${DARK}No sessions found${RESET}`));
+				} else {
+					for (let i = 0; i < allSessions.length; i++) {
+						const s = allSessions[i];
+						const isCurrent = s.id === this._currentSessionId;
+						const marker = isCurrent ? `${GREEN}●${RESET}` : `${DARK}○${RESET}`;
+						const age = Math.round((Date.now() - s.updatedAt) / 1000 / 60); // minutes ago
+						const ageStr = age < 1 ? 'just now' : age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
+						const msgCount = s.messages.length;
+						const title = s.title.length > 40 ? s.title.substring(0, 37) + '...' : s.title;
+						this._write(line(`  ${marker} ${WHITE}${String(i + 1).padStart(2)}.${RESET} ${CYAN}${title}${RESET}  ${DARK}(${msgCount} msgs, ${ageStr})${RESET}`));
+						this._write(line(`     ${DARK}${s.id}${RESET}`));
 					}
-
-					this._drawPrompt();
-					return;
 				}
-
-				// Try direct session ID match
-				const session = this.powerModeService.getSession(arg);
-				if (session) {
-					this._currentSessionId = session.id;
-					this.powerModeService.switchSession(session.id);
-
-					this._write(`${ESC}2J${ESC}H`);
-					this._drawTopBar();
-					this._write(line());
-					this._write(line(`  ${GRAY}Switched to session: ${CYAN}${session.title}${RESET}`));
-					this._write(line());
-					this._drawPrompt();
-					return;
-				}
-
-				// Not found
-				this._write(line(`  ${RED}Session not found: ${arg}${RESET} ${DARK}— type /sessions to list all${RESET}`));
-				this._drawPrompt();
-				return;
-			}
-
-				this._write(line(`  ${RED}Unknown command: ${command}${RESET} ${DARK}— type /help${RESET}`));
+				this._write(line());
+				this._write(line(`  ${DARK}Type ${WHITE}/switch <number>${DARK} to resume a session${RESET}`));
+				this._write(line());
 				this._drawPrompt();
 				break;
 			}
@@ -646,7 +778,49 @@ export class PowerModeTerminalHost extends Disposable {
 		this._inputActive = false;
 
 		this._write(line());
-		this._write(line(`  ${BLUE_LIGHT}?${RESET}  ${WHITE}${BOLD}${question}${RESET}`));
+
+		// Parse question - check if it has numbered options
+		const lines = question.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+		if (lines.length === 1) {
+			// Simple single-line question
+			this._write(line(`  ${BLUE_LIGHT}?${RESET}  ${WHITE}${BOLD}${question}${RESET}`));
+		} else {
+			// Multi-line question with options
+			const firstLine = lines[0];
+			const hasNumberedList = lines.some(l => /^\d+\./.test(l));
+
+			if (hasNumberedList) {
+				// Question with numbered options - format nicely
+				this._write(line(`  ${BLUE_LIGHT}?${RESET}  ${WHITE}${BOLD}${firstLine}${RESET}`));
+				this._write(line());
+
+				for (let i = 1; i < lines.length; i++) {
+					const l = lines[i];
+					const isOption = /^(\d+)\.\s*(.+)/.exec(l);
+
+					if (isOption) {
+						const num = isOption[1];
+						const text = isOption[2];
+						this._write(line(`     ${CYAN}${num}.${RESET} ${WHITE}${text}${RESET}`));
+					} else if (l.toLowerCase().includes('which') || l.toLowerCase().includes('what') || l.toLowerCase().includes('select')) {
+						// Prompt line like "Which would you like?"
+						this._write(line());
+						this._write(line(`     ${DARK}${l}${RESET}`));
+					} else {
+						// Other text
+						this._write(line(`     ${DARK}${l}${RESET}`));
+					}
+				}
+				this._write(line());
+			} else {
+				// Multi-line but not a list - show all lines
+				for (const l of lines) {
+					this._write(line(`  ${BLUE_LIGHT}?${RESET}  ${WHITE}${l}${RESET}`));
+				}
+			}
+		}
+
 		this._write(`  ${CYAN}${BOLD}> ${RESET}`);
 	}
 
