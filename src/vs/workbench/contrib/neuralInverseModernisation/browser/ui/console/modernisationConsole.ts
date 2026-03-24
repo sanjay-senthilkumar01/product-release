@@ -90,6 +90,9 @@ export class ModernisationConsole {
 		private readonly _validation: IValidationEngineService | undefined,
 		private readonly _cutover:    ICutoverService | undefined,
 		private readonly _autonomy:   IAutonomyService | undefined,
+		/** Called when the user clicks Refresh — re-runs _seedKBFromDiscovery so that
+		 *  units added to the target folder since last discovery are promoted to 'committed'. */
+		private readonly _onResyncDiscovery?: () => void,
 	) {
 		this.domNode = $e('div', [
 			'display:flex', 'flex-direction:column',
@@ -102,11 +105,27 @@ export class ModernisationConsole {
 		this.domNode.appendChild(this._tabBarEl);
 		this.domNode.appendChild(this._contentEl);
 
-		// Live updates — subscribe to all KB change events
+		// Live updates — subscribe to KB change events
 		this._disposables.add(this._kb.onDidChange(() => this.refresh()));
 		this._disposables.add(this._kb.onDidChangeUnitStatus(() => this.refresh()));
 		this._disposables.add(this._kb.onDidRaisePendingDecision(() => this.refresh()));
 		this._disposables.add(this._kb.onDidResolvePendingDecision(() => this.refresh()));
+
+		// Live updates — autonomy batch events (Progress tab autonomy section)
+		if (this._autonomy) {
+			this._disposables.add(this._autonomy.onBatchStateChanged(() => this.refresh()));
+			this._disposables.add(this._autonomy.onUnitEscalated(() => this.refresh()));
+			this._disposables.add(this._autonomy.onEscalationResolved(() => this.refresh()));
+			// Throttle progress refreshes — unit-completed fires on every unit
+			let _autonomyProgressTimer: ReturnType<typeof setTimeout> | null = null;
+			this._disposables.add(this._autonomy.onProgress(() => {
+				if (_autonomyProgressTimer !== null) { return; }
+				_autonomyProgressTimer = setTimeout(() => {
+					_autonomyProgressTimer = null;
+					this.refresh();
+				}, 500); // max 2 refreshes/sec during a running batch
+			}));
+		}
 
 		// Initial render
 		this.refresh();
@@ -214,8 +233,13 @@ export class ModernisationConsole {
 			'color:var(--vscode-descriptionForeground)',
 		].join(';'));
 		refreshBtn.textContent = '\u21bb Refresh';
-		refreshBtn.title = 'Force refresh the console';
-		refreshBtn.addEventListener('click', () => this.refresh());
+		refreshBtn.title = 'Refresh console — also re-detects committed units from the target folder';
+		refreshBtn.addEventListener('click', () => {
+			// Re-sync KB with discovery result first (promotes pending→committed for
+			// units that exist in the target folder), then re-render.
+			this._onResyncDiscovery?.();
+			this.refresh();
+		});
 		this._tabBarEl.appendChild(refreshBtn);
 	}
 

@@ -22,6 +22,8 @@ export function buildSystemPrompt(input: {
 	customInstructions?: string;
 	/** Live GRC posture from Checks Agent — JSON string with violations summary */
 	grcPosture?: string;
+	/** Active modernisation session context — only provided when a session is running */
+	modernisationContext?: string;
 }): string {
 	const parts: string[] = [];
 
@@ -40,6 +42,12 @@ export function buildSystemPrompt(input: {
 	// Live GRC posture from Checks Agent (injected before every task)
 	if (input.grcPosture) {
 		parts.push(buildGRCPostureBlock(input.grcPosture));
+	}
+
+	// Active modernisation session — stage, source/target absolute paths, KB summary
+	// Only present when a session is running; keeps the prompt clean otherwise.
+	if (input.modernisationContext) {
+		parts.push(`<modernisation_session>\n${input.modernisationContext}\n</modernisation_session>`);
 	}
 
 	// PowerBus awareness

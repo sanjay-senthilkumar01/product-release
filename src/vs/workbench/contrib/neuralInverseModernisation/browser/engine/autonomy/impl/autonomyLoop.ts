@@ -433,19 +433,23 @@ async function _doCommit(
 	signal:      AbortSignal,
 	onEscalated: (e: IEscalatedUnit) => void,
 ): Promise<IAutonomyUnitResult> {
+	// Mark in-flight so the scheduler won't re-queue during a slow commit
+	deps.kb.setUnitStatus(unitId, 'committing', 'Autonomy engine: commit in progress.', LOCK_OWNER);
 	try {
 		if (signal.aborted) { return _aborted(unitId, unitName, startMs, attempt); }
 
-		// Commit the entire set of validated units (commitBatch has no per-unit filter).
-		// If this unit is in 'validated', it will be picked up.
+		// Commit the entire set of validated/committing units (commitBatch has no per-unit filter).
+		// If this unit is in 'committing', it will be picked up.
 		const batchResult = await deps.cutover.commitBatch({
-			eligibleStatuses: ['validated'],
+			eligibleStatuses: ['validated', 'committing'],
 			skipExisting:     false,
 		});
 
 		// Verify this specific unit was committed successfully
 		const unitJob = batchResult.jobs.find((j: ICommitJobResult) => j.unitId === unitId);
 		if (unitJob && !unitJob.ok) {
+			// Revert to 'validated' so the unit can be retried
+			deps.kb.setUnitStatus(unitId, 'validated', 'Autonomy engine: commit error — reverted for retry.', LOCK_OWNER);
 			return _handleError(
 				unitId, unitName, 'commit', startMs, attempt, maxRetries,
 				unitJob.errorMsg ?? 'Commit write failed.', deps.kb, onEscalated,
@@ -458,6 +462,8 @@ async function _doCommit(
 		_recordLastStage(unitId, 'commit', deps.kb);
 		return _advanced(unitId, unitName, 'commit', startMs, attempt);
 	} catch (err: unknown) {
+		// Revert to 'validated' so the unit is retryable
+		deps.kb.setUnitStatus(unitId, 'validated', 'Autonomy engine: commit threw — reverted for retry.', LOCK_OWNER);
 		const msg = err instanceof Error ? err.message : String(err);
 		return _handleError(unitId, unitName, 'commit', startMs, attempt, maxRetries, msg, deps.kb, onEscalated);
 	}

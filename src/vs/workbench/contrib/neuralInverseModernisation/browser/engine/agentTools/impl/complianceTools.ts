@@ -31,11 +31,11 @@ export function checkComplianceGate(
 	const result = kb.checkComplianceGate(input.unitId);
 
 	const statusEmoji = result.overallStatus === 'pass' ? '✔' :
-		result.overallStatus === 'partial'    ? '⚠' : '✖';
+		result.overallStatus === 'partial' ? '⚠' : '✖';
 
 	return {
 		success: true,
-		data:    result,
+		data: result,
 		summary: `${statusEmoji} Compliance gate for "${unit.name}": ${result.overallStatus.toUpperCase()} — ` +
 			`${result.passedCount} passed, ${result.failedCount} failed, ${result.pendingCount} pending, ${result.waivedCount} waived`,
 	};
@@ -59,7 +59,7 @@ export function recordComplianceApproval(
 
 	return {
 		success: true,
-		data:    { unitId: input.unitId, requirementId: input.requirementId, approver: input.approver },
+		data: { unitId: input.unitId, requirementId: input.requirementId, approver: input.approver },
 		summary: `Compliance requirement "${input.requirementId}" approved by "${input.approver}" for unit "${unit.name}"`,
 	};
 }
@@ -85,7 +85,7 @@ export function waiveComplianceRequirement(
 
 	return {
 		success: true,
-		data:    { unitId: input.unitId, requirementId: input.requirementId, waivedBy: input.waivedBy },
+		data: { unitId: input.unitId, requirementId: input.requirementId, waivedBy: input.waivedBy },
 		summary: `Compliance requirement "${input.requirementId}" waived for "${unit.name}" by "${input.waivedBy}"`,
 	};
 }
@@ -103,24 +103,24 @@ export function getComplianceFailures(
 	const summaries: IComplianceFailureSummary[] = failures.map(f => {
 		const unit = kb.getUnit(f.unitId);
 		return {
-			unitId:        f.unitId,
-			unitName:      unit?.name ?? f.unitId,
+			unitId: f.unitId,
+			unitName: unit?.name ?? f.unitId,
 			overallStatus: f.result.overallStatus,
-			failedCount:   f.result.failedCount,
-			passedCount:   f.result.passedCount,
-			pendingCount:  f.result.pendingCount,
-			waivedCount:   f.result.waivedCount,
+			failedCount: f.result.failedCount,
+			passedCount: f.result.passedCount,
+			pendingCount: f.result.pendingCount,
+			waivedCount: f.result.waivedCount,
 			blockerReasons: f.result.blockerReasons,
-			evaluatedAt:   f.result.evaluatedAt,
+			evaluatedAt: f.result.evaluatedAt,
 		};
 	});
 
-	const failCount    = summaries.filter(s => s.overallStatus === 'fail').length;
+	const failCount = summaries.filter(s => s.overallStatus === 'fail').length;
 	const partialCount = summaries.filter(s => s.overallStatus === 'partial').length;
 
 	return {
 		success: true,
-		data:    summaries,
+		data: summaries,
 		summary: `${summaries.length} unit(s) failing compliance gate — ${failCount} FAIL, ${partialCount} PARTIAL`,
 	};
 }

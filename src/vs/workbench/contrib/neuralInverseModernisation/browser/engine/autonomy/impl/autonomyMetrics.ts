@@ -21,6 +21,7 @@
  *  - Unit ID lists bucketed by outcome (for the console Unit Index)
  */
 
+import { IKnowledgeUnit } from '../../../../common/knowledgeBaseTypes.js';
 import {
 	IAutonomyUnitResult,
 	IAutonomyBatchMetrics,
@@ -78,9 +79,10 @@ export class AutonomyMetricsCollector {
 	/**
 	 * Record a completed unit result.
 	 * Call this after every unit, success or failure.
+	 * Pass the KB unit (if available) to populate domain and risk breakdowns.
 	 * NOT thread-safe — must be called serially.
 	 */
-	record(result: IAutonomyUnitResult): void {
+	record(result: IAutonomyUnitResult, kbUnit?: IKnowledgeUnit): void {
 		this._totalProcessed++;
 
 		switch (result.outcome) {
@@ -98,6 +100,18 @@ export class AutonomyMetricsCollector {
 			this._stageTotalMs[s] += ms;
 			if (ms < this._stageMinMs[s]) { this._stageMinMs[s] = ms; }
 			if (ms > this._stageMaxMs[s]) { this._stageMaxMs[s] = ms; }
+		}
+
+		// Domain and risk breakdowns — count all non-skipped outcomes
+		if (result.outcome !== 'skipped' && kbUnit) {
+			const domain    = kbUnit.domain;
+			const riskLevel = kbUnit.riskLevel;
+			if (typeof domain === 'string' && domain) {
+				this._byDomain[domain] = (this._byDomain[domain] ?? 0) + 1;
+			}
+			if (riskLevel) {
+				this._byRisk[riskLevel] = (this._byRisk[riskLevel] ?? 0) + 1;
+			}
 		}
 
 		// Error category

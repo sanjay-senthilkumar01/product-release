@@ -17,6 +17,8 @@ export function buildChecksSystemPrompt(input: {
 	workingDirectory: string;
 	isGitRepo: boolean;
 	customInstructions?: string;
+	/** Active modernisation session — only provided when a session is running */
+	modernisationContext?: string;
 }): string {
 	const parts: string[] = [];
 
@@ -25,6 +27,10 @@ export function buildChecksSystemPrompt(input: {
 
 	if (input.grcPosture) {
 		parts.push(input.grcPosture);
+	}
+
+	if (input.modernisationContext) {
+		parts.push(`<modernisation_session>\n${input.modernisationContext}\n</modernisation_session>`);
 	}
 
 	if (input.customInstructions) {

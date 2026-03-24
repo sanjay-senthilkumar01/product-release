@@ -81,6 +81,7 @@ export type UnitStatus =
 	| 'review'        // Draft complete, awaiting human review
 	| 'flagged'       // Fingerprint divergence — requires approval
 	| 'approved'      // Translation approved, ready to commit
+	| 'committing'    // Being written to disk (in-flight commit operation)
 	| 'committed'     // Written to disk + committed to VCS
 	| 'validating'    // Equivalence test running
 	| 'validated'     // Equivalence test passed

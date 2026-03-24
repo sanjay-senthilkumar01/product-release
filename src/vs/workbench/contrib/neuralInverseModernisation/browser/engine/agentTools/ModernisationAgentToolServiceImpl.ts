@@ -104,6 +104,13 @@ import {
 	IRecordTranslationResult,
 	IFlagBlockedResult,
 	IPhaseDetailResult,
+	// Autonomy
+	IAutonomyStartBatchInput,
+	IAutonomyPreviewScheduleInput,
+	IAutonomyRunSingleUnitInput,
+	IAutonomyResolveEscalationInput,
+	IAutonomyGetEscalationsInput,
+	IAutonomyGetRunHistoryInput,
 } from './agentToolTypes.js';
 import {
 	IDecisionLog,
@@ -124,8 +131,24 @@ import {
 	IComplianceGateResult,
 	IKnowledgeBaseCheckpoint,
 } from '../../knowledgeBase/service.js';
-import { MCP_TOOL_DEFINITIONS, getToolDefinition as _getToolDef } from './mcpToolDefinitions.js';
+import {
+	MCP_TOOL_DEFINITIONS,
+	AUTONOMY_DEFAULT_TOOL_DEFINITIONS,
+	AUTONOMY_SESSION_TOOL_DEFINITIONS,
+	getToolDefinition as _getToolDef,
+} from './mcpToolDefinitions.js';
 import { formatToolResult } from './impl/toolUtils.js';
+import {
+	IAutonomyService,
+	AutonomyBatchAlreadyRunningError,
+	NoPausedBatchError,
+	MissingEscalationReasonError,
+} from '../autonomy/service.js';
+import {
+	type IAutonomyOptions,
+	type EscalationDecision,
+	ALL_AUTONOMY_STAGES,
+} from '../autonomy/impl/autonomyTypes.js';
 
 // ── Unit tools (read, history, annotations)
 import {
@@ -251,6 +274,7 @@ export class ModernisationAgentToolServiceImpl
 
 	constructor(
 		@IKnowledgeBaseService private readonly _kb: IKnowledgeBaseService,
+		@IAutonomyService       private readonly _autonomy: IAutonomyService,
 	) {
 		super();
 	}
@@ -259,7 +283,14 @@ export class ModernisationAgentToolServiceImpl
 	// ── Tool registry ──────────────────────────────────────────────────────
 
 	getAllToolDefinitions(): IAgentToolDefinition[] {
-		return MCP_TOOL_DEFINITIONS;
+		return [...MCP_TOOL_DEFINITIONS, ...AUTONOMY_DEFAULT_TOOL_DEFINITIONS, ...AUTONOMY_SESSION_TOOL_DEFINITIONS];
+	}
+
+	getContextualToolDefinitions(sessionActive: boolean): IAgentToolDefinition[] {
+		const autonomy = sessionActive
+			? [...AUTONOMY_DEFAULT_TOOL_DEFINITIONS, ...AUTONOMY_SESSION_TOOL_DEFINITIONS]
+			: AUTONOMY_DEFAULT_TOOL_DEFINITIONS;
+		return [...MCP_TOOL_DEFINITIONS, ...autonomy];
 	}
 
 	getToolDefinition(name: string): IAgentToolDefinition | undefined {
@@ -382,6 +413,18 @@ export class ModernisationAgentToolServiceImpl
 
 			// ── Utility
 			case 'check_excluded':          result = this.checkExcluded(inp as ICheckExcludedInput); break;
+
+			// ── Autonomy tools ─────────────────────────────────────────────────
+			case 'autonomy_get_batch_status':    result = this.autonomyGetBatchStatus(); break;
+			case 'autonomy_preview_schedule':    result = this.autonomyPreviewSchedule(inp as IAutonomyPreviewScheduleInput); break;
+			case 'autonomy_get_escalations':     result = this.autonomyGetEscalations(inp as IAutonomyGetEscalationsInput); break;
+			case 'autonomy_resolve_escalation':  result = await this.autonomyResolveEscalation(inp as IAutonomyResolveEscalationInput); break;
+			case 'autonomy_run_single_unit':     result = await this.autonomyRunSingleUnit(inp as IAutonomyRunSingleUnitInput); break;
+			case 'autonomy_get_run_history':     result = this.autonomyGetRunHistory(inp as IAutonomyGetRunHistoryInput); break;
+			case 'autonomy_start_batch':         result = await this.autonomyStartBatch(inp as IAutonomyStartBatchInput); break;
+			case 'autonomy_pause_batch':         result = this.autonomyPauseBatch(); break;
+			case 'autonomy_resume_batch':        result = await this.autonomyResumeBatch(); break;
+			case 'autonomy_stop_batch':          result = this.autonomyStopBatch(); break;
 
 			default:
 				return JSON.stringify({ success: false, error: `Unknown tool: "${name}"` });
@@ -728,5 +771,223 @@ export class ModernisationAgentToolServiceImpl
 
 	checkExcluded(input: ICheckExcludedInput): IAgentToolCallResult<ICheckExcludedResult> {
 		return checkExcluded(input, this._kb);
+	}
+
+
+	// ── Autonomy tools ─────────────────────────────────────────────────────
+
+	autonomyGetBatchStatus(): IAgentToolCallResult<Record<string, unknown>> {
+		const m = this._autonomy.lastBatchMetrics;
+		return {
+			success: true,
+			data: {
+				batchState:       this._autonomy.batchState,
+				isRunning:        this._autonomy.isRunning,
+				isPaused:         this._autonomy.isPaused,
+				currentRunId:     this._autonomy.currentRunId,
+				escalatedCount:   this._autonomy.escalatedUnits.length,
+				lastMetrics: m ? {
+					runId:          m.runId,
+					totalProcessed: m.totalProcessed,
+					advanced:       m.advanced,
+					escalated:      m.escalated,
+					errors:         m.errors,
+					skipped:        m.skipped,
+					durationMs:     m.durationMs,
+					unitsPerMinute: m.unitsPerMinute,
+					wasAborted:     m.wasAborted,
+					byStage:        m.byStage,
+				} : null,
+			},
+			summary: `Batch state: ${this._autonomy.batchState}. Escalations pending: ${this._autonomy.escalatedUnits.length}.`,
+		};
+	}
+
+	autonomyPreviewSchedule(input?: IAutonomyPreviewScheduleInput): IAgentToolCallResult<Record<string, unknown>> {
+		const options: IAutonomyOptions = {};
+		if (input?.stages) {
+			const parsed = input.stages.split(',').map(s => s.trim()).filter(s => ALL_AUTONOMY_STAGES.includes(s as never));
+			if (parsed.length) { options.stages = parsed as typeof ALL_AUTONOMY_STAGES; }
+		}
+		if (input?.maxConcurrency !== undefined) { options.maxConcurrency = Math.max(1, Math.min(10, input.maxConcurrency)); }
+		if (input?.autoApprove    !== undefined) { options.autoApprove    = input.autoApprove; }
+
+		const preview = this._autonomy.previewSchedule(options);
+		return {
+			success: true,
+			data: {
+				totalUnits: preview.totalUnits,
+				byStage:    preview.byStage,
+				depthGroups: preview.depthGroups.slice(0, 15).map(g => ({
+					depth:     g.depth,
+					unitCount: g.unitCount,
+					units:     g.units.slice(0, 4).map(u => ({ unitId: u.unitId, name: u.unitName, status: u.status, riskLevel: u.riskLevel })),
+					hasMore:   g.units.length > 4,
+				})),
+				hasMoreGroups: preview.depthGroups.length > 15,
+			},
+			summary: `${preview.totalUnits} units eligible across stages: ${JSON.stringify(preview.byStage)}.`,
+		};
+	}
+
+	autonomyGetEscalations(input?: IAutonomyGetEscalationsInput): IAgentToolCallResult<Record<string, unknown>> {
+		const limit = Math.min(100, Math.max(1, input?.limit ?? 20));
+		const all   = this._autonomy.escalatedUnits;
+		const now   = Date.now();
+		return {
+			success: true,
+			data: {
+				total: all.length,
+				items: all.slice(0, limit).map(e => ({
+					unitId:    e.unitId,
+					unitName:  e.unitName,
+					riskLevel: e.riskLevel,
+					domain:    e.domain,
+					stage:     e.stage,
+					reason:    e.reason,
+					ageSec:    Math.round((now - e.escalatedAt) / 1000),
+				})),
+				hasMore: all.length > limit,
+			},
+			summary: `${all.length} unit(s) awaiting review.`,
+		};
+	}
+
+	async autonomyResolveEscalation(input: IAutonomyResolveEscalationInput): Promise<IAgentToolCallResult<Record<string, unknown>>> {
+		if (!input?.unitId)     { return { success: false, error: 'unitId is required.' }; }
+		if (!input?.decision)   { return { success: false, error: 'decision is required (approve | skip | revert-to-pending | block).' }; }
+		if (!input?.resolvedBy) { return { success: false, error: 'resolvedBy is required.' }; }
+
+		const validDecisions: EscalationDecision[] = ['approve', 'skip', 'revert-to-pending', 'block'];
+		if (!validDecisions.includes(input.decision as EscalationDecision)) {
+			return { success: false, error: `Invalid decision "${input.decision}". Must be: ${validDecisions.join(', ')}.` };
+		}
+		if (!this._autonomy.escalatedUnits.some(e => e.unitId === input.unitId)) {
+			return { success: false, error: `Unit "${input.unitId}" is not in the escalation queue.` };
+		}
+		try {
+			await this._autonomy.resolveEscalation(input.unitId, input.decision as EscalationDecision, input.resolvedBy, input.reason);
+			return {
+				success: true,
+				data: { unitId: input.unitId, decision: input.decision, resolvedBy: input.resolvedBy, remainingEscalations: this._autonomy.escalatedUnits.length },
+				summary: `Unit "${input.unitId}" resolved as "${input.decision}" by ${input.resolvedBy}.`,
+			};
+		} catch (e) {
+			if (e instanceof MissingEscalationReasonError) {
+				return { success: false, error: `A reason is required for the "${input.decision}" decision.` };
+			}
+			return { success: false, error: e instanceof Error ? e.message : String(e) };
+		}
+	}
+
+	async autonomyRunSingleUnit(input: IAutonomyRunSingleUnitInput): Promise<IAgentToolCallResult<Record<string, unknown>>> {
+		if (!input?.unitId) { return { success: false, error: 'unitId is required.' }; }
+		try {
+			const result = await this._autonomy.runSingleUnit(input.unitId, {
+				forceStage:  input.forceStage && ALL_AUTONOMY_STAGES.includes(input.forceStage as never) ? input.forceStage as typeof ALL_AUTONOMY_STAGES[number] : undefined,
+				autoApprove: input.autoApprove,
+				timeoutMs:   input.timeoutMs !== undefined ? Math.max(5000, input.timeoutMs) : undefined,
+			});
+			return {
+				success: result.outcome !== 'error',
+				data: { unitId: result.unitId, unitName: result.unitName, outcome: result.outcome, stageCompleted: result.stageCompleted, durationMs: result.durationMs, errorMsg: result.errorMsg ?? null },
+				summary: `Unit "${result.unitName}": ${result.outcome}${result.stageCompleted ? ` (${result.stageCompleted})` : ''}.`,
+				...(result.outcome === 'error' ? { error: result.errorMsg ?? 'Unknown error' } : {}),
+			};
+		} catch (e) {
+			return { success: false, error: e instanceof Error ? e.message : String(e) };
+		}
+	}
+
+	autonomyGetRunHistory(input?: IAutonomyGetRunHistoryInput): IAgentToolCallResult<Record<string, unknown>> {
+		const limit   = Math.min(20, Math.max(1, input?.limit ?? 10));
+		const history = this._autonomy.getRunHistory().slice(0, limit);
+		const now     = Date.now();
+		return {
+			success: true,
+			data: {
+				total: this._autonomy.getRunHistory().length,
+				runs: history.map(r => ({
+					runId:          r.runId,
+					state:          r.state,
+					startedAt:      new Date(r.startedAt).toISOString(),
+					ageSec:         Math.round((now - r.startedAt) / 1000),
+					totalProcessed: r.metrics.totalProcessed,
+					advanced:       r.metrics.advanced,
+					escalated:      r.metrics.escalated,
+					errors:         r.metrics.errors,
+					durationMs:     r.metrics.durationMs,
+					wasAborted:     r.metrics.wasAborted,
+					byStage:        r.metrics.byStage,
+					escalations:    r.escalations.length,
+				})),
+			},
+			summary: `${history.length} run(s) returned (of ${this._autonomy.getRunHistory().length} total).`,
+		};
+	}
+
+	async autonomyStartBatch(input?: IAutonomyStartBatchInput): Promise<IAgentToolCallResult<Record<string, unknown>>> {
+		const options: IAutonomyOptions = {};
+		if (input?.stages) {
+			const parsed = input.stages.split(',').map(s => s.trim()).filter(s => ALL_AUTONOMY_STAGES.includes(s as never));
+			if (parsed.length) { options.stages = parsed as typeof ALL_AUTONOMY_STAGES; }
+		}
+		if (input?.maxConcurrency   !== undefined) { options.maxConcurrency   = Math.max(1, Math.min(10, input.maxConcurrency)); }
+		if (input?.autoApprove      !== undefined) { options.autoApprove      = input.autoApprove; }
+		if (input?.stageTimeoutMs   !== undefined) { options.stageTimeoutMs   = Math.max(5000, input.stageTimeoutMs); }
+		if (input?.maxRetriesPerUnit !== undefined) { options.maxRetriesPerUnit = Math.max(0, Math.min(5, input.maxRetriesPerUnit)); }
+		if (input?.targetLanguage)                 { options.targetLanguage   = input.targetLanguage; }
+
+		try {
+			const metrics = await this._autonomy.startBatch(options);
+			return {
+				success: true,
+				data: { runId: metrics.runId, totalProcessed: metrics.totalProcessed, advanced: metrics.advanced, escalated: metrics.escalated, errors: metrics.errors, skipped: metrics.skipped, durationMs: metrics.durationMs, wasAborted: metrics.wasAborted, byStage: metrics.byStage },
+				summary: `Batch ${metrics.runId} completed. Advanced: ${metrics.advanced}, Escalated: ${metrics.escalated}, Errors: ${metrics.errors}.`,
+			};
+		} catch (e) {
+			if (e instanceof AutonomyBatchAlreadyRunningError) {
+				return { success: false, error: `Batch already running (runId: ${this._autonomy.currentRunId}). Pause or stop it first.` };
+			}
+			return { success: false, error: e instanceof Error ? e.message : String(e) };
+		}
+	}
+
+	autonomyPauseBatch(): IAgentToolCallResult<Record<string, unknown>> {
+		if (!this._autonomy.isRunning) {
+			return { success: false, error: `No batch is running. Current state: ${this._autonomy.batchState}.` };
+		}
+		this._autonomy.pauseBatch();
+		return { success: true, data: { batchState: this._autonomy.batchState }, summary: 'Pause signal sent — in-flight jobs are draining.' };
+	}
+
+	async autonomyResumeBatch(): Promise<IAgentToolCallResult<Record<string, unknown>>> {
+		if (!this._autonomy.isPaused) {
+			return { success: false, error: `No paused batch to resume. Current state: ${this._autonomy.batchState}.` };
+		}
+		try {
+			const metrics = await this._autonomy.resumeBatch();
+			return {
+				success: true,
+				data: { runId: metrics.runId, totalProcessed: metrics.totalProcessed, advanced: metrics.advanced, escalated: metrics.escalated, errors: metrics.errors, durationMs: metrics.durationMs, wasAborted: metrics.wasAborted },
+				summary: `Resumed batch ${metrics.runId} completed. Advanced: ${metrics.advanced}, Escalated: ${metrics.escalated}.`,
+			};
+		} catch (e) {
+			if (e instanceof AutonomyBatchAlreadyRunningError) {
+				return { success: false, error: `Batch already running (runId: ${this._autonomy.currentRunId}).` };
+			}
+			if (e instanceof NoPausedBatchError) {
+				return { success: false, error: 'No paused batch available.' };
+			}
+			return { success: false, error: e instanceof Error ? e.message : String(e) };
+		}
+	}
+
+	autonomyStopBatch(): IAgentToolCallResult<Record<string, unknown>> {
+		if (!this._autonomy.isRunning && this._autonomy.batchState !== 'pausing' && this._autonomy.batchState !== 'stopping') {
+			return { success: false, error: `No active batch to stop. Current state: ${this._autonomy.batchState}.` };
+		}
+		this._autonomy.stopBatch();
+		return { success: true, data: { batchState: this._autonomy.batchState }, summary: 'Stop signal sent — in-flight jobs are draining.' };
 	}
 }

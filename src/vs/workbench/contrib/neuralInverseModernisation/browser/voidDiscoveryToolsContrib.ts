@@ -6,13 +6,24 @@
 /**
  * VoidDiscoveryToolsContrib
  *
- * Workbench contribution that registers discovery and modernisation tools with
- * the VoidInternalToolService at startup, making them available to:
+ * Workbench contribution that registers discovery, modernisation, and autonomy
+ * tools with the VoidInternalToolService, making them available to:
  *   - Void agent (agent mode)
  *   - Void copilot / validate modes
  *
- * Uses the same tool factories as PowerMode so there is no logic duplication —
- * only a thin adapter that converts IPowerTool → IVoidInternalTool.
+ * ## Tool groups registered
+ *
+ *   Always active (any codebase):
+ *     - Discovery tools        (scan, explore, detect languages, extract metadata)
+ *     - Modernisation tools    (planning, roadmap, session info)
+ *     - KB tools               (all 67 — units, decisions, glossary, progress, etc.)
+ *     - Autonomy default tools (status, preview, escalations, resolve, run-single, history)
+ *
+ *   Session-active only (when a modernisation session with source+target is open):
+ *     - Autonomy batch-control tools (start_batch, pause_batch, resume_batch, stop_batch)
+ *
+ * Session-only tools are registered when the session becomes active and
+ * unregistered when it closes, so the LLM never sees tools it cannot meaningfully use.
  */
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -21,6 +32,9 @@ import { IVoidInternalToolService, IVoidInternalTool } from '../../void/browser/
 import { IDiscoveryService } from './engine/discovery/discoveryService.js';
 import { IMigrationPlannerService } from './engine/migrationPlannerService.js';
 import { IModernisationSessionService } from './modernisationSessionService.js';
+import { IModernisationAgentToolService } from './engine/agentTools/service.js';
+import { IAgentToolDefinition } from './engine/agentTools/agentToolTypes.js';
+import { AUTONOMY_SESSION_TOOL_DEFINITIONS } from './engine/agentTools/mcpToolDefinitions.js';
 import { buildDiscoveryTools } from '../../powerMode/browser/tools/discoveryTools.js';
 import { buildModernisationPowerTools } from '../../powerMode/browser/tools/modernisationTools.js';
 import { IPowerTool, IToolContext } from '../../powerMode/common/powerModeTypes.js';
@@ -36,7 +50,7 @@ const _dummyCtx: IToolContext = {
 	metadata:  () => {},
 };
 
-function _adapt(tool: IPowerTool): IVoidInternalTool {
+function _adaptPowerTool(tool: IPowerTool): IVoidInternalTool {
 	const params: Record<string, { description: string }> = {};
 	for (const p of tool.parameters) {
 		params[p.name] = { description: p.description };
@@ -53,6 +67,30 @@ function _adapt(tool: IPowerTool): IVoidInternalTool {
 }
 
 
+// ─── IAgentToolDefinition → IVoidInternalTool adapter ────────────────────────
+
+function _adaptAgentTool(def: IAgentToolDefinition, agentTools: IModernisationAgentToolService): IVoidInternalTool {
+	const props = (def.inputSchema?.properties ?? {}) as Record<string, { description?: string }>;
+	const params: Record<string, { description: string }> = {};
+	for (const [key, val] of Object.entries(props)) {
+		params[key] = { description: val.description ?? key };
+	}
+	return {
+		name:        def.name,
+		description: def.description,
+		params,
+		execute(args) {
+			return agentTools.executeTool(def.name, args);
+		},
+	};
+}
+
+
+// ─── Session-only tool names ──────────────────────────────────────────────────
+
+const SESSION_TOOL_NAMES = AUTONOMY_SESSION_TOOL_DEFINITIONS.map(d => d.name);
+
+
 // ─── Contribution ─────────────────────────────────────────────────────────────
 
 export class VoidDiscoveryToolsContrib extends Disposable implements IWorkbenchContribution {
@@ -60,22 +98,50 @@ export class VoidDiscoveryToolsContrib extends Disposable implements IWorkbenchC
 	static readonly ID = 'workbench.contrib.neuralInverseModernisation.voidDiscoveryTools';
 
 	constructor(
-		@IVoidInternalToolService internalToolService: IVoidInternalToolService,
-		@IDiscoveryService        discoveryService: IDiscoveryService,
-		@IMigrationPlannerService plannerService: IMigrationPlannerService,
-		@IModernisationSessionService sessionService: IModernisationSessionService,
+		@IVoidInternalToolService       private readonly _internalTools: IVoidInternalToolService,
+		@IDiscoveryService              discoveryService: IDiscoveryService,
+		@IMigrationPlannerService       plannerService: IMigrationPlannerService,
+		@IModernisationSessionService   sessionService: IModernisationSessionService,
+		@IModernisationAgentToolService private readonly _agentTools: IModernisationAgentToolService,
 	) {
 		super();
 
-		// Standalone discovery tools (useful for any codebase)
-		const discoveryTools = buildDiscoveryTools(discoveryService).map(_adapt);
+		// ── Always-on tools ─────────────────────────────────────────────────
 
-		// Migration-specific tools (session context + planning)
-		const modernisationTools = buildModernisationPowerTools(
-			discoveryService, plannerService, sessionService,
-		).map(_adapt);
+		// Discovery tools (useful for any codebase — scan, explore, detect)
+		_internalTools.registerMany(buildDiscoveryTools(discoveryService).map(_adaptPowerTool));
 
-		internalToolService.registerMany([...discoveryTools, ...modernisationTools]);
+		// Migration planning tools (roadmap, session context)
+		_internalTools.registerMany(
+			buildModernisationPowerTools(discoveryService, plannerService, sessionService).map(_adaptPowerTool),
+		);
+
+		// All 67 KB tools + 6 default autonomy tools
+		// (status, preview, escalations, resolve_escalation, run_single_unit, history)
+		_internalTools.registerMany(
+			_agentTools.getContextualToolDefinitions(false).map(d => _adaptAgentTool(d, _agentTools)),
+		);
+
+		// ── Session-reactive batch-control tools ─────────────────────────────
+
+		if (sessionService.session.isActive) {
+			this._registerSessionTools();
+		}
+
+		this._register(sessionService.onDidChangeSession(s => {
+			if (s.isActive) {
+				this._registerSessionTools();
+			} else {
+				_internalTools.unregisterMany(SESSION_TOOL_NAMES);
+			}
+		}));
+	}
+
+	/** Register the 4 batch-control autonomy tools (start/pause/resume/stop). */
+	private _registerSessionTools(): void {
+		this._internalTools.registerMany(
+			AUTONOMY_SESSION_TOOL_DEFINITIONS.map(d => _adaptAgentTool(d, this._agentTools)),
+		);
 	}
 }
 

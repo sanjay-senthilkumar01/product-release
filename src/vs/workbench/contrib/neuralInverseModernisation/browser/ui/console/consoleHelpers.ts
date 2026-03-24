@@ -153,6 +153,7 @@ export const STATUS_COLOR: Record<UnitStatus, string> = {
 	review:      '#9c64fa',
 	flagged:     '#ff7043',
 	approved:    '#ab47bc',
+	committing:  '#81c784',
 	committed:   '#66bb6a',
 	validating:  '#26a69a',
 	validated:   '#26c6a6',

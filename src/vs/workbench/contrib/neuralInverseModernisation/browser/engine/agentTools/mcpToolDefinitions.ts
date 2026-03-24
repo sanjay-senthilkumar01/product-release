@@ -979,5 +979,133 @@ export const MCP_TOOL_DEFINITIONS: IAgentToolDefinition[] = [
 
 /** Look up a single tool definition by name */
 export function getToolDefinition(name: string): IAgentToolDefinition | undefined {
-	return MCP_TOOL_DEFINITIONS.find(t => t.name === name);
+	return [...MCP_TOOL_DEFINITIONS, ...AUTONOMY_DEFAULT_TOOL_DEFINITIONS, ...AUTONOMY_SESSION_TOOL_DEFINITIONS].find(t => t.name === name);
 }
+
+
+// ─── Autonomy tools (Phase 12) ────────────────────────────────────────────────
+//
+// Split into two groups:
+//   AUTONOMY_DEFAULT_TOOL_DEFINITIONS  — always available (read/query/single-unit)
+//   AUTONOMY_SESSION_TOOL_DEFINITIONS  — only when modernisation session is active
+
+/**
+ * Autonomy tools that work for any project (no active modernisation session needed).
+ * Read-only status queries, escalation management, single-unit execution.
+ */
+export const AUTONOMY_DEFAULT_TOOL_DEFINITIONS: IAgentToolDefinition[] = [
+
+	{
+		name: 'autonomy_get_batch_status',
+		description: 'Get the current state of the autonomy pipeline: lifecycle state (idle/running/paused/completed), active run ID, live metrics snapshot, and count of units awaiting human review.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+
+	{
+		name: 'autonomy_preview_schedule',
+		description: 'Preview the autonomy schedule without running any pipeline stages. Returns the ordered list of eligible units with depth groups, risk levels, and aggregate counts per stage. Use before starting a batch to understand scope.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				stages:         { type: 'string',  description: 'Comma-separated stages: resolve, translate, validate, commit. Default: all.' },
+				maxConcurrency: { type: 'number',  description: 'Concurrency limit for the preview (1–10). Default: 3.' },
+				autoApprove:    { type: 'boolean', description: 'Whether auto-approve affects escalation counts in the preview.' },
+			},
+		},
+	},
+
+	{
+		name: 'autonomy_get_escalations',
+		description: 'List all units currently awaiting human review. Returns unit name, risk level, domain, stage, escalation reason, and age in seconds.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				limit: { type: 'number', description: 'Maximum escalations to return (default 20, max 100).' },
+			},
+		},
+	},
+
+	{
+		name: 'autonomy_resolve_escalation',
+		description: 'Record a human decision for an escalated unit. "approve" sets status to approved (reason required), "skip" marks as skipped, "revert-to-pending" sends back for retry, "block" permanently blocks (reason required). Removes the unit from the escalation queue.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				unitId:     { type: 'string', description: 'KB unit ID to resolve.' },
+				decision:   { type: 'string', description: 'approve | skip | revert-to-pending | block' },
+				resolvedBy: { type: 'string', description: 'Identity of the reviewer (email or username).' },
+				reason:     { type: 'string', description: 'Documented rationale — required for approve and block.' },
+			},
+			required: ['unitId', 'decision', 'resolvedBy'],
+		},
+	},
+
+	{
+		name: 'autonomy_run_single_unit',
+		description: 'Execute the next pipeline step for a single unit immediately, bypassing the scheduler. Useful for targeted retry or human-driven progression. Safe to call while a batch is running.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				unitId:      { type: 'string',  description: 'KB unit ID to advance.' },
+				forceStage:  { type: 'string',  description: 'Force a specific stage: resolve, translate, validate, or commit.' },
+				autoApprove: { type: 'boolean', description: 'Override auto-approve for this unit only.' },
+				timeoutMs:   { type: 'number',  description: 'Override stage timeout (ms). Default: 120000.' },
+			},
+			required: ['unitId'],
+		},
+	},
+
+	{
+		name: 'autonomy_get_run_history',
+		description: 'Return the history of completed autonomy batch runs, most recent first. Each entry includes run ID, state, final metrics, and escalation count. Persisted across IDE restarts.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				limit: { type: 'number', description: 'Maximum history entries to return (default 10, max 20).' },
+			},
+		},
+	},
+
+];
+
+/**
+ * Autonomy tools that require an active modernisation session (source + target projects configured).
+ * These control batch lifecycle — meaningless without a session providing source/target roots.
+ */
+export const AUTONOMY_SESSION_TOOL_DEFINITIONS: IAgentToolDefinition[] = [
+
+	{
+		name: 'autonomy_start_batch',
+		description: 'Start the autonomy pipeline batch. Drives all eligible units through the configured stages: resolve → translate → [auto-approve] → validate → commit. High-risk and regulated-domain units always escalate. Returns final metrics when complete.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				stages:            { type: 'string',  description: 'Comma-separated stages to run: resolve, translate, validate, commit. Default: all.' },
+				maxConcurrency:    { type: 'number',  description: 'Parallel unit limit (1–10). Default: 3.' },
+				autoApprove:       { type: 'boolean', description: 'Auto-approve low/medium risk units that pass all compliance gates. Default: false.' },
+				stageTimeoutMs:    { type: 'number',  description: 'Per-stage timeout in ms. Default: 300000 (5 min).' },
+				maxRetriesPerUnit: { type: 'number',  description: 'Max retries per unit before escalating. Default: 3.' },
+				targetLanguage:    { type: 'string',  description: 'Target language key for translation (e.g. java, typescript, python).' },
+			},
+		},
+	},
+
+	{
+		name: 'autonomy_pause_batch',
+		description: 'Pause the running autonomy batch. In-flight unit jobs drain to completion before the pause takes effect. The batch can be resumed with autonomy_resume_batch.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+
+	{
+		name: 'autonomy_resume_batch',
+		description: 'Resume a previously paused autonomy batch from where it left off. Excludes units already processed. Uses the same options as the original start.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+
+	{
+		name: 'autonomy_stop_batch',
+		description: 'Stop (abort) the running autonomy batch. In-flight jobs drain gracefully. Cannot be resumed — use autonomy_pause_batch if you want to resume later.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+
+];

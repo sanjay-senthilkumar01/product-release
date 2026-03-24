@@ -228,7 +228,7 @@ export async function runBatchAutonomyEngine(
 					engineFailureCount.delete(unit.id);
 				}
 
-				collector.record(result);
+				collector.record(result, kb.getUnit(unit.id) ?? undefined);
 
 				onProgress({
 					type: 'unit-completed',
@@ -256,7 +256,7 @@ export async function runBatchAutonomyEngine(
 						`Autonomy engine permanently blocked: ${errMsg}`, LOCK_OWNER);
 				}
 
-				collector.record(syntheticResult);
+				collector.record(syntheticResult, kb.getUnit(unit.id) ?? undefined);
 				onProgress({
 					type: 'unit-completed',
 					data: { result: syntheticResult, index: jobIndex, total: totalUnits, metrics: collector.snapshot() },

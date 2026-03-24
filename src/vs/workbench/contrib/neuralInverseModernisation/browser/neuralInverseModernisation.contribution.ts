@@ -23,7 +23,7 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions } from '../../../common/contributions.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
@@ -79,11 +79,11 @@ async function openModernisationWindow(
 	store.add(part);
 	store.add(win.onDidLayout(d => part.layout(d.width, d.height, 0, 0)));
 	store.add(win.onUnload(() => {
-		storageService.store(MODERNISATION_STATE_KEY, JSON.stringify({ isOpen: false }), StorageScope.WORKSPACE, 1);
+		storageService.store(MODERNISATION_STATE_KEY, JSON.stringify({ isOpen: false }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 		store.dispose();
 	}));
 
-	storageService.store(MODERNISATION_STATE_KEY, JSON.stringify({ isOpen: true }), StorageScope.WORKSPACE, 1);
+	storageService.store(MODERNISATION_STATE_KEY, JSON.stringify({ isOpen: true }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	win.layout();
 }
 
@@ -114,7 +114,7 @@ class ModernisationContribution extends Disposable implements IWorkbenchContribu
 			store.add(part);
 			store.add(win.onDidLayout(d => part.layout(d.width, d.height, 0, 0)));
 			store.add(win.onUnload(() => {
-				this.storageService.store(MODERNISATION_STATE_KEY, JSON.stringify({ isOpen: false }), StorageScope.WORKSPACE, 1);
+				this.storageService.store(MODERNISATION_STATE_KEY, JSON.stringify({ isOpen: false }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 				store.dispose();
 			}));
 			win.layout();
@@ -214,6 +214,29 @@ registerAction2(class OpenModernWindowAliasAction extends Action2 {
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
 		await accessor.get(ICommandService).executeCommand('neuralInverse.openModernisationTargetWindows');
+	}
+});
+
+/**
+ * Focus (or open) the Modernisation console window.
+ * Used by statusbar entries as their click target.
+ */
+registerAction2(class FocusModernisationComplianceCenterAction extends Action2 {
+	constructor() {
+		super({
+			id: 'neuralInverse.focusModernisationComplianceCenter',
+			title: localize2('neuralInverse.focusModernisationComplianceCenter', 'Neural Inverse: Focus Modernisation Console'),
+			f1: false,
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		await openModernisationWindow(
+			accessor.get(IAuxiliaryWindowService),
+			accessor.get(IHostService),
+			accessor.get(IStorageService),
+			accessor.get(IInstantiationService),
+		);
 	}
 });
 

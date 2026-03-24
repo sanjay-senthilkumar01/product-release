@@ -20,6 +20,7 @@ import { INeuralInverseAgentService } from './neuralInverseAgentService.js';
 import { INeuralInverseAgentConfigService } from './neuralInverseAgentConfigService.js';
 import { IChecksAgentService } from '../../neuralInverseChecks/browser/checksAgent/checksAgentService.js';
 import { IPowerModeService } from '../../powerMode/browser/powerModeService.js';
+import { IModernisationSessionService } from '../../neuralInverseModernisation/browser/modernisationSessionService.js';
 
 import {
 	SubAgentTask,
@@ -120,6 +121,15 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 			catch { this._powerMode = null; }
 		}
 		return this._powerMode;
+	}
+
+	private _modernisationSession: IModernisationSessionService | null | undefined;
+	private _getModernisationSession(): IModernisationSessionService | null {
+		if (this._modernisationSession === undefined) {
+			try { this._modernisationSession = this._instantiationService.invokeFunction(a => a.get(IModernisationSessionService)); }
+			catch { this._modernisationSession = null; }
+		}
+		return this._modernisationSession;
 	}
 
 
@@ -367,7 +377,33 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 			'power-mode': `You are a delegated Power Mode sub-agent. Power Mode runs its own full multi-tool coding agent loop internally (bash, read, write, edit, glob, grep). You will receive a research or execution task and Power Mode will handle it autonomously. Report your findings clearly.`,
 		};
 
-		return `[NI Sub-Agent: ${request.role.toUpperCase()}]\n${roleDescriptions[request.role]}`;
+		let prefix = `[NI Sub-Agent: ${request.role.toUpperCase()}]\n${roleDescriptions[request.role]}`;
+
+		// Inject modernisation project paths only when a session is active so the
+		// sub-agent can resolve folder labels (e.g. "m-legacy") to absolute paths.
+		const session = this._getModernisationSession()?.session;
+		if (session?.isActive) {
+			const lines: string[] = ['\n\n## Active Modernisation Session — Project Paths'];
+			lines.push(`Stage: ${session.currentStage}  |  Pattern: ${session.migrationPattern ?? 'custom'}`);
+			if (session.sources.length > 0) {
+				lines.push('Source (legacy) projects — use these ABSOLUTE paths when reading source files:');
+				for (const s of session.sources) {
+					lines.push(`  ${s.label}: ${s.folderUri}`);
+				}
+			}
+			if (session.targets.length > 0) {
+				lines.push('Target (modern) projects — use these ABSOLUTE paths when reading/writing target files:');
+				for (const t of session.targets) {
+					lines.push(`  ${t.label}: ${t.folderUri}`);
+				}
+			}
+			if (session.activeSourceFileUri) { lines.push(`Active source file: ${session.activeSourceFileUri}`); }
+			if (session.activeTargetFileUri) { lines.push(`Active target file: ${session.activeTargetFileUri}`); }
+			lines.push('IMPORTANT: Always use the absolute paths above — do NOT use project label names as relative paths.');
+			prefix += lines.join('\n');
+		}
+
+		return prefix;
 	}
 
 	private _registerCompletionListener(): void {

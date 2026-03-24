@@ -121,6 +121,13 @@ import {
 	IRecordTranslationResult,
 	IFlagBlockedResult,
 	IPhaseDetailResult,
+	// Autonomy
+	IAutonomyStartBatchInput,
+	IAutonomyPreviewScheduleInput,
+	IAutonomyRunSingleUnitInput,
+	IAutonomyResolveEscalationInput,
+	IAutonomyGetEscalationsInput,
+	IAutonomyGetRunHistoryInput,
 } from './agentToolTypes.js';
 
 export const IModernisationAgentToolService =
@@ -151,8 +158,21 @@ export interface IModernisationAgentToolService {
 
 	// ── Tool registry ─────────────────────────────────────────────────────────
 
-	/** All 67 MCP-compatible tool definitions — pass directly to sendLLMMessage mcpTools */
+	/** All MCP-compatible tool definitions — pass directly to sendLLMMessage mcpTools */
 	getAllToolDefinitions(): IAgentToolDefinition[];
+
+	/**
+	 * Context-aware tool definitions for the current session state.
+	 *
+	 * - When `sessionActive` is true (modernisation session open): returns all
+	 *   KB tools + all 10 autonomy tools (batch control + read/query).
+	 * - When `sessionActive` is false: returns all KB tools + the 6 read-only
+	 *   autonomy tools (status, preview, escalations, resolve, run-single, history).
+	 *
+	 * Use this for the LLM context injection so the model only sees tools it can
+	 * meaningfully use. Pass `getAllToolDefinitions()` only for full tool access.
+	 */
+	getContextualToolDefinitions(sessionActive: boolean): IAgentToolDefinition[];
 
 	/** Look up a single tool definition by name */
 	getToolDefinition(name: string): IAgentToolDefinition | undefined;
@@ -416,4 +436,38 @@ export interface IModernisationAgentToolService {
 
 	/** Check if a file path or unit name matches any exclusion rule */
 	checkExcluded(input: ICheckExcludedInput): IAgentToolCallResult<ICheckExcludedResult>;
+
+	// ── Autonomy tools ────────────────────────────────────────────────────────
+	// Available for any project (default): status, preview, escalations, resolve, run-single, history
+	// Session-active only: start, pause, resume, stop
+
+	/** Get current batch state, live metrics, and escalation count */
+	autonomyGetBatchStatus(): IAgentToolCallResult<Record<string, unknown>>;
+
+	/** Preview the autonomy schedule without running any stages */
+	autonomyPreviewSchedule(input?: IAutonomyPreviewScheduleInput): IAgentToolCallResult<Record<string, unknown>>;
+
+	/** List units awaiting human review */
+	autonomyGetEscalations(input?: IAutonomyGetEscalationsInput): IAgentToolCallResult<Record<string, unknown>>;
+
+	/** Record a human decision for an escalated unit */
+	autonomyResolveEscalation(input: IAutonomyResolveEscalationInput): Promise<IAgentToolCallResult<Record<string, unknown>>>;
+
+	/** Execute the next pipeline step for a single unit */
+	autonomyRunSingleUnit(input: IAutonomyRunSingleUnitInput): Promise<IAgentToolCallResult<Record<string, unknown>>>;
+
+	/** Return the history of completed batch runs */
+	autonomyGetRunHistory(input?: IAutonomyGetRunHistoryInput): IAgentToolCallResult<Record<string, unknown>>;
+
+	/** Start the autonomy pipeline batch (requires active session) */
+	autonomyStartBatch(input?: IAutonomyStartBatchInput): Promise<IAgentToolCallResult<Record<string, unknown>>>;
+
+	/** Pause the running batch (requires active session) */
+	autonomyPauseBatch(): IAgentToolCallResult<Record<string, unknown>>;
+
+	/** Resume a paused batch (requires active session) */
+	autonomyResumeBatch(): Promise<IAgentToolCallResult<Record<string, unknown>>>;
+
+	/** Stop the running batch (requires active session) */
+	autonomyStopBatch(): IAgentToolCallResult<Record<string, unknown>>;
 }

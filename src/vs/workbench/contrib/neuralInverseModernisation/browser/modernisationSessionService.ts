@@ -23,8 +23,9 @@ import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
-import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IModernisationProjectFile, MODERNISATION_INVERSE_FILENAME } from '../common/modernisationTypes.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -146,6 +147,8 @@ export const MIGRATION_PATTERN_DESCRIPTIONS: Record<string, string> =
 
 export interface IModernisationSessionData {
 	isActive: boolean;
+	/** Stable ID shared with the Modernisation.inverse file — used to key the KB. */
+	sessionId?: string;
 	/** All source (legacy / input) projects in this session. */
 	sources: IProjectTarget[];
 	/** All target (modern / output) projects in this session. */
@@ -236,9 +239,70 @@ class ModernisationSessionService extends Disposable implements IModernisationSe
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
 		@IFileService private readonly fileService: IFileService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 		this._session = this._load();
+		// Initial validation / auto-detection against the current workspace
+		this._reconcileWithWorkspace();
+
+		// Re-run every time the workspace folders change (e.g. the user opens a
+		// different project in the same window via File > Open Folder).  The service
+		// is a singleton and is NOT re-instantiated on workspace switch, so without
+		// this listener the in-memory session stays "active" for the new project.
+		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
+			this._reconcileWithWorkspace();
+		}));
+	}
+
+	/**
+	 * Single reconciliation point — called on startup and whenever the VS Code
+	 * workspace folders change (e.g. File > Open Folder replaces the workspace).
+	 *
+	 * Two cases:
+	 *
+	 *  A. Session is currently "active" in memory / storage:
+	 *     Walk the stored source folders and look for Modernisation.inverse.
+	 *     If found → session is legitimate, leave it alone.
+	 *     If NOT found → the session belongs to a different project (stale storage
+	 *     or workspace switch); clear it so the status bar stays clean.
+	 *
+	 *  B. Session is NOT active:
+	 *     Walk the current workspace root folders and look for Modernisation.inverse.
+	 *     If found → auto-restore the session so the badge lights up without the
+	 *     user having to manually re-open the modernisation console.
+	 */
+	private async _reconcileWithWorkspace(): Promise<void> {
+		// The canonical check for BOTH cases is the same:
+		// look for Modernisation.inverse in the CURRENT workspace root folders.
+		//
+		// Case A (session active): if the current workspace has no .inverse file
+		//   the session belongs to a different project — clear it immediately.
+		//   (The stored source folders may legitimately have .inverse, but they
+		//   are not this workspace — checking them would give a false positive.)
+		//
+		// Case B (session not active): if a .inverse file is found, restore it.
+
+		const roots = this.workspaceContextService.getWorkspace().folders;
+
+		for (const folder of roots) {
+			try {
+				const inverseUri = URI.joinPath(folder.uri, MODERNISATION_INVERSE_FILENAME);
+				if (await this.fileService.exists(inverseUri)) {
+					// This workspace contains a .inverse file — restore / keep session.
+					if (!this._session.isActive) {
+						await this.openExistingProject(folder.uri);
+					}
+					return; // valid
+				}
+			} catch { /* treat as not found */ }
+		}
+
+		// No .inverse file found in any current workspace root.
+		// If a session was active it is stale — clear it.
+		if (this._session.isActive) {
+			this.endSession();
+		}
 	}
 
 	async createProject(
@@ -287,7 +351,7 @@ class ModernisationSessionService extends Disposable implements IModernisationSe
 		}
 		await Promise.all(writes);
 
-		this.startSession(sources, targets, pattern);
+		this.startSession(sources, targets, pattern, sessionId);
 	}
 
 	async openExistingProject(folderUri: URI): Promise<boolean> {
@@ -334,16 +398,17 @@ class ModernisationSessionService extends Disposable implements IModernisationSe
 				return false;
 			}
 
-			this.startSession(sources, targets, data.migrationPattern);
+			this.startSession(sources, targets, data.migrationPattern, data.sessionId);
 			return true;
 		} catch {
 			return false;
 		}
 	}
 
-	startSession(sources: IProjectTarget[], targets: IProjectTarget[], pattern?: MigrationPattern): void {
+	startSession(sources: IProjectTarget[], targets: IProjectTarget[], pattern?: MigrationPattern, sessionId?: string): void {
 		this._mutate({
 			isActive: true,
+			sessionId,
 			sources,
 			targets,
 			activeSourceFileUri: undefined,
@@ -383,7 +448,7 @@ class ModernisationSessionService extends Disposable implements IModernisationSe
 
 	private _mutate(next: IModernisationSessionData): void {
 		this._session = next;
-		this.storageService.store(SESSION_STORAGE_KEY, JSON.stringify(next), StorageScope.WORKSPACE, 1);
+		this.storageService.store(SESSION_STORAGE_KEY, JSON.stringify(next), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 		this._onDidChangeSession.fire(next);
 	}
 
@@ -416,6 +481,7 @@ class ModernisationSessionService extends Disposable implements IModernisationSe
 				// v2 storage
 				return {
 					isActive: parsed.isActive ?? false,
+					sessionId: parsed.sessionId,
 					sources: parsed.sources ?? [],
 					targets: parsed.targets ?? [],
 					activeSourceFileUri: parsed.activeSourceFileUri,

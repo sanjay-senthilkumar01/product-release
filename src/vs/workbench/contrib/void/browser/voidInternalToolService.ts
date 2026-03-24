@@ -52,6 +52,12 @@ export interface IVoidInternalToolService {
 	/** Register multiple tools at once. */
 	registerMany(tools: IVoidInternalTool[]): void;
 
+	/** Unregister a tool by name. No-op if the tool is not registered. */
+	unregister(name: string): void;
+
+	/** Unregister multiple tools by name. */
+	unregisterMany(names: string[]): void;
+
 	/** Returns InternalToolInfo[] for all registered tools, for LLM advertising. */
 	getToolInfos(): InternalToolInfo[];
 
@@ -76,6 +82,14 @@ class VoidInternalToolService extends Disposable implements IVoidInternalToolSer
 
 	registerMany(tools: IVoidInternalTool[]): void {
 		for (const t of tools) { this.register(t); }
+	}
+
+	unregister(name: string): void {
+		this._tools.delete(name);
+	}
+
+	unregisterMany(names: string[]): void {
+		for (const n of names) { this._tools.delete(n); }
 	}
 
 	getToolInfos(): InternalToolInfo[] {

@@ -19,9 +19,13 @@ import { IGRCEngineService } from '../../neuralInverseChecks/browser/engine/serv
 import { buildGRCTools } from './tools/grcTools.js';
 import { buildModernisationPowerTools } from './tools/modernisationTools.js';
 import { buildDiscoveryTools } from './tools/discoveryTools.js';
+import { buildAutonomyPowerTools } from './tools/autonomyPowerTools.js';
+import { buildKBPowerTools } from './tools/kbPowerTools.js';
 import { IDiscoveryService } from '../../neuralInverseModernisation/browser/engine/discovery/discoveryService.js';
 import { IMigrationPlannerService } from '../../neuralInverseModernisation/browser/engine/migrationPlannerService.js';
 import { IModernisationSessionService } from '../../neuralInverseModernisation/browser/modernisationSessionService.js';
+import { IModernisationAgentToolService } from '../../neuralInverseModernisation/browser/engine/agentTools/service.js';
+import { IAutonomyService } from '../../neuralInverseModernisation/browser/engine/autonomy/service.js';
 import { INeuralInverseSubAgentService } from '../../void/browser/neuralInverseSubAgentService.js';
 import {
 	IPowerSession,
@@ -279,6 +283,8 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 		@IDiscoveryService private readonly discoveryService: IDiscoveryService,
 		@IMigrationPlannerService private readonly migrationPlannerService: IMigrationPlannerService,
 		@IModernisationSessionService private readonly modernisationSessionService: IModernisationSessionService,
+		@IModernisationAgentToolService private readonly agentToolService: IModernisationAgentToolService,
+		@IAutonomyService private readonly autonomyService: IAutonomyService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) {
 		super();
@@ -498,6 +504,10 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 				...buildDiscoveryTools(this.discoveryService),
 				// Modernisation tools (migration workflow context)
 				...buildModernisationPowerTools(this.discoveryService, this.migrationPlannerService, this.modernisationSessionService),
+				// 67 KB tools (unit read/write, decisions, glossary, phases, compliance, etc.)
+				...buildKBPowerTools(this.agentToolService),
+				// Autonomy pipeline tools (batch control + single-unit + escalations)
+				...buildAutonomyPowerTools(this.autonomyService),
 				// High-priority workflow tools
 				createAskUserTool((question, sessionId) => this._askUser(question, sessionId)),
 				createWebFetchTool(),
@@ -546,6 +556,31 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 	 * Returns a JSON string with violations summary, or the last cached posture
 	 * if Checks Agent is not registered or doesn't respond within 2s.
 	 */
+	/**
+	 * Build a compact modernisation session context string for injection into
+	 * the system prompt.  Returns undefined when no session is active so the
+	 * prompt stays clean for regular coding tasks.
+	 */
+	private _buildModernisationContext(): string | undefined {
+		const session = this.modernisationSessionService.session;
+		if (!session?.isActive) { return undefined; }
+		const lines: string[] = [
+			`Stage: ${session.currentStage}  |  Pattern: ${session.migrationPattern ?? 'custom'}  |  Plan approved: ${session.planApproved ? 'yes' : 'no'}`,
+		];
+		if (session.sources.length > 0) {
+			lines.push('Source (legacy) projects — use these ABSOLUTE paths:');
+			for (const s of session.sources) { lines.push(`  ${s.label}: ${s.folderUri}`); }
+		}
+		if (session.targets.length > 0) {
+			lines.push('Target (modern) projects — use these ABSOLUTE paths:');
+			for (const t of session.targets) { lines.push(`  ${t.label}: ${t.folderUri}`); }
+		}
+		if (session.activeSourceFileUri) { lines.push(`Active source file: ${session.activeSourceFileUri}`); }
+		if (session.activeTargetFileUri) { lines.push(`Active target file: ${session.activeTargetFileUri}`); }
+		lines.push('Always use the absolute folder paths above — do NOT treat project labels as relative directory names.');
+		return lines.join('\n');
+	}
+
 	private _queryGRCPosture(): Promise<string> {
 		if (!this.powerBusService.isRegistered('checks-agent')) {
 			return Promise.resolve(this._lastKnownGRCPosture ?? '');
@@ -679,7 +714,7 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 			// Query Checks Agent for live GRC posture — runs in parallel with context build
 			const grcPosture = await this._queryGRCPosture();
 
-			// Build system prompt with real workspace context + GRC state
+			// Build system prompt with real workspace context + GRC state + modernisation session
 			const systemPrompt = buildSystemPrompt({
 				workingDirectory: session.directory,
 				agentId: agent.id,
@@ -687,6 +722,7 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 				isGitRepo: wsCtx.isGitRepo,
 				customInstructions: wsCtx.customInstructions || undefined,
 				grcPosture: grcPosture || undefined,
+				modernisationContext: this._buildModernisationContext(),
 			});
 
 			// Build callbacks that bridge processor events → UI events
@@ -965,6 +1001,7 @@ export class PowerModeService extends Disposable implements IPowerModeService {
 			agentId: 'build',
 			isGitRepo: wsCtx.isGitRepo,
 			customInstructions: wsCtx.customInstructions || undefined,
+			modernisationContext: this._buildModernisationContext(),
 		});
 
 		console.log('[PowerMode] answerQuery starting:', {

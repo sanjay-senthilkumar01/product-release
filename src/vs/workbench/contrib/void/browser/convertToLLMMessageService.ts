@@ -21,6 +21,8 @@ import { IMCPService } from '../common/mcpService.js';
 import { IVoidInternalToolService } from './voidInternalToolService.js';
 import { INeuralInverseAgentService } from './neuralInverseAgentService.js';
 import { IGRCEngineService } from '../../neuralInverseChecks/browser/engine/services/grcEngineService.js';
+import { IModernisationSessionService } from '../../neuralInverseModernisation/browser/modernisationSessionService.js';
+import { IKnowledgeBaseService } from '../../neuralInverseModernisation/browser/knowledgeBase/service.js';
 
 export const EMPTY_MESSAGE = '(empty message)'
 
@@ -35,6 +37,7 @@ type SimpleLLMMessage = {
 } | {
 	role: 'user';
 	content: string;
+	images?: { data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp'; fileName?: string }[]; // base64 encoded images
 } | {
 	role: 'assistant';
 	content: string;
@@ -78,6 +81,32 @@ const prepareMessages_openai_tools = (messages: SimpleLLMMessage[]): AnthropicOr
 
 	for (let i = 0; i < messages.length; i += 1) {
 		const currMsg = messages[i]
+
+		if (currMsg.role === 'user') {
+			// Handle images for OpenAI format
+			if (currMsg.images && currMsg.images.length > 0) {
+				const contentParts: ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' } })[] = [];
+				if (currMsg.content) {
+					contentParts.push({ type: 'text', text: currMsg.content });
+				}
+				for (const img of currMsg.images) {
+					contentParts.push({
+						type: 'image_url',
+						image_url: {
+							url: `data:${img.mimeType};base64,${img.data}`,
+							detail: 'auto'
+						}
+					});
+				}
+				newMessages.push({
+					role: 'user',
+					content: contentParts
+				});
+			} else {
+				newMessages.push(currMsg);
+			}
+			continue
+		}
 
 		if (currMsg.role !== 'tool') {
 			newMessages.push(currMsg)
@@ -167,9 +196,36 @@ const prepareMessages_anthropic_tools = (messages: SimpleLLMMessage[], supportsA
 		}
 
 		if (currMsg.role === 'user') {
-			newMessages[i] = {
-				role: 'user',
-				content: currMsg.content,
+			// Handle images for Anthropic format
+			if (currMsg.images && currMsg.images.length > 0) {
+				const contentParts: ({ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } })[] = [];
+				if (currMsg.content) {
+					contentParts.push({ type: 'text', text: currMsg.content });
+				}
+				for (const img of currMsg.images) {
+					// Anthropic only supports png, jpeg, gif, webp - skip BMP
+					if (img.mimeType === 'image/bmp') {
+						console.warn('[Anthropic] BMP images not supported, skipping');
+						continue;
+					}
+					contentParts.push({
+						type: 'image',
+						source: {
+							type: 'base64',
+							media_type: img.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+							data: img.data
+						}
+					});
+				}
+				newMessages[i] = {
+					role: 'user',
+					content: contentParts
+				};
+			} else {
+				newMessages[i] = {
+					role: 'user',
+					content: currMsg.content,
+				};
 			}
 			continue
 		}
@@ -226,16 +282,26 @@ const prepareMessages_XML_tools = (messages: SimpleLLMMessage[], supportsAnthrop
 		}
 		// add user or tool to the previous user message
 		else if (c.role === 'user' || c.role === 'tool') {
+			let contentToAdd = c.content;
+
+			// Handle images for XML format (convert to text description)
+			if (c.role === 'user' && c.images && c.images.length > 0) {
+				const imageDescriptions = c.images.map((img, idx) =>
+					`[Image ${idx + 1}: ${img.fileName || 'image'} (${img.mimeType})]`
+				).join('\n');
+				contentToAdd = c.content ? `${c.content}\n\n${imageDescriptions}` : imageDescriptions;
+			}
+
 			if (c.role === 'tool')
-				c.content = `<${c.name}_result>\n${c.content}\n</${c.name}_result>`
+				contentToAdd = `<${c.name}_result>\n${contentToAdd}\n</${c.name}_result>`
 
 			if (llmChatMessages.length === 0 || llmChatMessages[llmChatMessages.length - 1].role !== 'user')
 				llmChatMessages.push({
 					role: 'user',
-					content: c.content
+					content: contentToAdd
 				})
 			else
-				llmChatMessages[llmChatMessages.length - 1].content += '\n\n' + c.content
+				llmChatMessages[llmChatMessages.length - 1].content += '\n\n' + contentToAdd
 		}
 	}
 	return llmChatMessages
@@ -477,6 +543,11 @@ const prepareGeminiMessages = (messages: AnthropicLLMChatMessage[]) => {
 					if (c.type === 'text') {
 						return { text: c.text }
 					}
+					else if (c.type === 'image') {
+						// Convert Anthropic image format to Gemini inlineData format
+						// BMP already filtered out in Anthropic conversion above
+						return { inlineData: { mimeType: c.source.media_type, data: c.source.data } }
+					}
 					else if (c.type === 'tool_result') {
 						if (!latestToolName) return null
 						return { functionResponse: { id: c.tool_use_id, name: latestToolName, response: { output: c.content } } }
@@ -578,6 +649,98 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		return this._grcEngine
 	}
 
+	// Lazy-resolved modernisation services — only available when the module is loaded
+	private _modernisationSession: IModernisationSessionService | null | undefined
+	private _getModernisationSession(): IModernisationSessionService | null {
+		if (this._modernisationSession === undefined) {
+			try {
+				this._modernisationSession = this.instantiationService.invokeFunction(a => a.get(IModernisationSessionService))
+			} catch {
+				this._modernisationSession = null
+			}
+		}
+		return this._modernisationSession
+	}
+
+	private _kbService: IKnowledgeBaseService | null | undefined
+	private _getKBService(): IKnowledgeBaseService | null {
+		if (this._kbService === undefined) {
+			try {
+				this._kbService = this.instantiationService.invokeFunction(a => a.get(IKnowledgeBaseService))
+			} catch {
+				this._kbService = null
+			}
+		}
+		return this._kbService
+	}
+
+	/**
+	 * Build a compact modernisation context block for injection into the system prompt.
+	 * Returns undefined when no session is active — keeps prompt clean for normal coding tasks.
+	 *
+	 * Tells the agent:
+	 *   - It is working inside an active migration project
+	 *   - The current workflow stage and what it means
+	 *   - Source (legacy) and target (modern) folder paths for direct file access
+	 *   - KB progress summary so it can prioritise which units to work on
+	 *   - Active file pair currently under analysis (if set)
+	 */
+	private _buildModernisationContext(): string | undefined {
+		const session = this._getModernisationSession()?.session
+		if (!session?.isActive) { return undefined }
+
+		const kb = this._getKBService()
+		const progress = kb?.isActive ? kb.getProgress() : null
+
+		const lines: string[] = [
+			'## Active Modernisation Session',
+			`Stage: ${session.currentStage}  |  Pattern: ${session.migrationPattern ?? 'custom'}  |  Plan approved: ${session.planApproved ? 'yes' : 'no'}`,
+		]
+
+		// Source and target project paths — agents use these to open/read files directly
+		if (session.sources.length > 0) {
+			lines.push('Source (legacy) projects:')
+			for (const s of session.sources) {
+				lines.push(`  ${s.label}: ${s.folderUri}`)
+			}
+		}
+		if (session.targets.length > 0) {
+			lines.push('Target (modern) projects:')
+			for (const t of session.targets) {
+				lines.push(`  ${t.label}: ${t.folderUri}`)
+			}
+		}
+
+		// Active file pair — the specific files currently under human review
+		if (session.activeSourceFileUri) { lines.push(`Active source file: ${session.activeSourceFileUri}`) }
+		if (session.activeTargetFileUri) { lines.push(`Active target file: ${session.activeTargetFileUri}`) }
+
+		// KB progress summary — lets the agent prioritise without calling list_units first
+		if (progress) {
+			const p = progress
+			const bs = p.byStatus
+			const statusCounts: string[] = []
+			if ((bs['pending']   ?? 0) > 0) { statusCounts.push(`${bs['pending']} pending`) }
+			if ((bs['ready']     ?? 0) > 0) { statusCounts.push(`${bs['ready']} ready`) }
+			if ((bs['review']    ?? 0) > 0) { statusCounts.push(`${bs['review']} in review`) }
+			if ((bs['approved']  ?? 0) > 0) { statusCounts.push(`${bs['approved']} approved`) }
+			if ((bs['validated'] ?? 0) > 0) { statusCounts.push(`${bs['validated']} validated`) }
+			if ((bs['committed'] ?? 0) > 0) { statusCounts.push(`${bs['committed']} committed`) }
+			if (p.blockedUnits.length  > 0) { statusCounts.push(`${p.blockedUnits.length} blocked`) }
+			if ((bs['skipped']   ?? 0) > 0) { statusCounts.push(`${bs['skipped']} skipped`) }
+			if (statusCounts.length > 0) {
+				lines.push(`KB: ${p.totalUnits} total units — ${statusCounts.join(', ')}`)
+			}
+			if (p.pendingDecisions.length > 0) {
+				lines.push(`Pending decisions requiring resolution: ${p.pendingDecisions.length}`)
+			}
+		}
+
+		lines.push('Use modernisation_session, list_units, get_unit, and related KB tools for detailed access. Use standard file-reading tools to inspect source/target code directly from the folder paths above.')
+
+		return lines.join('\n')
+	}
+
 	private _buildGRCPosture(): string | undefined {
 		const engine = this._getGRCEngine();
 		if (!engine) return undefined;
@@ -643,6 +806,11 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const ans: string[] = []
 		if (globalAIInstructions) ans.push(globalAIInstructions)
 		if (voidRulesFileContent) ans.push(voidRulesFileContent)
+
+		// Inject active modernisation session context (stage, folder paths, KB progress)
+		// Only present when a modernisation session is running — keeps prompt clean otherwise
+		const modernisationContext = this._buildModernisationContext()
+		if (modernisationContext) ans.push(modernisationContext)
 
 		// Inject NeuralInverse Agent working memory context when a task is active
 		const agentContext = this._getAgentService()?.getContextSummary()
@@ -718,6 +886,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 				simpleLLMMessages.push({
 					role: m.role,
 					content: m.content,
+					images: m.images,
 				})
 			}
 		}

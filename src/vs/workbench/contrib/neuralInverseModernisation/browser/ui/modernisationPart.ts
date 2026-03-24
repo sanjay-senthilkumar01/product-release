@@ -18,7 +18,7 @@
 
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { IStorageService } from '../../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
@@ -47,6 +47,7 @@ import {
 } from '../modernisationSessionService.js';
 import { IDiscoveryService } from '../engine/discovery/discoveryService.js';
 import { IDiscoveryResult } from '../engine/discovery/discoveryTypes.js';
+import { IKnowledgeUnit } from '../../common/knowledgeBaseTypes.js';
 import { IMigrationPlannerService } from '../engine/migrationPlannerService.js';
 import { IKnowledgeBaseService } from '../knowledgeBase/service.js';
 import { IModernisationAgentToolService } from '../engine/agentTools/service.js';
@@ -65,6 +66,11 @@ const STAGE_DESCRIPTIONS: Record<ModernisationStage, string> = {
 	cutover:    'Final approval gate. Commit translated code to production branch.',
 };
 
+
+// ─── Storage keys ─────────────────────────────────────────────────────────────
+
+const DISCOVERY_STORAGE_KEY = 'neuralInverse.modernisation.discoveryResult.v1';
+const ROADMAP_STORAGE_KEY   = 'neuralInverse.modernisation.roadmap.v1';
 
 // ─── DOM helpers (no innerHTML — Trusted Types compliant) ─────────────────────
 
@@ -124,7 +130,7 @@ export class ModernisationPart extends Part {
 
 	constructor(
 		@IThemeService           themeService: IThemeService,
-		@IStorageService         storageService: IStorageService,
+		@IStorageService         private readonly _storage: IStorageService,
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IModernisationSessionService private readonly sessionService: IModernisationSessionService,
 		@IFileDialogService      private readonly fileDialogService: IFileDialogService,
@@ -140,8 +146,162 @@ export class ModernisationPart extends Part {
 		@ICutoverService                private readonly cutoverService:    ICutoverService,
 		@IAutonomyService               private readonly autonomyService:   IAutonomyService,
 	) {
-		super(ModernisationPart.ID, { hasTitle: false }, themeService, storageService, layoutService);
-		this._disposables.add(sessionService.onDidChangeSession(() => this._render()));
+		super(ModernisationPart.ID, { hasTitle: false }, themeService, _storage, layoutService);
+		this._tryRestoreFromStorage();
+
+		// Initialise the KB as soon as a session becomes active so the console
+		// shows units rather than "Knowledge base not active".
+		// kb.init() is idempotent when called with the same sessionId — safe to
+		// call on every onDidChangeSession fire while the session is active.
+		const initKBIfNeeded = (s: IModernisationSessionData) => {
+			if (!s.isActive || kbService.isActive) { return; }
+			// Prefer the sessionId stored in the .inverse file.  For sessions that
+			// were created before the sessionId field was added (or loaded from
+			// storage before the field existed) fall back to a deterministic key
+			// derived from the first source folder so the KB storage key is stable
+			// across IDE restarts.
+			const sid = s.sessionId
+				?? (s.sources[0]?.folderUri
+					? `ni-kb-${s.sources[0].folderUri.replace(/[^a-zA-Z0-9_.-]/g, '-')}`
+					: `ni-kb-default`);
+			kbService.init(sid).then(() => {
+				// Seed KB with any already-completed discovery units so the console
+				// shows units immediately rather than waiting for a re-scan.
+				if (this._discoveryResult) {
+					this._seedKBFromDiscovery(this._discoveryResult);
+				}
+			}).catch(() => { /* storage error — non-fatal */ });
+		};
+
+		// Initialise immediately if a session is already active at construction time
+		initKBIfNeeded(sessionService.session);
+
+		this._disposables.add(sessionService.onDidChangeSession(s => {
+			if (!s.isActive) {
+				// Session ended — close KB and clear persisted results
+				kbService.close();
+				this._discoveryResult = undefined;
+				this._roadmap         = undefined;
+				this._persistDiscovery();
+				this._persistRoadmap();
+			} else {
+				initKBIfNeeded(s);
+			}
+			this._render();
+		}));
+	}
+
+	// ─── Storage persistence ─────────────────────────────────────────────────
+
+	private _tryRestoreFromStorage(): void {
+		const rawDiscovery = this._storage.get(DISCOVERY_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (rawDiscovery) {
+			try { this._discoveryResult = JSON.parse(rawDiscovery); } catch { /* corrupt — ignore */ }
+		}
+		const rawRoadmap = this._storage.get(ROADMAP_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (rawRoadmap) {
+			try { this._roadmap = JSON.parse(rawRoadmap); } catch { /* corrupt — ignore */ }
+		}
+	}
+
+	private _persistDiscovery(): void {
+		if (this._discoveryResult) {
+			this._storage.store(DISCOVERY_STORAGE_KEY, JSON.stringify(this._discoveryResult), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		} else {
+			this._storage.remove(DISCOVERY_STORAGE_KEY, StorageScope.WORKSPACE);
+		}
+	}
+
+	private _persistRoadmap(): void {
+		if (this._roadmap) {
+			this._storage.store(ROADMAP_STORAGE_KEY, JSON.stringify(this._roadmap), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		} else {
+			this._storage.remove(ROADMAP_STORAGE_KEY, StorageScope.WORKSPACE);
+		}
+	}
+
+	/**
+	 * Seed the KB with units from a discovery result.
+	 *
+	 * Only source units are seeded — target units are the output of migration and
+	 * do not need to be tracked as migration atoms in the KB.
+	 *
+	 * Already-migrated services are detected via crossProjectPairings: if a source
+	 * unit already has a paired target unit on disk, it is seeded as 'committed'
+	 * with targetFile populated so the Unit Index reflects real progress.
+	 *
+	 * Idempotent — safe to call multiple times (e.g. on reload).
+	 */
+	private _seedKBFromDiscovery(discovery: IDiscoveryResult): void {
+		if (!this.kbService.isActive) { return; }
+		const now = Date.now();
+
+		// Build lookup: targetUnitId → absolute file path (from target scans)
+		const targetUnitFileMap = new Map<string, string>();
+		for (const targetScan of discovery.targets) {
+			for (const unit of targetScan.units) {
+				targetUnitFileMap.set(unit.id, unit.legacyFilePath);
+			}
+		}
+
+		// Build lookup: sourceUnitId → target file path
+		// A source unit that has a cross-project pairing means it was already migrated.
+		const sourceToTargetFile = new Map<string, string>();
+		for (const pairing of discovery.crossProjectPairings) {
+			const targetFile = targetUnitFileMap.get(pairing.targetUnitId);
+			if (targetFile) {
+				sourceToTargetFile.set(pairing.sourceUnitId, targetFile);
+			}
+		}
+
+		const toAdd: IKnowledgeUnit[] = [];
+		// Units already in the KB that should be promoted pending → committed because
+		// a pairing was found (e.g. target files added after the initial seeding run,
+		// or pairer bugs fixed in a subsequent discovery run).
+		const toUpdate: Array<{ id: string; patch: Partial<IKnowledgeUnit> }> = [];
+
+		for (const scan of discovery.sources) {
+			for (const unit of scan.units) {
+				const targetFile = sourceToTargetFile.get(unit.id);
+				if (this.kbService.hasUnit(unit.id)) {
+					// Unit already in KB — promote to 'committed' if we now have a pairing
+					// and it is still in the initial 'pending' state (no work started).
+					if (targetFile) {
+						const existing = this.kbService.getUnit(unit.id);
+						if (existing?.status === 'pending') {
+							toUpdate.push({ id: unit.id, patch: { status: 'committed', targetFile, updatedAt: now } });
+						}
+					}
+					continue;
+				}
+				toAdd.push({
+					id:             unit.id,
+					sourceFile:     unit.legacyFilePath,
+					sourceRange:    unit.legacyRange,
+					sourceLang:     scan.dominantLanguage,
+					sourceText:     '',          // populated by resolution engine later
+					resolvedSource: '',
+					name:           unit.unitName,
+					unitType:       unit.unitType as IKnowledgeUnit['unitType'],
+					riskLevel:      unit.riskLevel,
+					dependsOn:      unit.dependencies,
+					usedBy:         unit.dependents,
+					businessRules:  [],
+					// If a paired target file exists on disk the service was already migrated.
+					status:         targetFile ? 'committed' : 'pending',
+					targetFile,
+					approvals:      [],
+					createdAt:      now,
+					updatedAt:      now,
+				});
+			}
+		}
+
+		if (toAdd.length === 0 && toUpdate.length === 0) { return; }
+		this.kbService.batchBegin();
+		if (toAdd.length > 0)    { this.kbService.addUnits(toAdd); }
+		if (toUpdate.length > 0) { this.kbService.updateUnits(toUpdate); }
+		this.kbService.batchEnd();
 	}
 
 	protected override createContentArea(parent: HTMLElement): HTMLElement {
@@ -1035,6 +1195,9 @@ export class ModernisationPart extends Part {
 			const totalUnits = [...result.sources, ...result.targets].reduce((n, p) => n + p.units.length, 0);
 			log(`\u2713 Scan complete \u2014 ${totalUnits} units in ${(result.totalElapsedMs / 1000).toFixed(1)}s`);
 			this._discoveryResult = result;
+			this._persistDiscovery();
+			// Immediately seed KB so the console shows units without a page reload
+			this._seedKBFromDiscovery(result);
 		} catch (err) {
 			log(`\u2717 Error: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {
@@ -1224,8 +1387,9 @@ export class ModernisationPart extends Part {
 				log('Running discovery\u2026');
 				discovery = await this.discoveryService.scan(session.sources, session.targets);
 				discSub.dispose();
-				// Cache for future use from Stage 2
+				// Cache and persist for future use from Stage 2
 				this._discoveryResult = discovery;
+				this._persistDiscovery();
 				const totalUnits = discovery.sources.reduce((n, s) => n + s.units.length, 0);
 				log(`Discovery complete: ${discovery.sources.length} source project(s), ${totalUnits} units found.`);
 			}
@@ -1241,6 +1405,7 @@ export class ModernisationPart extends Part {
 			planSub.dispose();
 
 			this._roadmap = roadmap;
+			this._persistRoadmap();
 			log(`\u2713 Roadmap complete \u2014 ${roadmap.totalUnits} units, ${roadmap.phases?.length ?? 0} phases.`);
 		} catch (err) {
 			log(`\u2717 Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1299,7 +1464,12 @@ export class ModernisationPart extends Part {
 		// ── 4-tab Modernisation Console ──────────────────────────────────
 		// Create once and reuse across re-renders to preserve filter/tab state
 		if (!this._console) {
-			this._console = new ModernisationConsole(this.kbService, this.agentToolsService, this.validationService, this.cutoverService, this.autonomyService);
+			this._console = new ModernisationConsole(
+				this.kbService, this.agentToolsService,
+				this.validationService, this.cutoverService, this.autonomyService,
+				// onResyncDiscovery: re-sync KB statuses when user clicks Refresh
+				() => { if (this._discoveryResult) { this._seedKBFromDiscovery(this._discoveryResult); } },
+			);
 		}
 		pane.appendChild(this._console.domNode);
 		return pane;

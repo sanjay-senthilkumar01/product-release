@@ -36,6 +36,7 @@ import { ToolApprovalTypeSwitch } from '../void-settings-tsx/Settings.js';
 import { persistentTerminalNameOfId } from '../../../terminalToolService.js';
 import { removeMCPToolNamePrefix } from '../../../../common/mcpServiceTypes.js';
 import { AgentNetworkViz, AgentCompletionCard } from './AgentNetworkViz.js';
+import { ImageUpload, ImageUploadButton, ImagePreviewsList, useImageDropZone, ChatImageDisplay } from './ImageUpload.js';
 
 
 
@@ -319,6 +320,10 @@ interface VoidChatAreaProps {
 	showSelections?: boolean;
 	showProspectiveSelections?: boolean;
 	loadingIcon?: React.ReactNode;
+	leftControls?: React.ReactNode; // Additional controls to render in bottom left
+	imagePreviewsNode?: React.ReactNode; // Image previews to show at top right
+	dragDropHandlers?: React.DOMAttributes<HTMLDivElement>; // Drag & drop handlers
+	dragOverlay?: React.ReactNode; // Drag overlay element
 
 	selections?: StagingSelectionItem[]
 	setSelections?: (s: StagingSelectionItem[]) => void
@@ -349,6 +354,10 @@ export const VoidChatArea: React.FC<VoidChatAreaProps> = ({
 	setSelections,
 	featureName,
 	loadingIcon,
+	leftControls,
+	imagePreviewsNode,
+	dragDropHandlers,
+	dragOverlay,
 }) => {
 	return (
 		<div
@@ -366,7 +375,14 @@ export const VoidChatArea: React.FC<VoidChatAreaProps> = ({
 			onClick={(e) => {
 				onClickAnywhere?.()
 			}}
+			{...dragDropHandlers}
 		>
+			{/* Drag overlay */}
+			{dragOverlay}
+
+			{/* Image previews at top right */}
+			{imagePreviewsNode}
+
 			{/* Selections section */}
 			{showSelections && selections && setSelections && (
 				<SelectedFiles
@@ -400,6 +416,7 @@ export const VoidChatArea: React.FC<VoidChatAreaProps> = ({
 						<ReasoningOptionSlider featureName={featureName} />
 
 						<div className='flex items-center flex-wrap gap-x-2 gap-y-1 text-nowrap '>
+							{leftControls}
 							{featureName === 'Chat' && <ChatModeDropdown className='text-xs text-void-fg-3' />}
 							<ModelDropdown featureName={featureName} className='text-xs text-void-fg-3 bg-void-bg-1 rounded' />
 						</div>
@@ -1105,6 +1122,7 @@ const UserMessageComponent = ({ chatMessage, messageIdx, isCheckpointGhost, curr
 	if (mode === 'display') {
 		chatbubbleContents = <>
 			<SelectedFiles type='past' messageIdx={messageIdx} selections={chatMessage.selections || []} />
+			{chatMessage.role === 'user' && chatMessage.images && <ChatImageDisplay images={chatMessage.images} />}
 			<span className='px-0.5'>{chatMessage.displayContent}</span>
 		</>
 	}
@@ -3969,6 +3987,7 @@ export const SidebarChat = () => {
 	// state of current message
 	const initVal = ''
 	const [instructionsAreEmpty, setInstructionsAreEmpty] = useState(!initVal)
+	const [uploadedImages, setUploadedImages] = useState<import('../../../../common/chatThreadServiceTypes.js').ImageAttachment[]>([])
 
 	const isDisabled = instructionsAreEmpty || !!isFeatureNameDisabled('Chat', settingsState)
 
@@ -3985,12 +4004,17 @@ export const SidebarChat = () => {
 		const userMessage = _forceSubmit || textAreaRef.current?.value || ''
 
 		try {
-			await chatThreadsService.addUserMessageAndStreamResponse({ userMessage, threadId })
+			await chatThreadsService.addUserMessageAndStreamResponse({
+				userMessage,
+				threadId,
+				images: uploadedImages.length > 0 ? uploadedImages : undefined
+			})
 		} catch (e) {
 			console.error('Error while sending message in chat:', e)
 		}
 
 		setSelections([]) // clear staging
+		setUploadedImages([]) // clear images
 		textAreaFnsRef.current?.setValue('')
 		textAreaRef.current?.focus() // focus input after submit
 
@@ -4213,6 +4237,8 @@ export const SidebarChat = () => {
 		}
 	}, [onSubmit, onAbort, isRunning])
 
+	const { dragOverlay, handlers: dropZoneHandlers } = useImageDropZone(uploadedImages, setUploadedImages, 10);
+
 	const inputChatArea = <VoidChatArea
 		featureName='Chat'
 		onSubmit={() => onSubmit()}
@@ -4224,6 +4250,21 @@ export const SidebarChat = () => {
 		selections={selections}
 		setSelections={setSelections}
 		onClickAnywhere={() => { textAreaRef.current?.focus() }}
+		leftControls={
+			<ImageUploadButton
+				images={uploadedImages}
+				onImagesChange={setUploadedImages}
+				maxImages={10}
+			/>
+		}
+		imagePreviewsNode={
+			<ImagePreviewsList
+				images={uploadedImages}
+				onRemove={(idx) => setUploadedImages(uploadedImages.filter((_, i) => i !== idx))}
+			/>
+		}
+		dragDropHandlers={dropZoneHandlers}
+		dragOverlay={dragOverlay}
 	>
 		<VoidInputBox2
 			enableAtToMention

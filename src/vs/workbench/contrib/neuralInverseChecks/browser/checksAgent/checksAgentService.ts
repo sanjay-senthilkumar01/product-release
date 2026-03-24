@@ -620,7 +620,28 @@ export class ChecksAgentService extends Disposable implements IChecksAgentServic
 			workingDirectory: directory,
 			isGitRepo: wsCtx?.isGitRepo ?? false,
 			customInstructions: wsCtx?.customInstructions,
+			modernisationContext: this._buildModernisationContext(),
 		});
+	}
+
+	private _buildModernisationContext(): string | undefined {
+		const session = this.modernisationSessionService.session;
+		if (!session?.isActive) { return undefined; }
+		const lines: string[] = [
+			`Stage: ${session.currentStage}  |  Pattern: ${session.migrationPattern ?? 'custom'}  |  Plan approved: ${session.planApproved ? 'yes' : 'no'}`,
+		];
+		if (session.sources.length > 0) {
+			lines.push('Source (legacy) projects — use these ABSOLUTE paths:');
+			for (const s of session.sources) { lines.push(`  ${s.label}: ${s.folderUri}`); }
+		}
+		if (session.targets.length > 0) {
+			lines.push('Target (modern) projects — use these ABSOLUTE paths:');
+			for (const t of session.targets) { lines.push(`  ${t.label}: ${t.folderUri}`); }
+		}
+		if (session.activeSourceFileUri) { lines.push(`Active source file: ${session.activeSourceFileUri}`); }
+		if (session.activeTargetFileUri) { lines.push(`Active target file: ${session.activeTargetFileUri}`); }
+		lines.push('Always use the absolute folder paths above — do NOT treat project labels as relative directory names.');
+		return lines.join('\n');
 	}
 
 	private _restoreSession(): void {

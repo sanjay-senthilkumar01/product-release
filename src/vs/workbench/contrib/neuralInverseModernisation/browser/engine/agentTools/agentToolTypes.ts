@@ -832,3 +832,59 @@ export interface ICheckExcludedResult {
 	unitName?: string;
 	isExcluded: boolean;
 }
+
+
+// ─── Autonomy tool types ──────────────────────────────────────────────────────
+
+export interface IAutonomyStartBatchInput {
+	/** Comma-separated stages: resolve, translate, validate, commit. Default: all. */
+	stages?: string;
+	/** Parallel unit limit (1–10). Default: 3. */
+	maxConcurrency?: number;
+	/** Auto-approve low/medium risk units that pass all gates. Default: false. */
+	autoApprove?: boolean;
+	/** Per-stage timeout in ms. Default: 300000 (5 min). */
+	stageTimeoutMs?: number;
+	/** Max retries per unit before escalating. Default: 3. */
+	maxRetriesPerUnit?: number;
+	/** Target language key for the translation engine (e.g. 'java', 'typescript'). */
+	targetLanguage?: string;
+}
+
+export interface IAutonomyPreviewScheduleInput {
+	stages?: string;
+	maxConcurrency?: number;
+	autoApprove?: boolean;
+}
+
+export interface IAutonomyRunSingleUnitInput {
+	/** KB unit ID to advance (required). */
+	unitId: string;
+	/** Force a specific stage: resolve, translate, validate, or commit. */
+	forceStage?: string;
+	/** Override auto-approve for this unit only. */
+	autoApprove?: boolean;
+	/** Override stage timeout for this unit only (ms). */
+	timeoutMs?: number;
+}
+
+export interface IAutonomyResolveEscalationInput {
+	/** KB unit ID to resolve (required). */
+	unitId: string;
+	/** approve | skip | revert-to-pending | block (required). */
+	decision: string;
+	/** Identity of the person resolving (required). */
+	resolvedBy: string;
+	/** Documented rationale — required for 'approve' and 'block'. */
+	reason?: string;
+}
+
+export interface IAutonomyGetEscalationsInput {
+	/** Maximum number of escalations to return (default 20). */
+	limit?: number;
+}
+
+export interface IAutonomyGetRunHistoryInput {
+	/** Maximum number of history entries to return (default 10). */
+	limit?: number;
+}
