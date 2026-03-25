@@ -158,10 +158,13 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 
 		const { settingsOfProvider, } = this.voidSettingsService.state
 
-		const mcpTools = [
-			...(this.mcpService.getMCPTools() || []),
-			...(extraTools || [])
-		]
+		// If the caller provides an explicit tool list, treat it as the complete set.
+		// (Power Mode and other specialized callers manage their own tool universe.)
+		// Only fall back to MCP service tools when the caller doesn't specify any.
+		const mcpTools = (extraTools !== undefined
+			? extraTools
+			: (this.mcpService.getMCPTools() || [])
+		).slice(0, 128) // API hard limit — rejects arrays longer than 128
 
 		// add state for request id
 		const requestId = generateUuid();

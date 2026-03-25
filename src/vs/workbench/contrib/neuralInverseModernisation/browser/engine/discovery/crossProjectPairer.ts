@@ -296,11 +296,17 @@ function _pickBestByTokenOverlap(
 function findComplexityMatch(srcUnit: IMigrationUnit, targets: IMigrationUnit[]): IMigrationUnit | null {
 	// We don't have CC here directly, so use regulated fields count as a proxy
 	const srcFields = srcUnit.legacyFingerprint?.regulatedFields.length ?? 0;
+
+	// Zero regulated fields provides no meaningful complexity signal — every
+	// unit with 0 fields would match every other, causing massive false positives.
+	if (srcFields === 0) { return null; }
+
 	let best: IMigrationUnit | null = null;
 	let bestDiff = Infinity;
 
 	for (const tgt of targets) {
 		const tgtFields = tgt.legacyFingerprint?.regulatedFields.length ?? 0;
+		if (tgtFields === 0) { continue; }  // same guard on target side
 		const diff = Math.abs(tgtFields - srcFields);
 		if (diff < bestDiff && diff <= 2) {
 			bestDiff = diff;

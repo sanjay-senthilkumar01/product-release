@@ -89,16 +89,15 @@ export function buildRoadmap(input: IRoadmapBuildInput): IMigrationRoadmap {
 	const allPairings:        ICrossProjectPairing[]                    = discovery.crossProjectPairings;
 	const allTargetProjects:  IProjectScanResult[]                       = discovery.targets;
 
-	// Aggregate across all source projects
+	// Aggregate across all source AND target projects so totalUnits = 294 (not just 256)
 	const sourceProjects = discovery.sources;
-	for (const src of sourceProjects) {
-		allUnits.push(...src.units);
-		// Call graph edges from the project's call graph
-		for (const edge of src.callGraphEdges) {
+	const allProjects    = [...discovery.sources, ...discovery.targets];
+	for (const proj of allProjects) {
+		allUnits.push(...proj.units);
+		for (const edge of proj.callGraphEdges) {
 			allCallEdges.push({ fromId: edge.fromId, toId: edge.toId });
 		}
-		// Dependency edges (already on IMigrationUnit.dependencies, but add explicit too)
-		for (const edge of src.dependencyEdges) {
+		for (const edge of proj.dependencyEdges) {
 			if (edge.resolved) { allCallEdges.push({ fromId: edge.fromId, toId: edge.toId }); }
 		}
 	}
@@ -119,17 +118,17 @@ export function buildRoadmap(input: IRoadmapBuildInput): IMigrationRoadmap {
 	}
 
 	// ── 5. CPM critical path ──────────────────────────────────────────────────
-	const allEffortEstimates = sourceProjects.flatMap(s => s.effortEstimates);
+	const allEffortEstimates = allProjects.flatMap(s => s.effortEstimates);
 	const cpmResult = computeCriticalPath(topoResult, allUnits, allEffortEstimates);
 
 	// ── 6. Aggregate per-project scan data ───────────────────────────────────
-	const allAPIEndpoints   = sourceProjects.flatMap(s => s.apiEndpoints);
-	const allDataSchemas    = sourceProjects.flatMap(s => s.dataSchemas);
-	const allTechDebtItems  = sourceProjects.flatMap(s => s.techDebtItems);
-	const allRegulatedHits  = sourceProjects.flatMap(s => s.regulatedDataHits);
+	const allAPIEndpoints   = allProjects.flatMap(s => s.apiEndpoints);
+	const allDataSchemas    = allProjects.flatMap(s => s.dataSchemas);
+	const allTechDebtItems  = allProjects.flatMap(s => s.techDebtItems);
+	const allRegulatedHits  = allProjects.flatMap(s => s.regulatedDataHits);
 
-	// Merge GRC snapshots
-	const mergedGRC = mergeGRCSnapshots(sourceProjects);
+	// Merge GRC snapshots from all projects
+	const mergedGRC = mergeGRCSnapshots(allProjects);
 
 	// ── 7. Phase assignment ───────────────────────────────────────────────────
 	const phaseAssignments = assignPhases({

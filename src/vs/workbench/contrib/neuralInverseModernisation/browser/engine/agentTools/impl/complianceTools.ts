@@ -20,7 +20,7 @@ export function checkComplianceGate(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IComplianceGateResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -47,7 +47,7 @@ export function recordComplianceApproval(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ unitId: string; requirementId: string; approver: string }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -70,7 +70,7 @@ export function waiveComplianceRequirement(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ unitId: string; requirementId: string; waivedBy: string }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -95,7 +95,7 @@ export function getComplianceFailures(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IComplianceFailureSummary[]> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const failures = kb.getComplianceGateFailures();

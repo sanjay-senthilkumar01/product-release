@@ -59,7 +59,7 @@ const PAGE_SIZE = 50;
 
 const STATUS_ORDER: UnitStatus[] = [
 	'blocked', 'flagged', 'translating', 'review',
-	'ready', 'resolving', 'pending', 'complete', 'validated', 'validating', 'approved', 'committed', 'skipped',
+	'ready', 'resolving', 'pending', 'complete', 'validated', 'validating', 'approved', 'committing', 'committed', 'skipped',
 ];
 
 const RISK_ORDER: RiskLevel[] = ['critical', 'high', 'medium', 'low'];

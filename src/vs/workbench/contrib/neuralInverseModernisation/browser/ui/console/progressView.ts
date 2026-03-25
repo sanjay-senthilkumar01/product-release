@@ -40,6 +40,9 @@ const STATUS_DISPLAY: Array<{ status: UnitStatus; label: string }> = [
 	{ status: 'complete',    label: 'Complete'    },
 	{ status: 'validated',   label: 'Validated'   },
 	{ status: 'committed',   label: 'Committed'   },
+	{ status: 'committing',  label: 'Committing'  },
+	{ status: 'approved',    label: 'Approved'    },
+	{ status: 'validating',  label: 'Validating'  },
 	{ status: 'review',      label: 'In Review'   },
 	{ status: 'translating', label: 'Translating' },
 	{ status: 'ready',       label: 'Ready'       },
@@ -176,7 +179,7 @@ function _buildOverallProgress(
 		return item;
 	};
 
-	const doneCount = (stats.byStatus['complete'] ?? 0) + (stats.byStatus['validated'] ?? 0) + (stats.byStatus['committed'] ?? 0);
+	const doneCount = (stats.byStatus['complete'] ?? 0) + (stats.byStatus['validated'] ?? 0) + (stats.byStatus['committed'] ?? 0) + (stats.byStatus['committing'] ?? 0);
 	quickStats.appendChild(qs('Total Units',  formatNumber(stats.totalUnits)));
 	quickStats.appendChild($divider());
 	quickStats.appendChild(qs('Done',         formatNumber(doneCount), 'var(--vscode-terminal-ansiGreen,#4caf50)'));
@@ -282,7 +285,7 @@ function _buildVelocity(
 	body.appendChild(vStat('ETA', etaStr, etaDateStr));
 	body.appendChild($divider());
 
-	const remaining = stats.totalUnits - ((stats.byStatus['complete'] ?? 0) + (stats.byStatus['validated'] ?? 0) + (stats.byStatus['committed'] ?? 0));
+	const remaining = stats.totalUnits - ((stats.byStatus['complete'] ?? 0) + (stats.byStatus['validated'] ?? 0) + (stats.byStatus['committed'] ?? 0) + (stats.byStatus['committing'] ?? 0));
 	body.appendChild(vStat('Remaining', formatNumber(remaining), 'units'));
 
 	wrap.appendChild(body);

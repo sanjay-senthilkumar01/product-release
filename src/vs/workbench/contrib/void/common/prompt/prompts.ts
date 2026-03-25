@@ -664,11 +664,20 @@ export const availableTools = (chatMode: ChatMode | null, mcpTools: InternalTool
 
 	const effectiveMCPTools = (chatMode === 'power' || chatMode === 'checks' || chatMode === 'agent' || chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'reason' || chatMode === 'ask') ? mcpTools : undefined
 
+	// Deduplicate and cap at 128 (builtin tools take priority over MCP with same name)
 	const tools: InternalToolInfo[] | undefined = !(builtinToolNames || mcpTools) ? undefined
-		: [
-			...effectiveBuiltinTools ?? [],
-			...effectiveMCPTools ?? [],
-		]
+		: (() => {
+			const seen = new Set<string>();
+			const merged = [
+				...effectiveBuiltinTools ?? [],
+				...effectiveMCPTools ?? [],
+			].filter(t => {
+				if (seen.has(t.name)) return false;
+				seen.add(t.name);
+				return true;
+			});
+			return merged.slice(0, 128); // API hard limit
+		})()
 
 	return tools
 }

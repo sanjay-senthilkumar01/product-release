@@ -34,7 +34,6 @@ import { IMigrationPlannerService } from './engine/migrationPlannerService.js';
 import { IModernisationSessionService } from './modernisationSessionService.js';
 import { IModernisationAgentToolService } from './engine/agentTools/service.js';
 import { IAgentToolDefinition } from './engine/agentTools/agentToolTypes.js';
-import { AUTONOMY_SESSION_TOOL_DEFINITIONS } from './engine/agentTools/mcpToolDefinitions.js';
 import { buildDiscoveryTools } from '../../powerMode/browser/tools/discoveryTools.js';
 import { buildModernisationPowerTools } from '../../powerMode/browser/tools/modernisationTools.js';
 import { IPowerTool, IToolContext } from '../../powerMode/common/powerModeTypes.js';
@@ -88,7 +87,8 @@ function _adaptAgentTool(def: IAgentToolDefinition, agentTools: IModernisationAg
 
 // ─── Session-only tool names ──────────────────────────────────────────────────
 
-const SESSION_TOOL_NAMES = AUTONOMY_SESSION_TOOL_DEFINITIONS.map(d => d.name);
+// Track KB + autonomy tool names for session-based registration/unregistration
+let KB_AND_AUTONOMY_TOOL_NAMES: string[] = [];
 
 
 // ─── Contribution ─────────────────────────────────────────────────────────────
@@ -116,31 +116,35 @@ export class VoidDiscoveryToolsContrib extends Disposable implements IWorkbenchC
 			buildModernisationPowerTools(discoveryService, plannerService, sessionService).map(_adaptPowerTool),
 		);
 
-		// All 67 KB tools + 6 default autonomy tools
-		// (status, preview, escalations, resolve_escalation, run_single_unit, history)
-		_internalTools.registerMany(
-			_agentTools.getContextualToolDefinitions(false).map(d => _adaptAgentTool(d, _agentTools)),
-		);
+		// ── Session-reactive KB + autonomy tools ─────────────────────────────
 
-		// ── Session-reactive batch-control tools ─────────────────────────────
+		// Store tool names for unregistration
+		const kbAndAutonomyTools = _agentTools.getContextualToolDefinitions(true);
+		KB_AND_AUTONOMY_TOOL_NAMES = kbAndAutonomyTools.map(d => d.name);
 
+		// Only register KB + autonomy tools when session is active
 		if (sessionService.session.isActive) {
-			this._registerSessionTools();
+			this._registerSessionKBTools();
 		}
 
 		this._register(sessionService.onDidChangeSession(s => {
 			if (s.isActive) {
-				this._registerSessionTools();
+				this._registerSessionKBTools();
 			} else {
-				_internalTools.unregisterMany(SESSION_TOOL_NAMES);
+				// Unregister all KB + autonomy tools when session closes
+				_internalTools.unregisterMany(KB_AND_AUTONOMY_TOOL_NAMES);
 			}
 		}));
 	}
 
-	/** Register the 4 batch-control autonomy tools (start/pause/resume/stop). */
-	private _registerSessionTools(): void {
+	/**
+	 * Register all KB tools + autonomy tools (67 KB tools + 10 autonomy tools).
+	 * Only called when a modernisation session is active.
+	 */
+	private _registerSessionKBTools(): void {
+		const allTools = this._agentTools.getContextualToolDefinitions(true);
 		this._internalTools.registerMany(
-			AUTONOMY_SESSION_TOOL_DEFINITIONS.map(d => _adaptAgentTool(d, this._agentTools)),
+			allTools.map(d => _adaptAgentTool(d, this._agentTools)),
 		);
 	}
 }

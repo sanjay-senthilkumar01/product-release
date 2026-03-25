@@ -48,7 +48,7 @@ export function getProgress(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IProgressResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const progress = kb.getProgress();
@@ -102,7 +102,7 @@ export function getWorkspaceSummary(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IWorkspaceSummaryResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const stats    = kb.getStats();
@@ -195,7 +195,7 @@ export function runHealthCheck(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IKBHealthReport> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const report = kb.runHealthCheck();
@@ -215,7 +215,7 @@ export function checkSourceDrift(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<ISourceDriftAlert[]> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	// Return stored drift alerts (actual file-system checks need IFileService,
@@ -245,7 +245,7 @@ export function recordTranslation(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IRecordTranslationResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -306,7 +306,7 @@ export function flagBlocked(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IFlagBlockedResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -346,7 +346,7 @@ export function flagReady(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ unitId: string; newStatus: string }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -372,7 +372,7 @@ export function addAnnotation(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IUnitAnnotation> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -398,7 +398,7 @@ export function updateAnnotation(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ updated: boolean }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	kb.updateAnnotation(input.annotationId, input.content);
@@ -417,7 +417,7 @@ export function getPhases(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IPhaseDetailResult[]> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const phases = kb.getAllPhases().map((p): IPhaseDetailResult => ({
@@ -445,7 +445,7 @@ export function getUnitsByPhase(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IUnitSummary[]> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const phase = kb.getPhase(input.phaseId);
@@ -472,7 +472,7 @@ export function exportDecisions(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IExportDecisionsResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const json = kb.exportDecisions();
@@ -499,7 +499,7 @@ export function importDecisions(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ imported: boolean }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 	if (!input.decisionsJson?.trim()) {
 		return { success: false, error: 'decisionsJson is required.' };
@@ -527,7 +527,7 @@ export function exportKb(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IExportKbResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const json       = kb.exportKB();
@@ -554,7 +554,7 @@ export function checkExcluded(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<ICheckExcludedResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const isExcluded = kb.isExcluded(input.filePath, input.unitName);

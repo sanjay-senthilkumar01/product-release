@@ -113,20 +113,23 @@ const prepareMessages_openai_tools = (messages: SimpleLLMMessage[]): AnthropicOr
 			continue
 		}
 
-		// edit previous assistant message to have called the tool
-		const prevMsg = 0 <= i - 1 && i - 1 <= newMessages.length ? newMessages[i - 1] : undefined
-		if (prevMsg?.role === 'assistant') {
-			prevMsg.tool_calls = [{
+		// Find the last assistant message in the already-built output and append the tool_call.
+		// Using [...].reverse().find() because newMessages is built sequentially and multiple
+		// tool messages in one turn must all attach to the same assistant entry.
+		const lastAssistantMsg = [...newMessages].reverse().find(m => m.role === 'assistant') as OpenAILLMChatMessage | undefined;
+		if (lastAssistantMsg?.role === 'assistant') {
+			if (!lastAssistantMsg.tool_calls) lastAssistantMsg.tool_calls = [];
+			lastAssistantMsg.tool_calls.push({
 				type: 'function',
 				id: currMsg.id,
 				function: {
 					name: currMsg.name,
 					arguments: JSON.stringify(currMsg.rawParams)
 				}
-			}]
+			});
 		}
 
-		// add the tool
+		// add the tool result
 		newMessages.push({
 			role: 'tool',
 			tool_call_id: currMsg.id,
@@ -231,13 +234,19 @@ const prepareMessages_anthropic_tools = (messages: SimpleLLMMessage[], supportsA
 		}
 
 		if (currMsg.role === 'tool') {
-			// add anthropic tools
-			const prevMsg = 0 <= i - 1 && i - 1 <= newMessages.length ? newMessages[i - 1] : undefined
+			// Scan backwards through the ORIGINAL messages[] to find the last assistant message.
+			// We cannot use newMessages[i-1] because a prior tool in the same batch already
+			// rewrote that slot to a user/tool_result message.
+			let lastAssistantIdx = -1;
+			for (let j = i - 1; j >= 0; j--) {
+				if (messages[j].role === 'assistant') { lastAssistantIdx = j; break; }
+			}
 
 			// make it so the assistant called the tool
-			if (prevMsg?.role === 'assistant') {
-				if (typeof prevMsg.content === 'string') prevMsg.content = [{ type: 'text', text: prevMsg.content }]
-				prevMsg.content.push({ type: 'tool_use', id: currMsg.id, name: currMsg.name, input: currMsg.rawParams })
+			const prevAssistantMsg = lastAssistantIdx >= 0 ? newMessages[lastAssistantIdx] as AnthropicLLMChatMessage : undefined;
+			if (prevAssistantMsg?.role === 'assistant') {
+				if (typeof prevAssistantMsg.content === 'string') prevAssistantMsg.content = prevAssistantMsg.content ? [{ type: 'text' as const, text: prevAssistantMsg.content }] : [];
+				(prevAssistantMsg.content as any[]).push({ type: 'tool_use', id: currMsg.id, name: currMsg.name, input: currMsg.rawParams });
 			}
 
 			// turn each tool into a user message with tool results at the end
@@ -250,8 +259,26 @@ const prepareMessages_anthropic_tools = (messages: SimpleLLMMessage[], supportsA
 
 	}
 
-	// we just removed the tools
-	return newMessages as AnthropicLLMChatMessage[]
+	// Merge consecutive tool_result user messages into one user message.
+	// Anthropic/Bedrock require all tool_results from the same turn to be in a single user message.
+	const merged: AnthropicOrOpenAILLMMessage[] = [];
+	for (let i = 0; i < newMessages.length; i++) {
+		const msg = newMessages[i] as AnthropicLLMChatMessage;
+		if (msg?.role === 'user' && Array.isArray(msg.content) && (msg.content as any[])[0]?.type === 'tool_result') {
+			const toolResults: any[] = [...(msg.content as any[])];
+			while (i + 1 < newMessages.length) {
+				const next = newMessages[i + 1] as AnthropicLLMChatMessage;
+				if (next?.role === 'user' && Array.isArray(next.content) && (next.content as any[])[0]?.type === 'tool_result') {
+					toolResults.push(...(next.content as any[]));
+					i++;
+				} else break;
+			}
+			merged.push({ role: 'user', content: toolResults } as AnthropicLLMChatMessage);
+		} else {
+			merged.push(msg);
+		}
+	}
+	return merged as AnthropicLLMChatMessage[]
 }
 
 
@@ -715,28 +742,70 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		if (session.activeSourceFileUri) { lines.push(`Active source file: ${session.activeSourceFileUri}`) }
 		if (session.activeTargetFileUri) { lines.push(`Active target file: ${session.activeTargetFileUri}`) }
 
-		// KB progress summary — lets the agent prioritise without calling list_units first
-		if (progress) {
+		// KB progress summary + unit-level spotlight
+		if (kb && kb.isActive && progress) {
 			const p = progress
 			const bs = p.byStatus
 			const statusCounts: string[] = []
 			if ((bs['pending']   ?? 0) > 0) { statusCounts.push(`${bs['pending']} pending`) }
 			if ((bs['ready']     ?? 0) > 0) { statusCounts.push(`${bs['ready']} ready`) }
+			if ((bs['translating'] ?? 0) > 0) { statusCounts.push(`${bs['translating']} translating`) }
 			if ((bs['review']    ?? 0) > 0) { statusCounts.push(`${bs['review']} in review`) }
 			if ((bs['approved']  ?? 0) > 0) { statusCounts.push(`${bs['approved']} approved`) }
-			if ((bs['validated'] ?? 0) > 0) { statusCounts.push(`${bs['validated']} validated`) }
+			if ((bs['committing'] ?? 0) > 0) { statusCounts.push(`${bs['committing']} committing`) }
 			if ((bs['committed'] ?? 0) > 0) { statusCounts.push(`${bs['committed']} committed`) }
+			if ((bs['validated'] ?? 0) > 0) { statusCounts.push(`${bs['validated']} validated`) }
 			if (p.blockedUnits.length  > 0) { statusCounts.push(`${p.blockedUnits.length} blocked`) }
 			if ((bs['skipped']   ?? 0) > 0) { statusCounts.push(`${bs['skipped']} skipped`) }
 			if (statusCounts.length > 0) {
-				lines.push(`KB: ${p.totalUnits} total units — ${statusCounts.join(', ')}`)
+				const doneCount = (bs['complete'] ?? 0) + (bs['committed'] ?? 0) + (bs['validated'] ?? 0) + (bs['committing'] ?? 0)
+				const pct = p.totalUnits > 0 ? Math.round(doneCount / p.totalUnits * 100) : 0
+				lines.push(`KB: ${p.totalUnits} total — ${statusCounts.join(', ')}  (${pct}% done)`)
 			}
 			if (p.pendingDecisions.length > 0) {
-				lines.push(`Pending decisions requiring resolution: ${p.pendingDecisions.length}`)
+				lines.push(`Pending decisions: ${p.pendingDecisions.length} — resolve with answer_decision tool`)
+			}
+
+			// Spotlight: blocked units (top 5) — most urgent for the agent to address
+			const blocked = kb.getBlockedUnits().slice(0, 5)
+			if (blocked.length > 0) {
+				lines.push('Blocked units (need human decision):')
+				for (const u of blocked) {
+					const decision = kb.getPendingDecisionForUnit(u.id)
+					const reason = decision ? `${decision.type}: ${decision.question.slice(0, 80)}` : (u.blockedReason ?? 'unknown reason')
+					lines.push(`  • ${u.name} [${u.sourceLang}] — ${reason}`)
+				}
+			}
+
+			// Spotlight: next ready unit — what the agent should translate next
+			const nextUnit = kb.getNextUnit()
+			if (nextUnit) {
+				lines.push(`Next unit ready to translate: ${nextUnit.name} (${nextUnit.sourceLang}, risk: ${nextUnit.riskLevel}) — use get_unit_context("${nextUnit.id}") then record_translation`)
+			}
+
+			// Spotlight: units in review — awaiting human approval
+			const inReview = kb.getUnitsByStatus('review').slice(0, 5)
+			if (inReview.length > 0) {
+				lines.push(`In review (${inReview.length} units): ${inReview.map(u => u.name).join(', ')}${inReview.length > 5 ? ' …' : ''}`)
 			}
 		}
 
-		lines.push('Use modernisation_session, list_units, get_unit, and related KB tools for detailed access. Use standard file-reading tools to inspect source/target code directly from the folder paths above.')
+		// Tool reference — so the agent knows exactly which tools are available and when to use them
+		lines.push('')
+		lines.push('## Modernisation Tools Available')
+		lines.push('These tools give you full read/write access to the migration Knowledge Base (KB):')
+		lines.push('  Unit read:    list_units, get_unit, get_next_unit, get_unit_context, search_units, get_unit_history, get_unit_dependencies, get_impact_chain, get_dependency_tree')
+		lines.push('  Translation:  record_translation (saves translated code + transitions unit to review), flag_ready (mark pending→ready), flag_blocked (raise decision), revert_unit')
+		lines.push('  Decisions:    get_pending_decisions, answer_decision, get_decision_log, record_type_mapping, record_naming_decision, record_rule_interpretation, record_pattern_override')
+		lines.push('  Progress:     get_progress, get_workspace_summary, get_units_by_phase, check_compliance_gate')
+		lines.push('  Glossary:     get_glossary, add_glossary_term, get_business_rules')
+		lines.push('  Autonomy:     autonomy_start_batch, autonomy_run_single_unit, autonomy_preview_schedule, autonomy_get_escalations, autonomy_resolve_escalation')
+		lines.push('  Management:   lock_unit, unlock_unit, create_tag, add_tag_to_unit, create_work_package, create_checkpoint, restore_checkpoint, split_unit, merge_units')
+		lines.push('')
+		lines.push('## Unit Lifecycle')
+		lines.push('pending → (flag_ready) → ready → (translation engine) → translating → review → (human approves) → approved → (commit) → committing → committed → (validate) → validating → validated → complete')
+		lines.push('Any unit can be blocked (needs a decision) or skipped (excluded from migration).')
+		lines.push('Use get_unit_context(unitId) to get the full source + decisions context before translating. Use record_translation to save the result.')
 
 		return lines.join('\n')
 	}
@@ -836,13 +905,23 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 		const mcpTools = this.mcpService.getMCPTools()
 
-		// Augment with internal tools (discovery, modernisation) for agentic modes
-		const internalToolInfos = (chatMode === 'agent' || chatMode === 'copilot' || chatMode === 'validate')
+		// Augment with internal tools (discovery, modernisation) for agentic modes.
+		// Include 'power' so that Power Mode agents can call KB tools directly instead
+		// of falling back to shell commands when a modernisation session is active.
+		const internalToolInfos = (chatMode === 'agent' || chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'power')
 			? this.internalToolService.getToolInfos()
 			: [];
-		const allMcpTools = mcpTools || internalToolInfos.length > 0
-			? [...(mcpTools ?? []), ...internalToolInfos]
-			: undefined;
+		// Deduplicate and limit to API maximum
+		const allMcpTools = (() => {
+			if (!mcpTools && internalToolInfos.length === 0) return undefined;
+			const seen = new Set<string>();
+			const merged = [...(mcpTools ?? []), ...internalToolInfos].filter(t => {
+				if (seen.has(t.name)) return false;
+				seen.add(t.name);
+				return true;
+			});
+			return merged.slice(0, 128); // API hard limit
+		})();
 
 		const persistentTerminalIDs = this.terminalToolService.listPersistentTerminalIds()
 		const grcPosture = (chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'agent') ? this._buildGRCPosture() : undefined;

@@ -25,7 +25,7 @@ export function getGlossary(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IBusinessTerm[]> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const glossary = kb.getGlossary(input?.domain);
@@ -56,7 +56,7 @@ export function addGlossaryTerm(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IBusinessTerm> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	// Append examples/relatedTerms as extra context in meaning if provided
@@ -89,7 +89,7 @@ export function getBusinessRules(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IBusinessRule[]> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	let rules: IBusinessRule[] = [];
@@ -127,7 +127,7 @@ export function getDomains(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IBusinessDomain[]> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const domains = kb.getAllDomains();

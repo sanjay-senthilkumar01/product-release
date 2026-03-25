@@ -528,7 +528,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				resolveInterruptor(() => { })
 				const resultStr = await this._internalToolService.execute(toolName, toolParams as Record<string, any>)
 				toolResult = resultStr as any
-				toolResultStr = resultStr
+				toolResultStr = resultStr || '(Tool returned no data — the knowledge base may not be initialized yet)'
 			}
 			else {
 				const mcpTools = this._mcpService.getMCPTools()
@@ -562,7 +562,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			}
 			// For internal tools the result is already a string (set during execution)
 			else if (this._internalToolService.has(toolName)) {
-				toolResultStr = toolResult as any as string
+				toolResultStr = (toolResult as any as string) || '(Tool returned no data — the knowledge base may not be initialized yet)'
 			}
 			// For MCP tools, handle the result based on its type
 			else {
@@ -575,7 +575,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		}
 
 		// 5. add to history and keep going
-		this._updateLatestTool(threadId, { role: 'tool', type: 'success', params: toolParams, result: toolResult, name: toolName, content: toolResultStr, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName })
+		// If tool result is empty, null, undefined, or whitespace-only, inject fallback message so LLM can continue
+		const finalToolResultStr = (toolResultStr !== null && toolResultStr !== undefined && toolResultStr.trim())
+			? toolResultStr
+			: '(Tool completed successfully but returned no output)'
+		this._updateLatestTool(threadId, { role: 'tool', type: 'success', params: toolParams, result: toolResult, name: toolName, content: finalToolResultStr, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName })
 		return {}
 	};
 
@@ -655,6 +659,39 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				let resMessageIsDonePromise: (res: ResTypes) => void // resolves when user approves this tool use (or if tool doesn't require approval)
 				const messageIsDonePromise = new Promise<ResTypes>((res, rej) => { resMessageIsDonePromise = res })
 
+					// Build the complete tool list for this request:
+					// MCP service tools + internal KB tools, deduplicated by name and capped at 128.
+					// sendLLMMessageService now uses caller-provided tools as-is (no auto-merge).
+				const internalMcpTools = (() => {
+					const mcpBase = this._mcpService.getMCPTools() ?? [];
+					const internal = (chatMode === 'agent' || chatMode === 'copilot' || chatMode === 'validate' || chatMode === 'power')
+						? this._internalToolService.getToolInfos()
+						: [];
+
+					// Build a set of internal tool "base names" by stripping common verb prefixes.
+					// e.g. get_progress → progress, list_units → units, run_health_check → health_check
+					// This lets us detect and remove MCP tools that are just short-named shadows of
+					// internal KB tools (e.g. an MCP server exposing "progress" instead of "get_progress").
+					// External MCP tools that run out-of-process cannot access the renderer KB.
+					const VERB_PREFIX = /^(get|list|run|check|create|add|record|remove|delete|resolve|detect|search|export|import|lock|unlock|force_unlock|flag|update|answer|split|merge|revert|waive|restore)_/;
+					const internalExactNames = new Set(internal.map(t => t.name));
+					const internalBaseNames  = new Set(internal.map(t => t.name.replace(VERB_PREFIX, '')));
+
+					// Strip MCP tools whose name is an internal tool's exact name or base name.
+					const filteredMcp = mcpBase.filter(t =>
+						!internalExactNames.has(t.name) && !internalBaseNames.has(t.name)
+					);
+
+					// Internal tools first (win on any remaining name conflict), then filtered MCP.
+					const seen = new Set<string>();
+					const merged = [...internal, ...filteredMcp].filter(t => {
+						if (seen.has(t.name)) return false;
+						seen.add(t.name);
+						return true;
+					});
+					return merged.slice(0, 128); // API hard limit
+				})();
+
 				const llmCancelToken = this._llmMessageService.sendLLMMessage({
 					messagesType: 'chatMessages',
 					chatMode,
@@ -662,6 +699,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					modelSelection,
 					modelSelectionOptions,
 					overridesOfModel,
+					mcpTools: internalMcpTools,
 					logging: { loggingName: `Chat - ${chatMode}`, loggingExtras: { threadId, nMessagesSent, chatMode } },
 					separateSystemMessage: separateSystemMessage,
 					onText: ({ fullText, fullReasoning, toolCalls }) => {
@@ -771,8 +809,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 						});
 						continue;
 					}
-						const mcpTool = mcpTools?.find(t => t.name === toolCall.name)
-						const { awaitingUserApproval, interrupted } = await this._runToolCall(threadId, toolCall.name, toolCall.id, mcpTool?.mcpServerName, { preapproved: false, unvalidatedToolParams: toolCall.rawParams })
+						// Internal tools take priority over MCP tools with the same name.
+					// Don't pass mcpServerName for internal tools so they don't display as "MCP".
+					const isInternal = this._internalToolService.has(toolCall.name);
+					const mcpTool = isInternal ? undefined : mcpTools?.find(t => t.name === toolCall.name);
+					const { awaitingUserApproval, interrupted } = await this._runToolCall(threadId, toolCall.name, toolCall.id, mcpTool?.mcpServerName, { preapproved: false, unvalidatedToolParams: toolCall.rawParams })
 
 						if (interrupted) {
 							anyInterrupted = true;

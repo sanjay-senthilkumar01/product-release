@@ -47,7 +47,7 @@ import {
 } from '../modernisationSessionService.js';
 import { IDiscoveryService } from '../engine/discovery/discoveryService.js';
 import { IDiscoveryResult } from '../engine/discovery/discoveryTypes.js';
-import { IKnowledgeUnit } from '../../common/knowledgeBaseTypes.js';
+import { IKnowledgeUnit, IKnowledgeFile, ITypeMappingDecision, INamingDecision } from '../../common/knowledgeBaseTypes.js';
 import { IMigrationPlannerService } from '../engine/migrationPlannerService.js';
 import { IKnowledgeBaseService } from '../knowledgeBase/service.js';
 import { IModernisationAgentToolService } from '../engine/agentTools/service.js';
@@ -236,41 +236,51 @@ export class ModernisationPart extends Part {
 		if (!this.kbService.isActive) { return; }
 		const now = Date.now();
 
-		// Build lookup: targetUnitId → absolute file path (from target scans)
-		const targetUnitFileMap = new Map<string, string>();
+		// Build lookup: targetUnitId → { filePath, language } for all target units
+		const targetUnitMap = new Map<string, { filePath: string; lang: string }>();
 		for (const targetScan of discovery.targets) {
 			for (const unit of targetScan.units) {
-				targetUnitFileMap.set(unit.id, unit.legacyFilePath);
+				targetUnitMap.set(unit.id, { filePath: unit.legacyFilePath, lang: targetScan.dominantLanguage });
 			}
 		}
 
-		// Build lookup: sourceUnitId → target file path
-		// A source unit that has a cross-project pairing means it was already migrated.
-		const sourceToTargetFile = new Map<string, string>();
+		// Build lookup: sourceUnitId → best pairing (highest confidence wins)
+		// Any valid pairing (confidence ≥ 0.20, the global filter threshold) means
+		// the source unit already has a mapped counterpart in the target — mark committed.
+		const sourceToTarget = new Map<string, { targetFile: string; confidence: number }>();
 		for (const pairing of discovery.crossProjectPairings) {
-			const targetFile = targetUnitFileMap.get(pairing.targetUnitId);
-			if (targetFile) {
-				sourceToTargetFile.set(pairing.sourceUnitId, targetFile);
+			const tgt = targetUnitMap.get(pairing.targetUnitId);
+			if (tgt) {
+				const existing = sourceToTarget.get(pairing.sourceUnitId);
+				if (!existing || pairing.confidenceScore > existing.confidence) {
+					sourceToTarget.set(pairing.sourceUnitId, { targetFile: tgt.filePath, confidence: pairing.confidenceScore });
+				}
 			}
 		}
 
 		const toAdd: IKnowledgeUnit[] = [];
-		// Units already in the KB that should be promoted pending → committed because
-		// a pairing was found (e.g. target files added after the initial seeding run,
-		// or pairer bugs fixed in a subsequent discovery run).
 		const toUpdate: Array<{ id: string; patch: Partial<IKnowledgeUnit> }> = [];
 
+		// ── Source units ──────────────────────────────────────────────────
 		for (const scan of discovery.sources) {
 			for (const unit of scan.units) {
-				const targetFile = sourceToTargetFile.get(unit.id);
+				const pairing    = sourceToTarget.get(unit.id);
+				const targetFile = pairing?.targetFile;
+				// Any cross-project pairing means a target implementation exists → committed
+				// No pairing means nothing has been written yet → pending
+				const newStatus: IKnowledgeUnit['status'] = targetFile ? 'committed' : 'pending';
+
 				if (this.kbService.hasUnit(unit.id)) {
-					// Unit already in KB — promote to 'committed' if we now have a pairing
-					// and it is still in the initial 'pending' state (no work started).
-					if (targetFile) {
-						const existing = this.kbService.getUnit(unit.id);
-						if (existing?.status === 'pending') {
-							toUpdate.push({ id: unit.id, patch: { status: 'committed', targetFile, updatedAt: now } });
-						}
+					const existing = this.kbService.getUnit(unit.id)!;
+					// Only auto-adjust status if no real translation work has been done yet
+					// (i.e. unit hasn't been manually moved past committed, has no targetText
+					// from an actual translation run, and has no approvals).
+					const isUntouched = !existing.targetText && (!existing.approvals || existing.approvals.length === 0);
+					const statusChanged = existing.status !== newStatus;
+					if (isUntouched && statusChanged) {
+						toUpdate.push({ id: unit.id, patch: { status: newStatus, targetFile: targetFile ?? existing.targetFile, updatedAt: now } });
+					} else if (targetFile && !existing.targetFile) {
+						toUpdate.push({ id: unit.id, patch: { targetFile, updatedAt: now } });
 					}
 					continue;
 				}
@@ -279,7 +289,7 @@ export class ModernisationPart extends Part {
 					sourceFile:     unit.legacyFilePath,
 					sourceRange:    unit.legacyRange,
 					sourceLang:     scan.dominantLanguage,
-					sourceText:     '',          // populated by resolution engine later
+					sourceText:     '',
 					resolvedSource: '',
 					name:           unit.unitName,
 					unitType:       unit.unitType as IKnowledgeUnit['unitType'],
@@ -287,8 +297,7 @@ export class ModernisationPart extends Part {
 					dependsOn:      unit.dependencies,
 					usedBy:         unit.dependents,
 					businessRules:  [],
-					// If a paired target file exists on disk the service was already migrated.
-					status:         targetFile ? 'committed' : 'pending',
+					status:         newStatus,
 					targetFile,
 					approvals:      [],
 					createdAt:      now,
@@ -297,11 +306,147 @@ export class ModernisationPart extends Part {
 			}
 		}
 
-		if (toAdd.length === 0 && toUpdate.length === 0) { return; }
+		// ── Target units ──────────────────────────────────────────────────
+		// Add ALL target units to the KB so total = source + target (294, not 256).
+		// Target units that are paired with a source unit are already committed.
+		// Unpaired target units (new architecture not yet linked to source) are also committed
+		// since they physically exist in the target project.
+		for (const scan of discovery.targets) {
+			for (const unit of scan.units) {
+				if (this.kbService.hasUnit(unit.id)) { continue; }
+				toAdd.push({
+					id:             unit.id,
+					sourceFile:     unit.legacyFilePath,
+					sourceRange:    unit.legacyRange,
+					sourceLang:     scan.dominantLanguage,
+					sourceText:     '',
+					resolvedSource: '',
+					name:           unit.unitName,
+					unitType:       unit.unitType as IKnowledgeUnit['unitType'],
+					riskLevel:      unit.riskLevel,
+					dependsOn:      unit.dependencies,
+					usedBy:         unit.dependents,
+					businessRules:  [],
+					// Target units already exist in the target project — always committed
+					status:         'committed',
+					targetFile:     unit.legacyFilePath,
+					approvals:      [],
+					createdAt:      now,
+					updatedAt:      now,
+				});
+			}
+		}
+
+		// ── File registry ─────────────────────────────────────────────────
+		const fileMap = new Map<string, IKnowledgeFile>();
+		for (const scan of [...discovery.sources, ...discovery.targets]) {
+			for (const unit of scan.units) {
+				if (!fileMap.has(unit.legacyFilePath)) {
+					fileMap.set(unit.legacyFilePath, {
+						path:         unit.legacyFilePath,
+						language:     scan.dominantLanguage,
+						unitIds:      [],
+						lineCount:    unit.legacyRange ? (unit.legacyRange.endLine - unit.legacyRange.startLine + 1) : 0,
+						sizeBytes:    0,
+						decomposed:   true,
+						discoveredAt: now,
+					});
+				}
+				fileMap.get(unit.legacyFilePath)!.unitIds.push(unit.id);
+			}
+		}
+
+		if (toAdd.length === 0 && toUpdate.length === 0 && fileMap.size === 0) { return; }
 		this.kbService.batchBegin();
+		if (fileMap.size > 0)    { this.kbService.addFiles([...fileMap.values()]); }
 		if (toAdd.length > 0)    { this.kbService.addUnits(toAdd); }
 		if (toUpdate.length > 0) { this.kbService.updateUnits(toUpdate); }
 		this.kbService.batchEnd();
+
+		// Pre-seed decision log with standard type mappings for the detected language pair.
+		// Only do this once — if there are already decisions recorded, skip.
+		const existingDecisions = this.kbService.getDecisions();
+		const hasDecisions = existingDecisions.typeMapping.length > 0 || existingDecisions.naming.length > 0;
+		if (!hasDecisions) {
+			const srcLang = discovery.sources[0]?.dominantLanguage ?? '';
+			const tgtLang = discovery.targets[0]?.dominantLanguage ?? '';
+			this._seedDecisionLog(srcLang, tgtLang, now);
+		}
+	}
+
+	private _seedDecisionLog(srcLang: string, tgtLang: string, now: number): void {
+		const pair = `${srcLang}→${tgtLang}`;
+		type TypeMapping = [string, string, string]; // [sourceType, targetType, rationale]
+		const typeMappings: TypeMapping[] = [];
+		const namingDecisions: Array<[string, string, string]> = []; // [sourceName, targetName, domain]
+
+		if (pair === 'javascript→java' || pair === 'typescript→java') {
+			typeMappings.push(
+				['string',              'String',                      'JS string is immutable, maps to Java String'],
+				['number',              'int / long / double',          'JS number is float64; use int/long for integers, double for decimals'],
+				['boolean',             'boolean',                     'Direct equivalent'],
+				['any',                 'Object',                      'Untyped JS value maps to Java Object'],
+				['Array<T>',            'List<T>',                     'JS Array maps to java.util.List'],
+				['object',              'Map<String, Object>',         'Generic JS object maps to java.util.Map'],
+				['null / undefined',    'null / Optional<T>',          'JS null/undefined; prefer Optional<T> for return types'],
+				['Promise<T>',          'CompletableFuture<T>',        'JS async/await maps to Java CompletableFuture'],
+				['Error',               'Exception / RuntimeException','JS Error hierarchy maps to Java Exception hierarchy'],
+				['Date',                'LocalDateTime / Instant',     'JS Date maps to java.time.LocalDateTime or Instant'],
+				['Buffer',              'byte[]',                      'Node.js Buffer maps to Java byte array'],
+				['Map<K,V>',            'HashMap<K,V>',                'JS Map maps to java.util.HashMap'],
+				['Set<T>',              'HashSet<T>',                  'JS Set maps to java.util.HashSet'],
+				['RegExp',              'Pattern',                     'JS RegExp maps to java.util.regex.Pattern'],
+				['number (currency)',   'BigDecimal',                  'Monetary values must use BigDecimal to avoid float precision loss'],
+			);
+			namingDecisions.push(
+				['camelCase functions',  'camelCase methods',          'naming'],
+				['PascalCase classes',   'PascalCase classes',         'naming'],
+				['UPPER_SNAKE constants','UPPER_SNAKE static final',   'naming'],
+				['get*/set* accessors',  'getX()/setX() JavaBeans',    'naming'],
+				['handler functions',    'doHandle() / process()',     'naming'],
+			);
+		} else if (pair === 'javascript→typescript' || pair === 'typescript→typescript') {
+			typeMappings.push(
+				['any',    'unknown',  'Prefer unknown over any for type safety'],
+				['object', 'Record<string, unknown>', 'Typed object literal'],
+			);
+		} else if (pair === 'cobol→java' || pair === 'cobol→typescript') {
+			typeMappings.push(
+				['PIC 9(n)',        'int / long',      'COBOL fixed integer maps to Java int/long'],
+				['PIC 9(n)V9(m)',   'BigDecimal',      'COBOL decimal maps to BigDecimal for precision'],
+				['PIC X(n)',        'String',          'COBOL alphanumeric maps to String'],
+				['PIC A(n)',        'String',          'COBOL alphabetic maps to String'],
+				['COMP-3',          'BigDecimal',      'Packed decimal maps to BigDecimal'],
+				['COMP / BINARY',   'int / long',      'Binary integer maps to Java int/long'],
+				['88 level',        'boolean / enum',  'Condition names map to boolean flags or enum values'],
+			);
+		}
+
+		for (const [sourceType, targetType, rationale] of typeMappings) {
+			const decision: ITypeMappingDecision = {
+				id:         `seed-${srcLang}-${targetType.replace(/[^a-zA-Z0-9]/g, '_')}-${now}`,
+				sourceType,
+				targetType,
+				rationale,
+				appliesTo:  [],
+				decidedBy:  'system',
+				decidedAt:  now,
+				confidence: 0.9,
+			};
+			this.kbService.recordTypeMappingDecision(decision);
+		}
+
+		for (const [sourceName, targetName, domain] of namingDecisions) {
+			const decision: INamingDecision = {
+				id:         `seed-naming-${sourceName.replace(/[^a-zA-Z0-9]/g, '_')}-${now}`,
+				sourceName,
+				targetName,
+				domain,
+				decidedBy:  'system',
+				decidedAt:  now,
+			};
+			this.kbService.recordNamingDecision(decision);
+		}
 	}
 
 	protected override createContentArea(parent: HTMLElement): HTMLElement {
@@ -1392,6 +1537,8 @@ export class ModernisationPart extends Part {
 				this._persistDiscovery();
 				const totalUnits = discovery.sources.reduce((n, s) => n + s.units.length, 0);
 				log(`Discovery complete: ${discovery.sources.length} source project(s), ${totalUnits} units found.`);
+			// Re-seed KB so any stale committed units get reset to pending
+			this._seedKBFromDiscovery(discovery);
 			}
 
 			// Planner progress

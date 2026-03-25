@@ -306,6 +306,10 @@ export class KnowledgeBaseImpl extends Disposable implements IKnowledgeBaseServi
 		_rebuildIndexes(kb, this._idx);
 		this._restoreExtStores(kb);
 		loadCheckpointIndex(this._checkpointStore, this._storage);
+		// Always recompute progress from actual units — persisted byStatus/byRisk counts
+		// may be stale if the IDE was closed mid-batch or during a seed operation.
+		updateProgress(kb);
+		updateAllPhaseProgress(kb.progress, this._idx.byPhase, kb.units);
 		if (isNew) {
 			this._scheduleSave();
 			upsertSessionInIndex(kb, this._storage);
@@ -1660,14 +1664,20 @@ export class KnowledgeBaseImpl extends Disposable implements IKnowledgeBaseServi
 		this._kb.ext.unitTags    = annExt.unitTags as Record<string, string[]>;
 	}
 
-	/** Run fn in batch mode — progress and dirty updates are deferred until fn returns */
+	/** Run fn in batch mode — progress and dirty updates are deferred until fn returns.
+	 *  When called while an outer batchBegin()/batchEnd() is active, defers flushing
+	 *  to the outer batchEnd() so only one updateProgress + event fires for the whole batch. */
 	private _batch(fn: () => void): void {
+		const wasAlreadyBatching = this._batchMode;
 		this._batchMode = true;
 		try { fn(); }
 		finally {
-			this._batchMode = false;
-			updateProgress(this.kb);
-			updateAllPhaseProgress(this.kb.progress, this._idx.byPhase, this.kb.units);
+			if (!wasAlreadyBatching) {
+				// Only flush if this call opened the batch — outer batchEnd() handles it otherwise
+				this._batchMode = false;
+				updateProgress(this.kb);
+				updateAllPhaseProgress(this.kb.progress, this._idx.byPhase, this.kb.units);
+			}
 		}
 	}
 }

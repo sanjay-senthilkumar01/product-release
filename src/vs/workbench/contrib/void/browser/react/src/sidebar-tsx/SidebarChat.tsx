@@ -37,6 +37,7 @@ import { persistentTerminalNameOfId } from '../../../terminalToolService.js';
 import { removeMCPToolNamePrefix } from '../../../../common/mcpServiceTypes.js';
 import { AgentNetworkViz, AgentCompletionCard } from './AgentNetworkViz.js';
 import { ImageUpload, ImageUploadButton, ImagePreviewsList, useImageDropZone, ChatImageDisplay } from './ImageUpload.js';
+import { getToolCategory, getCategoryLabel, formatToolSummary } from './ModernisationToolFormatters.js';
 
 
 
@@ -2094,6 +2095,101 @@ const CommandTool = ({ toolMessage, type, threadId }: { threadId: string } & ({
 }
 
 type WrapperProps<T extends ToolName> = { toolMessage: Exclude<ToolMessage<T>, { type: 'invalid_params' }>, messageIdx: number, threadId: string }
+
+// ── Modernisation Tool Wrapper ────────────────────────────────────────────────
+const ModernisationToolWrapper = ({ toolMessage }: WrapperProps<string>) => {
+	const accessor = useAccessor()
+
+	const category = getToolCategory(toolMessage.name)
+	const categoryLabel = getCategoryLabel(category)
+
+	if (toolMessage.type === 'running_now') {
+		// Show a spinner for modernisation tools
+		const title = categoryLabel
+		const desc1 = toolMessage.name.replace(/_/g, ' ')
+		return <ToolHeaderWrapper
+			title={title}
+			desc1={desc1}
+			isError={false}
+			icon={null}
+			isRejected={false}
+			info="Running..."
+		/>
+	}
+
+	const isError = toolMessage.type === 'tool_error'
+	const isRejected = toolMessage.type === 'rejected'
+	const { params } = toolMessage
+
+	// Format the summary
+	let summary = null
+	if (toolMessage.type === 'success' && toolMessage.result) {
+		const resultStr = typeof toolMessage.result === 'string' ? toolMessage.result : JSON.stringify(toolMessage.result)
+		summary = formatToolSummary(toolMessage.name, params, resultStr)
+	}
+
+	const title = categoryLabel
+	const desc1 = summary?.title || toolMessage.name.replace(/_/g, ' ')
+
+	const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isRejected }
+
+	// Add copy button for params
+	const paramsStr = JSON.stringify(params, null, 2)
+	componentParams.desc2 = <CopyButton codeStr={paramsStr} toolTipName={`Copy inputs`} />
+
+	if (summary?.description) {
+		componentParams.info = summary.description
+	}
+
+	if (toolMessage.type === 'success' && summary?.details) {
+		// Show formatted details in main content (expanded by default)
+		componentParams.children = <ToolChildrenWrapper>
+			<div className="px-3 py-3">
+				{summary.details}
+			</div>
+		</ToolChildrenWrapper>
+
+		// Collapsible raw JSON
+		const resultStr = typeof toolMessage.result === 'string' ? toolMessage.result : JSON.stringify(toolMessage.result, null, 2)
+		componentParams.bottomChildren = <BottomChildren title='Raw Output'>
+			<SmallProseWrapper>
+				<ChatMarkdownRender
+					string={`\`\`\`json\n${resultStr}\n\`\`\``}
+					chatMessageLocation={undefined}
+					isApplyEnabled={false}
+					isLinkDetectionEnabled={true}
+				/>
+			</SmallProseWrapper>
+		</BottomChildren>
+
+		// Expand by default for modernisation tools
+		componentParams.isOpen = true;
+	} else if (toolMessage.type === 'success') {
+		// No details, just show raw JSON (collapsed by default)
+		const resultStr = typeof toolMessage.result === 'string' ? toolMessage.result : JSON.stringify(toolMessage.result, null, 2)
+		componentParams.children = <ToolChildrenWrapper>
+			<SmallProseWrapper>
+				<ChatMarkdownRender
+					string={`\`\`\`json\n${resultStr}\n\`\`\``}
+					chatMessageLocation={undefined}
+					isApplyEnabled={false}
+					isLinkDetectionEnabled={true}
+				/>
+			</SmallProseWrapper>
+		</ToolChildrenWrapper>
+	} else if (toolMessage.type === 'tool_error') {
+		const { result } = toolMessage
+		componentParams.bottomChildren = <BottomChildren title='Error'>
+			<CodeChildren>
+				{result}
+			</CodeChildren>
+		</BottomChildren>
+	}
+
+	return <ToolHeaderWrapper {...componentParams} />
+}
+
+// ── MCP Tool Wrapper ──────────────────────────────────────────────────────────
 const MCPToolWrapper = ({ toolMessage }: WrapperProps<string>) => {
 	const accessor = useAccessor()
 	const mcpService = accessor.get('IMCPService')
@@ -3616,7 +3712,10 @@ const _ChatBubble = ({ threadId, chatMessage, currCheckpointIdx, isCommitted, me
 
 		const toolName = chatMessage.name
 		const isBuiltInTool = isABuiltinToolName(toolName)
+		// Internal tools (KB/modernisation) have no mcpServerName
+		const isInternalTool = !chatMessage.mcpServerName && !isBuiltInTool
 		const ToolResultWrapper = isBuiltInTool ? builtinToolNameToComponent[toolName]?.resultWrapper as ResultWrapper<ToolName>
+			: isInternalTool ? ModernisationToolWrapper as ResultWrapper<ToolName>
 			: MCPToolWrapper as ResultWrapper<ToolName>
 
 		if (ToolResultWrapper)

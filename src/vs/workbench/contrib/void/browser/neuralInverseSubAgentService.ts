@@ -233,8 +233,9 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 				const rolePrefix = this._buildSubAgentPrefix(request);
 				const fullGoal = `${rolePrefix}\n\n${request.goal}\n\nIMPORTANT: You have limited tool access based on your role. Only use the tools explicitly allowed for ${request.role} agents.`;
 
-				// Editor and verifier roles need write access; explorer and compliance are read-only
-				const allowWrite = request.role === 'editor' || request.role === 'verifier';
+				// Determine write access based on role
+				const writeRoles: SubAgentRole[] = ['editor', 'verifier', 'debugger', 'tester', 'documenter'];
+				const allowWrite = writeRoles.includes(request.role);
 				const result = await powerMode.answerQuery(fullGoal, allowWrite);
 
 				subAgent.status = 'completed';
@@ -326,7 +327,8 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 				const fullGoal = `${rolePrefix}\n\n${request.goal}`;
 
 				// Run with appropriate permissions
-				const allowWrite = request.role === 'editor' || request.role === 'verifier';
+				const writeRoles: SubAgentRole[] = ['editor', 'verifier', 'debugger', 'tester', 'documenter'];
+				const allowWrite = writeRoles.includes(request.role);
 				const result = await powerMode.answerQuery(fullGoal, allowWrite);
 
 				subAgent.status = 'completed';
@@ -375,6 +377,11 @@ class NeuralInverseSubAgentService extends Disposable implements INeuralInverseS
 			compliance: `You are a GRC compliance sub-agent powered by the Checks Agent. Your job is to:\n1. Trigger \`grc_rescan\` to re-evaluate files after code changes\n2. Use \`grc_ai_scan\` for deep AI-powered compliance analysis\n3. Check \`grc_blocking_violations\` and report any blockers\n4. Use \`ask_checksagent\` to reason about complex compliance questions\n5. Use \`grc_impact_chain\` to assess blast radius of changes\n6. Report a clear compliance verdict: PASS (no blockers), WARN (warnings only), or FAIL (blocking violations)${request.scopedFiles?.length ? `\nFocus on these files: ${request.scopedFiles.join(', ')}` : ''}`,
 			'checks-agent': `You are a delegated Checks Agent sub-agent. The Checks Agent runs its own full multi-tool GRC analysis loop internally. You will receive a compliance question or task and the Checks Agent service will handle tool execution, reasoning, and analysis autonomously. Report your compliance findings clearly.`,
 			'power-mode': `You are a delegated Power Mode sub-agent. Power Mode runs its own full multi-tool coding agent loop internally (bash, read, write, edit, glob, grep). You will receive a research or execution task and Power Mode will handle it autonomously. Report your findings clearly.`,
+			debugger: 'You are a debugging specialist sub-agent. Your job is to analyze bugs, reproduce errors, identify root causes, and implement fixes. You can read code, search for patterns, run tests to reproduce issues, and edit files to fix bugs. Always verify your fixes work by running tests.',
+			reviewer: 'You are a code review sub-agent. Your job is to analyze code for security vulnerabilities, code quality issues, best practices violations, and performance problems. You are READ-ONLY and cannot modify code. Provide detailed, actionable feedback with severity levels and suggested fixes.',
+			tester: 'You are a test engineer sub-agent. Your job is to write comprehensive tests (unit, integration, e2e), identify edge cases, and improve code coverage. You can read existing code, create new test files, and run tests to verify they work. Write clear, maintainable tests that catch bugs.',
+			documenter: 'You are a technical documentation sub-agent. Your job is to create clear, comprehensive documentation for code, APIs, and systems. You can read code, write/update README files, generate API docs, add code comments, and create tutorials. Focus on clarity and completeness.',
+			architect: 'You are a software architecture sub-agent. Your job is to analyze system design, propose architectural improvements, identify design patterns, and create refactoring plans. You can read code, analyze dependencies, and use query_ni_agent for research. Think holistically about the system.',
 		};
 
 		let prefix = `[NI Sub-Agent: ${request.role.toUpperCase()}]\n${roleDescriptions[request.role]}`;

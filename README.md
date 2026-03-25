@@ -1,40 +1,54 @@
-# Welcome to Void.
+# Welcome to NeuralInverse.
 
 <div align="center">
 	<img
 		src="./src/vs/workbench/browser/parts/editor/media/slice_of_void.png"
-	 	alt="Void Welcome"
+	 	alt="NeuralInverse Welcome"
 		width="300"
 	 	height="300"
 	/>
 </div>
 
-Void is the open-source Cursor alternative.
+NeuralInverse is an AI-native IDE for regulated and critical software development.
 
-Use AI agents on your codebase, checkpoint and visualize changes, and bring any model or host locally. Void sends messages directly to providers without retaining your data.
+Built for enterprises that need to modernize legacy systems while maintaining compliance, NeuralInverse provides real-time architecture enforcement, automated GRC (Governance, Risk & Compliance) checks, and intelligent code modernization capabilities. The IDE features neuralInverseChecks for continuous validation against regulatory frameworks, and a comprehensive modernization engine for migrating legacy codebases (COBOL, PL/SQL, RPG, Natural) to modern languages.
 
-This repo contains the full sourcecode for Void. If you're new, welcome!
+This repo contains the full sourcecode for NeuralInverse. The IDE is forked from Void, which itself is based on VS Code.
 
-- 🧭 [Website](https://voideditor.com)
+- 🌐 [Website](https://neuralinverse.com)
 
-- 👋 [Discord](https://discord.gg/RSNjgaugJs)
-
-- 🚙 [Project Board](https://github.com/orgs/voideditor/projects/2)
+- 📧 [Contact](mailto:hello@neuralinverse.com)
 
 
-## Contributing
+## Key Features
 
-1. To get started working on Void, check out our Project Board! You can also see [HOW_TO_CONTRIBUTE](https://github.com/voideditor/void/blob/main/HOW_TO_CONTRIBUTE.md).
+- **neuralInverseChecks**: Real-time architecture and compliance validation engine that enforces regulatory frameworks (HIPAA, SOC2, FDA 21 CFR Part 11, etc.) during development
 
-2. Feel free to attend a casual weekly meeting in our Discord channel!
+- **Modernization Engine**: Comprehensive tooling for legacy system migration with discovery, planning, translation, and cutover phases
+
+- **AI-Powered Code Analysis**: Semantic fingerprinting and business rule extraction from legacy codebases
+
+- **Knowledge Base**: Centralized repository for migration decisions, type mappings, glossary terms, and translation units
+
+- **Multi-Model Support**: Bring your own LLM (Claude, GPT-4, Bedrock) with direct provider integration
 
 
-## Reference
+## Architecture
 
-Void is a fork of the [vscode](https://github.com/microsoft/vscode) repository. For a guide to the codebase, see [VOID_CODEBASE_GUIDE](https://github.com/voideditor/void/blob/main/VOID_CODEBASE_GUIDE.md).
+NeuralInverse is forked from [Void](https://github.com/voideditor/void), which itself is a fork of [VS Code](https://github.com/microsoft/vscode).
 
-## Note
-Work is temporarily paused on the Void IDE (this repo) while we experiment with a few novel AI coding ideas for Void. Stay alerted with new releases in our Discord channel.
+Key modules:
+- `src/vs/workbench/contrib/neuralInverseChecks/` - Compliance and architecture validation engine
+- `src/vs/workbench/contrib/neuralInverseModernisation/` - Legacy code modernization platform
+- `src/vs/workbench/contrib/void/` - AI agent and chat infrastructure
+- `src/vs/workbench/contrib/powerMode/` - Advanced developer tools and workflows
+
+## License
+
+NeuralInverse is licensed under the Apache License 2.0. See [License.txt](./License.txt) for details.
 
 ## Support
-You can always reach us in our Discord server or contact us via email: hello@voideditor.com.
+
+For enterprise support, custom deployments, or questions about NeuralInverse:
+- Email: hello@neuralinverse.com
+- Website: https://neuralinverse.com

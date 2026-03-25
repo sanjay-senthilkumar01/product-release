@@ -37,7 +37,18 @@
 		"serviceUrl": "https://marketplace.visualstudio.com/_apis/public/gallery",
 		"itemUrl": "https://marketplace.visualstudio.com/items"
 	},
-	"builtInExtensions": [],
+	"builtInExtensions": [
+		{
+			"name": "github-vscode-theme",
+			"version": "6.3.4",
+			"repo": "https://github.com/primer/github-vscode-theme",
+			"metadata": {
+				"id": "26a529c9-2654-4b95-a63f-02f6a52429e6",
+				"publisherId": "7c1c19cd-78eb-4dfb-8999-99caf7679002",
+				"publisherDisplayName": "GitHub"
+			}
+		}
+	],
 	"linkProtectionTrustedDomains": [
 		"https://neuralinverse.com",
 		"https://neuralinverse.dev",

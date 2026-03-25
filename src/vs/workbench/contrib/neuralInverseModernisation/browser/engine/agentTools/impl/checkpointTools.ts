@@ -19,7 +19,7 @@ export async function createCheckpoint(
 	kb: IKnowledgeBaseService,
 ): Promise<IAgentToolCallResult<IKnowledgeBaseCheckpoint>> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 	if (!input.label?.trim()) {
 		return { success: false, error: 'label is required.' };
@@ -44,7 +44,7 @@ export function listCheckpoints(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IKnowledgeBaseCheckpoint[]> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const checkpoints = kb.listCheckpoints().sort((a, b) => b.createdAt - a.createdAt);
@@ -62,7 +62,7 @@ export async function restoreCheckpoint(
 	kb: IKnowledgeBaseService,
 ): Promise<IAgentToolCallResult<{ restored: boolean; checkpointId: string }>> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const checkpoint = kb.getCheckpoint(input.checkpointId);
@@ -91,7 +91,7 @@ export function deleteCheckpoint(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ deleted: boolean }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const checkpoint = kb.getCheckpoint(input.checkpointId);

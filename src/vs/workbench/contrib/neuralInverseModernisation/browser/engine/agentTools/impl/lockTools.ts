@@ -34,7 +34,7 @@ export function lockUnit(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<ILockResult | null> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -76,7 +76,7 @@ export function unlockUnit(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ released: boolean }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -102,7 +102,7 @@ export function forceUnlockUnit(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ released: boolean }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);
@@ -127,7 +127,7 @@ export function listLocks(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<Array<ILockResult & { unitName: string; isExpired: boolean }>> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const now   = Date.now();
@@ -155,7 +155,7 @@ export function pruneExpiredLocks(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ prunedCount: number }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const prunedCount = kb.pruneExpiredLocks();

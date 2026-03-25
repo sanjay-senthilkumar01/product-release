@@ -40,7 +40,7 @@ export function splitUnit(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<ISplitUnitResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const parent = kb.getUnit(input.unitId);
@@ -88,7 +88,7 @@ export function mergeUnits(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<IMergeUnitsResult> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 	if (!input.unitIds || input.unitIds.length < 2) {
 		return { success: false, error: 'At least 2 unit IDs required to merge.' };
@@ -146,7 +146,7 @@ export function revertUnit(
 	kb: IKnowledgeBaseService,
 ): IAgentToolCallResult<{ unitId: string; newStatus: string }> {
 	if (!kb.isActive) {
-		return { success: false, error: 'No active knowledge base.' };
+		return { success: false, error: 'No active knowledge base — open the Modernisation panel (Cmd+Alt+M) to activate the session, then retry.' };
 	}
 
 	const unit = kb.getUnit(input.unitId);

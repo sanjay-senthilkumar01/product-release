@@ -34,6 +34,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { ModernisationPart } from './ui/modernisationPart.js';
 import { ModernisationStatusContribution } from './statusbar/modernisationStatus.contribution.js';
 import { IModernisationSessionService } from './modernisationSessionService.js';
+import { IKnowledgeBaseService } from './knowledgeBase/service.js';
 
 // Register DI singletons (side-effect imports)
 import './modernisationSessionService.js';
@@ -95,8 +96,33 @@ class ModernisationContribution extends Disposable implements IWorkbenchContribu
 		@IAuxiliaryWindowService private readonly auxiliaryWindowService: IAuxiliaryWindowService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IModernisationSessionService private readonly sessionService: IModernisationSessionService,
+		@IKnowledgeBaseService private readonly kbService: IKnowledgeBaseService,
 	) {
 		super();
+
+		// Ensure KB is always initialized when a session is active — even when the
+		// Modernisation aux window is closed.  Without this, agent tools that call
+		// kbService methods see isActive=false and return "No active knowledge base."
+		const initKBIfNeeded = (s: { isActive: boolean; sessionId?: string; sources?: Array<{ folderUri: string }> }) => {
+			if (!s.isActive || this.kbService.isActive) { return; }
+			const sid = s.sessionId
+				?? (s.sources?.[0]?.folderUri
+					? `ni-kb-${s.sources[0].folderUri.replace(/[^a-zA-Z0-9_.-]/g, '-')}`
+					: `ni-kb-default`);
+			this.kbService.init(sid).catch(() => { /* storage error — non-fatal */ });
+		};
+
+		initKBIfNeeded(this.sessionService.session);
+		this._register(this.sessionService.onDidChangeSession(s => {
+			if (!s.isActive) {
+				// Session ended — close KB so isActive=false is consistent with session state
+				this.kbService.close();
+			} else {
+				initKBIfNeeded(s);
+			}
+		}));
+
 		this._restoreWindow();
 	}
 

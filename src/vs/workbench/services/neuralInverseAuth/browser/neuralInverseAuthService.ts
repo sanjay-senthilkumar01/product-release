@@ -106,7 +106,17 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 	}
 
 	async getToken(): Promise<string | undefined> {
-		return this.secretStorageService.get(TOKEN_KEY);
+		const token = await this.secretStorageService.get(TOKEN_KEY);
+		if (!token) return undefined;
+
+		// Check if token is expired
+		if (this.isTokenExpired(token)) {
+			this.logService.warn('NeuralInverseAuth: Token expired, logging out');
+			await this.logout();
+			return undefined;
+		}
+
+		return token;
 	}
 
 
@@ -242,6 +252,42 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 			.replace(/=+$/, '');
 	}
 
+	private base64UrlDecode(str: string): string {
+		// Add padding if needed
+		const padded = str + '=='.substring(0, (4 - (str.length % 4)) % 4);
+		// Replace URL-safe chars
+		const base64 = padded.replace(/-/g, '+').replace(/_/g, '/');
+		return atob(base64);
+	}
+
+	private isTokenExpired(token: string): boolean {
+		try {
+			// JWT format: header.payload.signature
+			const parts = token.split('.');
+			if (parts.length !== 3) {
+				this.logService.warn('NeuralInverseAuth: Invalid JWT format');
+				return true;
+			}
+
+			// Decode payload
+			const payload = JSON.parse(this.base64UrlDecode(parts[1]));
+
+			// Check expiration (exp is in seconds, Date.now() is in milliseconds)
+			if (payload.exp) {
+				const expirationTime = payload.exp * 1000;
+				const currentTime = Date.now();
+				// Add 60 second buffer to logout before actual expiration
+				return currentTime >= (expirationTime - 60000);
+			}
+
+			// If no exp claim, assume not expired (shouldn't happen with Auth0)
+			return false;
+		} catch (e) {
+			this.logService.error('NeuralInverseAuth: Error checking token expiration', e);
+			return true; // Treat decode errors as expired
+		}
+	}
+
 	async getUserProfile(): Promise<any | undefined> {
 		const token = await this.getToken();
 		if (!token) return undefined;
@@ -263,7 +309,11 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 				}
 			);
 
-			if (response.statusCode >= 400) {
+			if (response.statusCode === 401) {
+				this.logService.warn('NeuralInverseAuth: Unauthorized (401), token may be expired. Logging out.');
+				await this.logout();
+				return undefined;
+			} else if (response.statusCode >= 400) {
 				this.logService.error(`NeuralInverseAuth: Failed to get profile: ${response.statusCode}`);
 				return undefined;
 			}
@@ -328,9 +378,12 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 			this.logService.info(`NeuralInverseAuth: Sync response status ${response.statusCode}`);
 
 
-			if (response.statusCode === 403) {
+			if (response.statusCode === 401) {
+				this.logService.warn(`NeuralInverseAuth: Unauthorized (401), token expired. Logging out.`);
+				await this.logout();
+			} else if (response.statusCode === 403) {
 				this.logService.warn(`NeuralInverseAuth: Device Revoked/Blocked (403). Logging out.`);
-				this.logout();
+				await this.logout();
 			} else if (response.statusCode >= 400) {
 				this.logService.error(`NeuralInverseAuth: Failed to sync: ${response.statusCode}`);
 				this.logService.error(`NeuralInverseAuth: Response body: ${response.body}`);

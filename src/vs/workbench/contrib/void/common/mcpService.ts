@@ -310,6 +310,10 @@ class MCPService extends Disposable implements IMCPService {
 		} else {
 			toolResultStr = JSON.stringify(result)
 		}
+		// Ensure we never return empty/null/undefined - provide fallback for LLM to continue
+		if (!toolResultStr || !toolResultStr.trim()) {
+			return '(MCP tool completed but returned no data)'
+		}
 		return toolResultStr
 	}
 
