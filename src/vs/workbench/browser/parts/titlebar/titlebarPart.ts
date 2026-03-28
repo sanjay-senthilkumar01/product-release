@@ -60,6 +60,7 @@ import { IHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate.
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { safeIntl } from '../../../../base/common/date.js';
 import { TitleBarVisibleContext } from '../../../common/contextkeys.js';
+import { IUpdateService, StateType } from '../../../../platform/update/common/update.js';
 
 export interface ITitleVariable {
 	readonly name: string;
@@ -289,6 +290,7 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 	private agentsAction: Action | undefined;
 	private checksAction: Action | undefined;
 	private enclaveAction: Action | undefined;
+	private restartToUpdateAction: Action | undefined;
 
 	private readonly hoverDelegate: IHoverDelegate;
 
@@ -319,7 +321,8 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService,
 		@IEditorService editorService: IEditorService,
 		@IMenuService private readonly menuService: IMenuService,
-		@IKeybindingService private readonly keybindingService: IKeybindingService
+		@IKeybindingService private readonly keybindingService: IKeybindingService,
+		@IUpdateService private readonly updateService: IUpdateService
 	) {
 		super(id, { hasTitle: false }, themeService, storageService, layoutService);
 
@@ -342,6 +345,7 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 		this._register(this.hostService.onDidChangeActiveWindow(windowId => windowId === targetWindowId ? this.onFocus() : this.onBlur()));
 		this._register(this.configurationService.onDidChangeConfiguration(e => this.onConfigurationChanged(e)));
 		this._register(this.editorGroupService.onDidChangeEditorPartOptions(e => this.onEditorPartConfigurationChange(e)));
+		this._register(this.updateService.onStateChange(() => this.createActionToolBarMenus()));
 	}
 
 	private onBlur(): void {
@@ -616,6 +620,16 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 			return new ActionViewItem(undefined, action, { ...options, label: true, icon: false, keybinding: null });
 		}
 
+		if (action.id === 'titlebar.restartToUpdate') {
+			const item = new ActionViewItem(undefined, action, { ...options, label: true, icon: false, keybinding: null });
+			const originalRender = item.render.bind(item);
+			item.render = (container: HTMLElement) => {
+				originalRender(container);
+				container.classList.add('restart-to-update-action');
+			};
+			return item;
+		}
+
 		// --- Editor Actions
 		const activeEditorPane = this.editorGroupsContainer.activeGroup?.activeEditorPane;
 		if (activeEditorPane && activeEditorPane instanceof EditorPane) {
@@ -810,6 +824,22 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 			// Prepend Neural Inverse Actions
 			if (this.agentsAction && this.checksAction && this.enclaveAction) {
 				actions.primary.unshift(this.agentsAction, this.checksAction, this.enclaveAction);
+			}
+
+			// --- Restart to Update (shown only when update is ready)
+			if (this.updateService.state.type === StateType.Ready) {
+				if (!this.restartToUpdateAction) {
+					this.restartToUpdateAction = new Action(
+						'titlebar.restartToUpdate',
+						'Restart to Update →',
+						undefined,
+						true,
+						async () => this.updateService.quitAndInstall()
+					);
+				}
+				actions.primary.push(this.restartToUpdateAction);
+			} else {
+				this.restartToUpdateAction = undefined;
 			}
 
 			// --- Activity Actions (always at the end)
@@ -1021,8 +1051,9 @@ export class MainBrowserTitlebarPart extends BrowserTitlebarPart {
 		@IEditorService editorService: IEditorService,
 		@IMenuService menuService: IMenuService,
 		@IKeybindingService keybindingService: IKeybindingService,
+		@IUpdateService updateService: IUpdateService,
 	) {
-		super(Parts.TITLEBAR_PART, mainWindow, 'main', contextMenuService, configurationService, environmentService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, editorGroupService, editorService, menuService, keybindingService);
+		super(Parts.TITLEBAR_PART, mainWindow, 'main', contextMenuService, configurationService, environmentService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, editorGroupService, editorService, menuService, keybindingService, updateService);
 	}
 }
 
@@ -1054,9 +1085,10 @@ export class AuxiliaryBrowserTitlebarPart extends BrowserTitlebarPart implements
 		@IEditorService editorService: IEditorService,
 		@IMenuService menuService: IMenuService,
 		@IKeybindingService keybindingService: IKeybindingService,
+		@IUpdateService updateService: IUpdateService,
 	) {
 		const id = AuxiliaryBrowserTitlebarPart.COUNTER++;
-		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), editorGroupsContainer, contextMenuService, configurationService, environmentService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, editorGroupService, editorService, menuService, keybindingService);
+		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), editorGroupsContainer, contextMenuService, configurationService, environmentService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, editorGroupService, editorService, menuService, keybindingService, updateService);
 	}
 
 	override get preventZoom(): boolean {

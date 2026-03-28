@@ -40,6 +40,29 @@ import { ImageUpload, ImageUploadButton, ImagePreviewsList, useImageDropZone, Ch
 import { getToolCategory, getCategoryLabel, formatToolSummary } from './ModernisationToolFormatters.js';
 
 
+// ── Utility: extract modified files from a thread's messages ──
+const _WRITE_TOOL_NAMES = new Set(['edit_file', 'rewrite_file', 'create_file_or_folder', 'delete_file_or_folder', 'write', 'edit'])
+type ModifiedFileEntry = { basename: string; fullPath: string }
+function getModifiedFilesFromThread(messages: any[]): ModifiedFileEntry[] {
+	const seen = new Map<string, string>() // fullPath -> basename
+	for (const msg of messages) {
+		if (!msg || msg.role !== 'tool') continue
+		if (!_WRITE_TOOL_NAMES.has(msg.name)) continue
+		try {
+			const p = msg.params
+			if (!p) continue
+			const fPath = p.filePath ?? p.uri?.fsPath ?? p.uri?.path ?? p.path
+			if (fPath) {
+				const fp = String(fPath)
+				if (!seen.has(fp)) {
+					seen.set(fp, fp.split('/').pop() ?? fp)
+				}
+			}
+		} catch { /* skip */ }
+	}
+	return Array.from(seen.entries()).map(([fullPath, basename]) => ({ basename, fullPath }))
+}
+
 
 export const IconX = ({ size, className = '', ...props }: { size: number, className?: string } & React.SVGProps<SVGSVGElement>) => {
 	return (
@@ -808,6 +831,7 @@ type ToolHeaderParams = {
 	actionButton?: React.ReactNode;
 	isOpen?: boolean;
 	className?: string;
+	isCoreItem?: boolean;
 }
 
 const ToolHeaderWrapper = ({
@@ -828,20 +852,21 @@ const ToolHeaderWrapper = ({
 	actionButton,
 	isOpen,
 	isRejected,
-	className, // applies to the main content
+	className,
+	isCoreItem,
 }: ToolHeaderParams) => {
 
 	const [isOpen_, setIsOpen] = useState(false);
 	const isExpanded = isOpen !== undefined ? isOpen : isOpen_
 
-	const isDropdown = children !== undefined // null ALLOWS dropdown
+	const isDropdown = children !== undefined
 	const isClickable = !!(isDropdown || onClick)
 
 	const isDesc1Clickable = !!desc1OnClick
 
 	const desc1HTML = <span
-		className={`text-void-fg-4 text-xs italic truncate ml-2
-			${isDesc1Clickable ? 'cursor-pointer hover:brightness-125 transition-all duration-150' : ''}
+		className={`text-void-fg-4 text-[11px] truncate ml-1.5 opacity-60
+			${isDesc1Clickable ? 'cursor-pointer hover:opacity-100 transition-opacity duration-150' : ''}
 		`}
 		onClick={desc1OnClick}
 		{...desc1Info ? {
@@ -853,82 +878,76 @@ const ToolHeaderWrapper = ({
 	>{desc1}</span>
 
 	return (<div className=''>
-		<div className={`w-full border border-void-border-3/60 rounded px-2 py-1 bg-void-bg-3/50 overflow-hidden ${className}`}>
-			{/* header */}
-			<div className={`select-none flex items-center min-h-[24px]`}>
-				<div className={`flex items-center w-full gap-x-2 overflow-hidden justify-between ${isRejected ? 'line-through' : ''}`}>
-					{/* left */}
-					<div // container for if desc1 is clickable
-						className='ml-1 flex items-center overflow-hidden'
-					>
-						{/* title eg "> Edited File" */}
-						<div className={`
-							flex items-center min-w-0 overflow-hidden grow
-							${isClickable ? 'cursor-pointer hover:brightness-125 transition-all duration-150' : ''}
-						`}
-							onClick={() => {
-								if (isDropdown) { setIsOpen(v => !v); }
-								if (onClick) { onClick(); }
-							}}
-						>
-							{isDropdown && (<ChevronRight
-								className={`
-								text-void-fg-3 mr-0.5 h-4 w-4 flex-shrink-0 transition-transform duration-100 ease-[cubic-bezier(0.4,0,0.2,1)]
-								${isExpanded ? 'rotate-90' : ''}
-							`}
-							/>)}
-							<span className="text-void-fg-3 flex-shrink-0">{title}</span>
+		<div className={`w-full overflow-hidden ${className ?? ''}`}>
+			{/* header row */}
+			<div className={`select-none flex items-center min-h-[22px] py-0.5 gap-x-1.5`}>
+				{/* status dot */}
+				<span className={`w-[5px] h-[5px] rounded-full flex-shrink-0 mt-px
+					${isError ? 'bg-void-warning opacity-80'
+						: isRejected ? 'bg-void-fg-4 opacity-25'
+							: 'bg-void-fg-4 opacity-40'}
+				`} />
 
-							{!isDesc1Clickable && desc1HTML}
-						</div>
-						{isDesc1Clickable && desc1HTML}
-					</div>
+				{/* left: title + desc1 */}
+				<div className={`flex items-center min-w-0 overflow-hidden grow gap-x-0
+					${isRejected ? 'opacity-40' : ''}
+					${isClickable ? 'cursor-pointer' : ''}
+				`}
+					onClick={() => {
+						if (isDropdown) setIsOpen(v => !v);
+						if (onClick) onClick();
+					}}
+				>
+					<span className={`text-[12px] flex-shrink-0
+						${isCoreItem ? 'font-semibold text-void-fg-1 opacity-90' : 'text-void-fg-3'}
+						${isRejected ? 'line-through' : ''}
+					`}>{title}</span>
+					{!isDesc1Clickable && desc1HTML}
+				</div>
+				{isDesc1Clickable && desc1HTML}
 
-					{/* right */}
-					<div className="flex items-center gap-x-2 flex-shrink-0">
-
-						{info && <CircleEllipsis
-							className='ml-2 text-void-fg-4 opacity-60 flex-shrink-0'
-							size={14}
-							data-tooltip-id='void-tooltip'
-							data-tooltip-content={info}
-							data-tooltip-place='top-end'
-						/>}
-
-						{isError && <AlertTriangle
-							className='text-void-warning opacity-90 flex-shrink-0'
-							size={14}
-							data-tooltip-id='void-tooltip'
-							data-tooltip-content={'Error running tool'}
-							data-tooltip-place='top'
-						/>}
-						{isRejected && <Ban
-							className='text-void-fg-4 opacity-90 flex-shrink-0'
-							size={14}
-							data-tooltip-id='void-tooltip'
-							data-tooltip-content={'Canceled'}
-							data-tooltip-place='top'
-						/>}
-						{actionButton}
-						{desc2 && <span className="text-void-fg-4 text-xs" onClick={desc2OnClick}>
-							{desc2}
-						</span>}
-						{numResults !== undefined && (
-							<span className="text-void-fg-4 text-xs ml-auto mr-1">
-								{`${numResults}${hasNextPage ? '+' : ''} result${numResults !== 1 ? 's' : ''}`}
-							</span>
-						)}
-					</div>
+				{/* right: actions + chevron */}
+				<div className="flex items-center gap-x-1.5 flex-shrink-0 ml-auto">
+					{info && <CircleEllipsis
+						className='text-void-fg-4 opacity-40 flex-shrink-0'
+						size={11}
+						data-tooltip-id='void-tooltip'
+						data-tooltip-content={info}
+						data-tooltip-place='top-end'
+					/>}
+					{isError && <AlertTriangle
+						className='text-void-warning opacity-70 flex-shrink-0'
+						size={11}
+						data-tooltip-id='void-tooltip'
+						data-tooltip-content={'Error running tool'}
+						data-tooltip-place='top'
+					/>}
+					{isRejected && <Ban
+						className='text-void-fg-4 opacity-25 flex-shrink-0'
+						size={11}
+					/>}
+					{actionButton}
+					{desc2 && <span className="text-void-fg-4 text-[11px] opacity-70" onClick={desc2OnClick}>
+						{desc2}
+					</span>}
+					{numResults !== undefined && (
+						<span className="text-void-fg-4 text-[11px] opacity-50">
+							{`${numResults}${hasNextPage ? '+' : ''} result${numResults !== 1 ? 's' : ''}`}
+						</span>
+					)}
+					{isDropdown && (
+						<ChevronRight
+							className={`text-void-fg-4 opacity-40 flex-shrink-0 h-3 w-3 transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}`}
+							onClick={() => { if (isDropdown) setIsOpen(v => !v); }}
+						/>
+					)}
 				</div>
 			</div>
-			{/* children */}
-			{<div
-				className={`overflow-hidden transition-all duration-200 ease-in-out ${isExpanded ? 'opacity-100 py-1' : 'max-h-0 opacity-0'}
-					text-void-fg-4 rounded-sm overflow-x-auto
-				  `}
-			//    bg-black bg-opacity-10 border border-void-border-4 border-opacity-50
-			>
-				{children}
+			{/* expanded children */}
+			{<div className={`overflow-hidden transition-all duration-200 ease-in-out ${isExpanded ? 'opacity-100 py-0.5' : 'max-h-0 opacity-0'} text-void-fg-4 overflow-x-auto`}>
+				<div className="ml-2 pl-2 border-l border-void-border-3">
+					{children}
+				</div>
 			</div>}
 		</div>
 		{bottomChildren}
@@ -1023,25 +1042,28 @@ const SimplifiedToolHeader = ({
 			<div className="w-full">
 				{/* header */}
 				<div
-					className={`select-none flex items-center min-h-[24px] ${isDropdown ? 'cursor-pointer' : ''}`}
+					className={`select-none flex items-center gap-x-1.5 min-h-[22px] py-0.5 ${isDropdown ? 'cursor-pointer' : ''}`}
 					onClick={() => {
 						if (isDropdown) { setIsOpen(v => !v); }
 					}}
 				>
+					<span className="w-[5px] h-[5px] rounded-full flex-shrink-0 mt-px bg-void-fg-4 opacity-40" />
+					<div className="flex items-center w-full overflow-hidden gap-x-1">
+						<span className="text-void-fg-3 text-[12px]">{title}</span>
+					</div>
 					{isDropdown && (
 						<ChevronRight
-							className={`text-void-fg-3 mr-0.5 h-4 w-4 flex-shrink-0 transition-transform duration-100 ease-[cubic-bezier(0.4,0,0.2,1)] ${isOpen ? 'rotate-90' : ''}`}
+							className={`text-void-fg-4 opacity-40 h-3 w-3 flex-shrink-0 transition-transform duration-150 ${isOpen ? 'rotate-90' : ''}`}
 						/>
 					)}
-					<div className="flex items-center w-full overflow-hidden">
-						<span className="text-void-fg-3">{title}</span>
-					</div>
 				</div>
 				{/* children */}
 				{<div
-					className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? 'opacity-100' : 'max-h-0 opacity-0'} text-void-fg-4`}
+					className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? 'opacity-100 py-0.5' : 'max-h-0 opacity-0'} text-void-fg-4`}
 				>
-					{children}
+					<div className="ml-2 pl-2 border-l border-void-border-3">
+						{children}
+					</div>
 				</div>}
 			</div>
 		</div>
@@ -1413,28 +1435,50 @@ const ReasoningWrapper = ({ isDoneReasoning, isStreaming, children }: { isDoneRe
 	const isDone = isDoneReasoning || !isStreaming
 	const isWriting = !isDone
 	const [isOpen, setIsOpen] = useState(isWriting)
+	const [elapsedSeconds, setElapsedSeconds] = useState(0)
+	const startTimeRef = useRef(Date.now())
+	const finalTimeRef = useRef<number | null>(null)
 
 	useEffect(() => {
-		if (!isWriting) setIsOpen(false) // if just finished reasoning, close
+		if (!isWriting) {
+			setIsOpen(false)
+			if (finalTimeRef.current === null) {
+				finalTimeRef.current = Math.round((Date.now() - startTimeRef.current) / 1000)
+				setElapsedSeconds(finalTimeRef.current)
+			}
+			return
+		}
+		const interval = setInterval(() => {
+			setElapsedSeconds(Math.round((Date.now() - startTimeRef.current) / 1000))
+		}, 1000)
+		return () => clearInterval(interval)
 	}, [isWriting])
 
+	const label = isWriting
+		? 'Thinking…'
+		: `Thought for ${elapsedSeconds}s`
+
 	return (
-		<div className="w-full mb-2 mt-1">
+		<div className="w-full mb-1.5 mt-0.5">
 			<div
-				className="flex items-center gap-1 cursor-pointer select-none py-1 w-fit hover:opacity-80 transition-opacity"
+				className="flex items-center gap-1.5 cursor-pointer select-none py-0.5 w-fit group"
 				onClick={() => setIsOpen(v => !v)}
 			>
-				<ChevronRight
-					className={`w-3.5 h-3.5 flex-shrink-0 transition-transform duration-200 text-void-fg-4 ${isOpen ? 'rotate-90' : 'rotate-0'}`}
-				/>
-				<span className="text-[12px] text-void-fg-4">
-					{isWriting ? 'Thinking...' : 'Thought Process'}
+				{isWriting ? (
+					<span className="text-[11px] text-void-fg-4 opacity-25 flex-shrink-0 leading-none select-none">&mdash;</span>
+				) : (
+					<ChevronRight
+						className={`w-3 h-3 flex-shrink-0 transition-transform duration-150 text-void-fg-4 opacity-40 ${isOpen ? 'rotate-90' : ''}`}
+					/>
+				)}
+				<span className="text-[11px] text-void-fg-4 opacity-50 group-hover:opacity-80 transition-opacity duration-150">
+					{label}
 				</span>
 			</div>
 
-			<div className={`overflow-hidden transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100 max-h-[5000px]' : 'max-h-0 opacity-0'}`}>
-				<div className="pl-5 py-1 mt-0.5 border-l border-void-border-3 text-void-fg-4 ml-1">
-					<div className="!select-text cursor-auto opacity-70 text-[12px]">
+			<div className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? 'opacity-100 max-h-[5000px]' : 'max-h-0 opacity-0'}`}>
+				<div className="ml-1 pl-3 py-1 mt-0.5 border-l border-void-border-3 text-void-fg-4">
+					<div className="!select-text cursor-auto opacity-50 text-[11.5px] leading-relaxed">
 						{children}
 					</div>
 				</div>
@@ -2097,97 +2141,170 @@ const CommandTool = ({ toolMessage, type, threadId }: { threadId: string } & ({
 type WrapperProps<T extends ToolName> = { toolMessage: Exclude<ToolMessage<T>, { type: 'invalid_params' }>, messageIdx: number, threadId: string }
 
 // ── Modernisation Tool Wrapper ────────────────────────────────────────────────
+// Internal NI tools (KB, Translation, Decision, Autonomy, etc.) get purpose-built
+// UI that surfaces the rich formatToolSummary data inline — not hidden in header templates.
 const ModernisationToolWrapper = ({ toolMessage }: WrapperProps<string>) => {
-	const accessor = useAccessor()
-
 	const category = getToolCategory(toolMessage.name)
 	const categoryLabel = getCategoryLabel(category)
+	const toolLabel = toolMessage.name.replace(/_/g, ' ')
 
+	// ── Running state: minimal inline indicator ──────────────────────────────
 	if (toolMessage.type === 'running_now') {
-		// Show a spinner for modernisation tools
-		const title = categoryLabel
-		const desc1 = toolMessage.name.replace(/_/g, ' ')
-		return <ToolHeaderWrapper
-			title={title}
-			desc1={desc1}
-			isError={false}
-			icon={null}
-			isRejected={false}
-			info="Running..."
-		/>
-	}
-
-	const isError = toolMessage.type === 'tool_error'
-	const isRejected = toolMessage.type === 'rejected'
-	const { params } = toolMessage
-
-	// Format the summary
-	let summary = null
-	if (toolMessage.type === 'success' && toolMessage.result) {
-		const resultStr = typeof toolMessage.result === 'string' ? toolMessage.result : JSON.stringify(toolMessage.result)
-		summary = formatToolSummary(toolMessage.name, params, resultStr)
-	}
-
-	const title = categoryLabel
-	const desc1 = summary?.title || toolMessage.name.replace(/_/g, ' ')
-
-	const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isRejected }
-
-	// Add copy button for params
-	const paramsStr = JSON.stringify(params, null, 2)
-	componentParams.desc2 = <CopyButton codeStr={paramsStr} toolTipName={`Copy inputs`} />
-
-	if (summary?.description) {
-		componentParams.info = summary.description
-	}
-
-	if (toolMessage.type === 'success' && summary?.details) {
-		// Show formatted details in main content (expanded by default)
-		componentParams.children = <ToolChildrenWrapper>
-			<div className="px-3 py-3">
-				{summary.details}
+		return (
+			<div className="flex items-center gap-1.5 py-0.5 my-0.5">
+				<span className="text-[11px] text-void-fg-4 opacity-25 flex-shrink-0 leading-none select-none">&mdash;</span>
+				<span className="text-[11px] text-void-fg-4 opacity-50">{toolLabel}</span>
 			</div>
-		</ToolChildrenWrapper>
-
-		// Collapsible raw JSON
-		const resultStr = typeof toolMessage.result === 'string' ? toolMessage.result : JSON.stringify(toolMessage.result, null, 2)
-		componentParams.bottomChildren = <BottomChildren title='Raw Output'>
-			<SmallProseWrapper>
-				<ChatMarkdownRender
-					string={`\`\`\`json\n${resultStr}\n\`\`\``}
-					chatMessageLocation={undefined}
-					isApplyEnabled={false}
-					isLinkDetectionEnabled={true}
-				/>
-			</SmallProseWrapper>
-		</BottomChildren>
-
-		// Expand by default for modernisation tools
-		componentParams.isOpen = true;
-	} else if (toolMessage.type === 'success') {
-		// No details, just show raw JSON (collapsed by default)
-		const resultStr = typeof toolMessage.result === 'string' ? toolMessage.result : JSON.stringify(toolMessage.result, null, 2)
-		componentParams.children = <ToolChildrenWrapper>
-			<SmallProseWrapper>
-				<ChatMarkdownRender
-					string={`\`\`\`json\n${resultStr}\n\`\`\``}
-					chatMessageLocation={undefined}
-					isApplyEnabled={false}
-					isLinkDetectionEnabled={true}
-				/>
-			</SmallProseWrapper>
-		</ToolChildrenWrapper>
-	} else if (toolMessage.type === 'tool_error') {
-		const { result } = toolMessage
-		componentParams.bottomChildren = <BottomChildren title='Error'>
-			<CodeChildren>
-				{result}
-			</CodeChildren>
-		</BottomChildren>
+		)
 	}
 
-	return <ToolHeaderWrapper {...componentParams} />
+	// ── Error state ──────────────────────────────────────────────────────────
+	if (toolMessage.type === 'tool_error') {
+		return (
+			<ToolHeaderWrapper
+				title={toolLabel}
+				desc1={categoryLabel}
+				isError={true}
+				icon={null}
+				bottomChildren={
+					<BottomChildren title="Error">
+						<CodeChildren>{toolMessage.result}</CodeChildren>
+					</BottomChildren>
+				}
+			/>
+		)
+	}
+
+	// ── Rejected / request state: skip rendering ─────────────────────────────
+	if (toolMessage.type === 'rejected' || toolMessage.type === 'tool_request') {
+		return null
+	}
+
+	// ── Success state: rich per-tool UI ──────────────────────────────────────
+	if (toolMessage.type !== 'success') return null
+
+	const successMsg = toolMessage as Extract<typeof toolMessage, { type: 'success' }>
+	const { params } = toolMessage
+	const resultStr = typeof successMsg.result === 'string'
+		? successMsg.result
+		: JSON.stringify(successMsg.result)
+
+	const summary = formatToolSummary(toolMessage.name, params, resultStr)
+
+	// The ToolSummary gives us:
+	//   title       — human label for this specific call (e.g. "Unit Details", "3 units of 120 total")
+	//   description — one-liner context (e.g. unit name, file path)
+	//   details     — optional rich React node (badges, tables, progress bars etc.)
+
+	const hasDetails = !!summary?.details
+	const paramsStr = JSON.stringify(params, null, 2)
+
+	// If no rich details exist, fall back to the compact flat row (same as builtins)
+	if (!hasDetails) {
+		const componentParams: ToolHeaderParams = {
+			title: summary?.title || toolLabel,
+			desc1: summary?.description || categoryLabel,
+			isError: false,
+			icon: null,
+			desc2: <CopyButton codeStr={paramsStr} toolTipName="Copy inputs" />,
+		}
+		// Collapsed raw JSON for inspection
+		componentParams.children = (
+			<ToolChildrenWrapper>
+				<SmallProseWrapper>
+					<ChatMarkdownRender
+						string={`\`\`\`json\n${resultStr}\n\`\`\``}
+						chatMessageLocation={undefined}
+						isApplyEnabled={false}
+						isLinkDetectionEnabled={false}
+					/>
+				</SmallProseWrapper>
+			</ToolChildrenWrapper>
+		)
+		return <ToolHeaderWrapper {...componentParams} />
+	}
+
+	// Rich details: render a dedicated card layout
+	return (
+		<InternalToolCard
+			toolLabel={summary?.title || toolLabel}
+			categoryLabel={categoryLabel}
+			description={summary?.description}
+			details={summary?.details}
+			paramsStr={paramsStr}
+			resultStr={resultStr}
+		/>
+	)
 }
+
+// ── InternalToolCard ─── dedicated layout for rich internal tool results ──────
+const InternalToolCard = ({
+	toolLabel,
+	categoryLabel,
+	description,
+	details,
+	paramsStr,
+	resultStr,
+}: {
+	toolLabel: string
+	categoryLabel: string
+	description?: string
+	details?: React.ReactNode
+	paramsStr: string
+	resultStr: string
+}) => {
+	const [rawOpen, setRawOpen] = useState(false)
+
+	return (
+		<div className="my-1">
+			{/* Header row */}
+			<div className="flex items-center gap-1.5 py-0.5">
+				<span className="w-[5px] h-[5px] rounded-full flex-shrink-0 mt-px bg-void-fg-4 opacity-40" />
+				<span className="text-[12px] text-void-fg-2 font-medium flex-shrink-0">{toolLabel}</span>
+				<span className="text-[11px] text-void-fg-4 opacity-50 flex-shrink-0">{categoryLabel}</span>
+				{description && (
+					<span className="text-[11px] text-void-fg-4 opacity-50 truncate min-w-0 ml-0.5">{description}</span>
+				)}
+				<div className="ml-auto flex-shrink-0">
+					<CopyButton codeStr={paramsStr} toolTipName="Copy inputs" />
+				</div>
+			</div>
+
+			{/* Rich details panel — always visible, indented */}
+			{details && (
+				<div className="ml-2 pl-2.5 border-l border-void-border-3 mt-0.5 pb-0.5">
+					<div className="select-none cursor-default text-xs">
+						{details}
+					</div>
+				</div>
+			)}
+
+			{/* Raw JSON — collapsed toggle */}
+			<div className="ml-2 mt-0.5">
+				<div
+					className="flex items-center gap-1 cursor-pointer select-none group w-fit"
+					onClick={() => setRawOpen(v => !v)}
+				>
+					<ChevronRight className={`w-2.5 h-2.5 text-void-fg-4 opacity-40 transition-transform duration-150 ${rawOpen ? 'rotate-90' : ''}`} />
+					<span className="text-[10px] text-void-fg-4 opacity-40 group-hover:opacity-70 transition-opacity">raw</span>
+				</div>
+				{rawOpen && (
+					<div className="pl-2 border-l border-void-border-3 mt-0.5">
+						<SmallProseWrapper>
+							<ChatMarkdownRender
+								string={`\`\`\`json\n${resultStr}\n\`\`\``}
+								chatMessageLocation={undefined}
+								isApplyEnabled={false}
+								isLinkDetectionEnabled={false}
+							/>
+						</SmallProseWrapper>
+					</div>
+				)}
+			</div>
+		</div>
+	)
+}
+
 
 // ── MCP Tool Wrapper ──────────────────────────────────────────────────────────
 const MCPToolWrapper = ({ toolMessage }: WrapperProps<string>) => {
@@ -3099,7 +3216,7 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 		},
 	},
 
-	// ── Power Mode Style Tools ──────────────────────────────────────────────
+	// ── Power Mode Style Tools ────────────────────────────────────────────
 
 	'bash': {
 		resultWrapper: ({ toolMessage }) => {
@@ -3108,7 +3225,7 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
 			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
 			const isError = toolMessage.type === 'tool_error'
-			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isCoreItem: true }
 			if (toolMessage.type === 'success') {
 				componentParams.children = <ToolChildrenWrapper>
 					<SmallProseWrapper>
@@ -3126,7 +3243,15 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
 			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
 			const isError = toolMessage.type === 'tool_error'
-			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isCoreItem: true }
+			// Provide read contents expanding
+			if (toolMessage.type === 'success') {
+				componentParams.children = <ToolChildrenWrapper>
+					<SmallProseWrapper>
+						<ChatMarkdownRender string={`\`\`\`\n${toolMessage.result.result}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={true} />
+					</SmallProseWrapper>
+				</ToolChildrenWrapper>
+			}
 			return <ToolHeaderWrapper {...componentParams} />
 		},
 	},
@@ -3137,7 +3262,18 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
 			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
 			const isError = toolMessage.type === 'tool_error'
-			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isCoreItem: true }
+			if (toolMessage.type === 'success' || toolMessage.type === 'rejected') {
+				const content = toolMessage.params?.content
+				if (content) {
+					const ext = (toolMessage.params?.filePath ?? '').split('.').pop() ?? ''
+					componentParams.children = <ToolChildrenWrapper>
+						<SmallProseWrapper>
+							<ChatMarkdownRender string={`\`\`\`${ext}\n${content.length > 2000 ? content.slice(0, 2000) + '\n// ... truncated' : content}\n\`\`\``} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+						</SmallProseWrapper>
+					</ToolChildrenWrapper>
+				}
+			}
 			return <ToolHeaderWrapper {...componentParams} />
 		},
 	},
@@ -3148,7 +3284,18 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
 			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
 			const isError = toolMessage.type === 'tool_error'
-			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isCoreItem: true }
+			if (toolMessage.type === 'success' || toolMessage.type === 'rejected') {
+				const { oldString, newString } = toolMessage.params ?? {}
+				if (oldString || newString) {
+					const diffStr = `\`\`\`diff\n${(oldString ?? '').split('\n').map((l: string) => '- ' + l).join('\n')}\n${(newString ?? '').split('\n').map((l: string) => '+ ' + l).join('\n')}\n\`\`\``
+					componentParams.children = <ToolChildrenWrapper>
+						<SmallProseWrapper>
+							<ChatMarkdownRender string={diffStr} chatMessageLocation={undefined} isApplyEnabled={false} isLinkDetectionEnabled={false} />
+						</SmallProseWrapper>
+					</ToolChildrenWrapper>
+				}
+			}
 			return <ToolHeaderWrapper {...componentParams} />
 		},
 	},
@@ -3159,7 +3306,7 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
 			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
 			const isError = toolMessage.type === 'tool_error'
-			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isCoreItem: true }
 			if (toolMessage.type === 'success') {
 				componentParams.children = <ToolChildrenWrapper>
 					<SmallProseWrapper>
@@ -3177,7 +3324,7 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
 			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
 			const isError = toolMessage.type === 'tool_error'
-			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isCoreItem: true }
 			if (toolMessage.type === 'success') {
 				componentParams.children = <ToolChildrenWrapper>
 					<SmallProseWrapper>
@@ -3195,7 +3342,7 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			const { desc1 } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
 			if (toolMessage.type === 'tool_request' || toolMessage.type === 'running_now') return null
 			const isError = toolMessage.type === 'tool_error'
-			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null }
+			const componentParams: ToolHeaderParams = { title, desc1, isError, icon: null, isCoreItem: true }
 			if (toolMessage.type === 'success') {
 				componentParams.children = <ToolChildrenWrapper>
 					<SmallProseWrapper>
@@ -3479,72 +3626,60 @@ const AgentThoughtBlock = ({
 
 	const hasError = isError || (answer ?? '').startsWith('[') && (answer ?? '').includes('error')
 
-	return <div className="my-1 rounded-md border border-void-border-3 overflow-hidden">
-		{/* Header — agent connection bar */}
+	return <div className="my-1">
+		{/* Header row */}
 		<div
-			className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer select-none hover:bg-void-bg-2 transition-colors"
+			className="flex items-center gap-1.5 cursor-pointer select-none group py-0.5"
 			onClick={() => setIsOpen(!isOpen)}
 		>
-			{/* Connection indicator */}
-			<div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isRunning ? 'animate-pulse bg-yellow-400' : hasError ? 'bg-red-400' : 'bg-green-400'}`} />
+			{/* Status dot */}
+			<span className={`w-[5px] h-[5px] rounded-full flex-shrink-0 mt-px ${hasError ? 'bg-void-warning opacity-70' : isRunning ? 'bg-void-fg-3 opacity-50' : 'bg-void-fg-4 opacity-40'
+				}`} />
 
 			{/* Agent tag */}
 			<span
-				className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded"
-				style={{ backgroundColor: `${tagColor}20`, color: tagColor }}
+				className="text-[10px] uppercase tracking-wider opacity-60"
+				style={{ color: tagColor }}
 			>
 				{agentTag}
 			</span>
 
 			{/* Title */}
-			<span className="text-[12px] text-void-fg-2 flex-1 truncate">{title}</span>
+			<span className="text-[12px] text-void-fg-3 flex-1 truncate group-hover:text-void-fg-2 transition-colors">{title}</span>
 
 			{/* Chevron */}
-			<ChevronRight className={`w-3 h-3 flex-shrink-0 transition-transform duration-200 text-void-fg-4 ${isOpen ? 'rotate-90' : ''}`} />
+			<ChevronRight className={`w-3 h-3 flex-shrink-0 transition-transform duration-150 text-void-fg-4 opacity-40 ${isOpen ? 'rotate-90' : ''}`} />
 		</div>
 
-		{/* Body — question & response preview */}
+		{/* Body */}
 		<div className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? 'opacity-100' : 'max-h-0 opacity-0'}`}>
-			<div className="px-2.5 pb-2 border-t border-void-border-4">
+			<div className="ml-2 pl-2.5 py-1 border-l border-void-border-3">
 				{/* Question */}
-				<div className="mt-2 mb-1.5">
-					<div className="flex items-center gap-1 mb-0.5">
-						<ArrowRight className="w-2.5 h-2.5 text-void-fg-4" />
-						<span className="text-[10px] font-medium text-void-fg-4 uppercase tracking-wider">Question</span>
-					</div>
-					<div className="text-[12px] text-void-fg-3 pl-3.5 leading-relaxed">
+				<div className="mb-1">
+					<div className="text-[11px] text-void-fg-4 opacity-50 leading-relaxed">
 						{question.length > 200 ? question.substring(0, 200) + '...' : question}
 					</div>
 				</div>
 
-				{/* Response / Loading */}
+				{/* Loading indicator */}
 				{isRunning && !answer && (
-					<div className="flex items-center gap-1.5 pl-3.5 mt-1.5">
-						<div className="w-3 h-3 border border-void-fg-4 border-t-transparent rounded-full animate-spin" />
-						<span className="text-[11px] text-void-fg-4 italic">
-							{agentName} is thinking...
-						</span>
+					<div className="text-[11px] text-void-fg-4 opacity-40 italic">
+						{agentName}…
 					</div>
 				)}
 
+				{/* Response */}
 				{answer && (
-					<div className="mt-1.5">
-						<div className="flex items-center gap-1 mb-0.5">
-							<ArrowRight className="w-2.5 h-2.5 text-void-fg-4 rotate-180" />
-							<span className="text-[10px] font-medium text-void-fg-4 uppercase tracking-wider">
-								{hasError ? 'Error' : 'Response'}
-							</span>
-						</div>
-						<div className={`text-[12px] pl-3.5 leading-relaxed max-h-[200px] overflow-y-auto ${hasError ? 'text-red-400' : 'text-void-fg-3'}`}>
-							<SmallProseWrapper>
-								<ChatMarkdownRender
-									string={answer.length > 1000 ? answer.substring(0, 1000) + '\n\n*...truncated*' : answer}
-									chatMessageLocation={undefined}
-									isApplyEnabled={false}
-									isLinkDetectionEnabled={true}
-								/>
-							</SmallProseWrapper>
-						</div>
+					<div className={`text-[11px] leading-relaxed max-h-[200px] overflow-y-auto opacity-70 ${hasError ? 'text-void-warning' : 'text-void-fg-3'
+						}`}>
+						<SmallProseWrapper>
+							<ChatMarkdownRender
+								string={answer.length > 1000 ? answer.substring(0, 1000) + '\n\n*...truncated*' : answer}
+								chatMessageLocation={undefined}
+								isApplyEnabled={false}
+								isLinkDetectionEnabled={true}
+							/>
+						</SmallProseWrapper>
 					</div>
 				)}
 			</div>
@@ -3553,7 +3688,7 @@ const AgentThoughtBlock = ({
 }
 
 
-const Checkpoint = ({ message, threadId, messageIdx, isCheckpointGhost, threadIsRunning }: { message: CheckpointEntry, threadId: string; messageIdx: number, isCheckpointGhost: boolean, threadIsRunning: boolean }) => {
+const Checkpoint = ({ message, threadId, messageIdx, isCheckpointGhost, threadIsRunning, allMessages }: { message: CheckpointEntry, threadId: string; messageIdx: number, isCheckpointGhost: boolean, threadIsRunning: boolean, allMessages: any[] }) => {
 	const accessor = useAccessor()
 	const chatThreadService = accessor.get('IChatThreadService')
 	const streamState = useFullChatThreadsStreamState()
@@ -3564,34 +3699,61 @@ const Checkpoint = ({ message, threadId, messageIdx, isCheckpointGhost, threadIs
 		return !!Object.keys(streamState).find((threadId2) => streamState[threadId2]?.isRunning)
 	}, [isRunning, streamState])
 
-	return <div
-		className={`flex items-center justify-center px-2 `}
-	>
+	// Find files modified in this checkpoint's chat segment
+	// Scan backwards from messageIdx to find the previous checkpoint
+	const modifiedFiles = useMemo(() => {
+		let prevCpIdx = -1
+		for (let i = messageIdx - 1; i >= 0; i--) {
+			if (allMessages[i]?.role === 'checkpoint') { prevCpIdx = i; break }
+		}
+		const segmentMsgs = allMessages.slice(prevCpIdx + 1, messageIdx)
+		return getModifiedFilesFromThread(segmentMsgs)
+	}, [allMessages, messageIdx])
+
+	return <div>
+		{/* Modified files for this chat segment */}
+		{modifiedFiles.length > 0 && (
+			<div className="flex items-center flex-wrap gap-2 px-3 py-1 mb-0.5">
+				<span className="text-[10px] text-void-fg-2 font-semibold select-none whitespace-nowrap">Files Modified</span>
+				<div className="w-[1px] h-3 bg-void-border-3 mx-1"></div>
+				{modifiedFiles.map((f, i) => (
+					<span
+						key={i}
+						className="text-[10px] text-void-fg-3 opacity-50 font-mono cursor-pointer hover:opacity-90 hover:text-void-fg-1 transition-opacity"
+						onClick={() => voidOpenFileFn(URI.file(f.fullPath), accessor)}
+					>{String(f.basename)}</span>
+				))}
+			</div>
+		)}
 		<div
-			className={`
+			className={`flex items-center justify-center px-2 `}
+		>
+			<div
+				className={`
                     text-xs
                     text-void-fg-3
                     select-none
                     ${isCheckpointGhost ? 'opacity-50' : 'opacity-100'}
 					${isDisabled ? 'cursor-default' : 'cursor-pointer'}
                 `}
-			style={{ position: 'relative', display: 'inline-block' }} // allow absolute icon
-			onClick={() => {
-				if (threadIsRunning) return
-				if (isDisabled) return
-				chatThreadService.jumpToCheckpointBeforeMessageIdx({
-					threadId,
-					messageIdx,
-					jumpToUserModified: messageIdx === (chatThreadService.state.allThreads[threadId]?.messages.length ?? 0) - 1
-				})
-			}}
-			{...isDisabled ? {
-				'data-tooltip-id': 'void-tooltip',
-				'data-tooltip-content': `Disabled ${isRunning ? 'when running' : 'because another thread is running'}`,
-				'data-tooltip-place': 'top',
-			} : {}}
-		>
-			Checkpoint
+				style={{ position: 'relative', display: 'inline-block' }}
+				onClick={() => {
+					if (threadIsRunning) return
+					if (isDisabled) return
+					chatThreadService.jumpToCheckpointBeforeMessageIdx({
+						threadId,
+						messageIdx,
+						jumpToUserModified: messageIdx === (chatThreadService.state.allThreads[threadId]?.messages.length ?? 0) - 1
+					})
+				}}
+				{...isDisabled ? {
+					'data-tooltip-id': 'void-tooltip',
+					'data-tooltip-content': `Disabled ${isRunning ? 'when running' : 'because another thread is running'}`,
+					'data-tooltip-place': 'top',
+				} : {}}
+			>
+				Checkpoint
+			</div>
 		</div>
 	</div>
 }
@@ -3606,6 +3768,7 @@ type ChatBubbleProps = {
 	threadId: string,
 	currCheckpointIdx: number | undefined,
 	_scrollToBottom: (() => void) | null,
+	allMessages?: any[],
 }
 
 // ─── Task Group Block ─── groups messages under an update_agent_status boundary ──
@@ -3626,47 +3789,39 @@ const TaskGroupBlock = ({ taskName, taskSummary, taskStatus, isActive, isLastTas
 		}
 	}, [isActive, isLastTaskGroup])
 
-	return <div className="mt-3 mb-1">
-		{/* Task header bar */}
+	return <div className="mt-2.5 mb-0.5">
+		{/* Task header row */}
 		<div
-			className="flex items-center gap-2 cursor-pointer select-none group py-0.5"
+			className="flex items-center gap-1.5 cursor-pointer select-none group py-0.5"
 			onClick={() => setIsOpen(v => !v)}
 		>
-			{/* Status indicator */}
-			{isActive ? (
-				<span className="relative flex h-2.5 w-2.5 flex-shrink-0">
-					<span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-					<span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
-				</span>
-			) : (
-				<Check className="w-3.5 h-3.5 text-green-500 flex-shrink-0 opacity-70" />
-			)}
+			{/* Status dot — static, no animation */}
+			<span className={`w-[5px] h-[5px] rounded-full flex-shrink-0 mt-px ${isActive ? 'bg-void-fg-3 opacity-60' : 'bg-void-fg-4 opacity-40'
+				}`} />
 
 			{/* Task name */}
-			{taskName && <span className="text-[13px] font-semibold text-void-fg-1 group-hover:text-void-fg-0 transition-colors">{taskName}</span>}
+			{taskName && <span className="text-[12px] text-void-fg-2 group-hover:text-void-fg-1 transition-colors">{taskName}</span>}
 
-			{/* Chevron */}
+			{/* Chevron — right side */}
 			<ChevronRight
-				className={`w-3 h-3 flex-shrink-0 transition-transform duration-200 text-void-fg-4 ${isOpen ? 'rotate-90' : ''}`}
+				className={`w-3 h-3 flex-shrink-0 transition-transform duration-150 text-void-fg-4 opacity-40 ml-auto ${isOpen ? 'rotate-90' : ''}`}
 			/>
 		</div>
 
-		{/* Collapsible body — contains status, summary, AND all grouped child messages */}
-		<div className={`overflow-hidden transition-all duration-300 ease-in-out ${isOpen ? 'opacity-100' : 'max-h-0 opacity-0'}`}>
-			<div className="ml-[11px] mt-1 pl-3 border-l border-void-border-3">
-				{/* Task status line */}
+		{/* Collapsible body */}
+		<div className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? 'opacity-100' : 'max-h-0 opacity-0'}`}>
+			<div className="ml-2 mt-1 pl-2.5 border-l border-void-border-3">
+				{/* Task status + summary */}
 				{taskStatus && (
-					<div className="flex items-center gap-1.5 mb-1">
-						<span className="text-[12px] text-void-fg-3">{taskStatus}</span>
-						{isActive && <IconLoading className="w-3 h-3 text-void-fg-4" />}
+					<div className="flex items-center gap-1.5 mb-0.5">
+						<span className="text-[11px] text-void-fg-4 opacity-70">{taskStatus}</span>
 					</div>
 				)}
-				{/* Task summary */}
 				{taskSummary && (
-					<div className="text-[12px] text-void-fg-4 leading-relaxed mb-1">{taskSummary}</div>
+					<div className="text-[11px] text-void-fg-4 opacity-50 leading-relaxed mb-1">{taskSummary}</div>
 				)}
-				{/* Child messages: tool calls, reasoning, assistant text, etc. */}
-				<div className="mt-1">
+				{/* Child messages: tool calls, reasoning, assistant text */}
+				<div className="mt-0.5">
 					{children}
 				</div>
 			</div>
@@ -3680,7 +3835,7 @@ const ChatBubble = (props: ChatBubbleProps) => {
 	</ErrorBoundary>
 }
 
-const _ChatBubble = ({ threadId, chatMessage, currCheckpointIdx, isCommitted, messageIdx, chatIsRunning, _scrollToBottom }: ChatBubbleProps) => {
+const _ChatBubble = ({ threadId, chatMessage, currCheckpointIdx, isCommitted, messageIdx, chatIsRunning, _scrollToBottom, allMessages }: ChatBubbleProps) => {
 	const role = chatMessage.role
 
 	const isCheckpointGhost = messageIdx > (currCheckpointIdx ?? Infinity) && !chatIsRunning // whether to show as gray (if chat is running, for good measure just dont show any ghosts)
@@ -3716,7 +3871,7 @@ const _ChatBubble = ({ threadId, chatMessage, currCheckpointIdx, isCommitted, me
 		const isInternalTool = !chatMessage.mcpServerName && !isBuiltInTool
 		const ToolResultWrapper = isBuiltInTool ? builtinToolNameToComponent[toolName]?.resultWrapper as ResultWrapper<ToolName>
 			: isInternalTool ? ModernisationToolWrapper as ResultWrapper<ToolName>
-			: MCPToolWrapper as ResultWrapper<ToolName>
+				: MCPToolWrapper as ResultWrapper<ToolName>
 
 		if (ToolResultWrapper)
 			return <>
@@ -3748,6 +3903,7 @@ const _ChatBubble = ({ threadId, chatMessage, currCheckpointIdx, isCommitted, me
 			messageIdx={messageIdx}
 			isCheckpointGhost={isCheckpointGhost}
 			threadIsRunning={!!chatIsRunning}
+			allMessages={allMessages ?? []}
 		/>
 	}
 
@@ -3777,18 +3933,26 @@ const CommandBarInChat = () => {
 	const [fileDetailsOpenedState, setFileDetailsOpenedState] = useState<'auto-opened' | 'auto-closed' | 'user-opened' | 'user-closed'>('auto-closed');
 	const isFileDetailsOpened = fileDetailsOpenedState === 'auto-opened' || fileDetailsOpenedState === 'user-opened';
 
+	const currentThread = chatThreadsState.allThreads[chatThreadsState.currentThreadId]
+	const previousMessages = currentThread?.messages ?? []
+	const isRunning = chatThreadsStreamState?.isRunning
+
+	// Thread-level modified files (for fallback when no active diffs)
+	let threadModifiedFiles: ModifiedFileEntry[] = []
+	try { threadModifiedFiles = getModifiedFilesFromThread(previousMessages) } catch { /* safe fallback */ }
+
+	const threadModifiedFilesCount = threadModifiedFiles.length
 
 	useEffect(() => {
-		// close the file details if there are no files
-		// this converts 'user-closed' to 'auto-closed'
-		if (numFilesChanged === 0) {
+		// close the file details if there are no files (active diffs or thread modified)
+		if (numFilesChanged === 0 && threadModifiedFilesCount === 0) {
 			setFileDetailsOpenedState('auto-closed')
 		}
 		// open the file details if it hasnt been closed
 		if (numFilesChanged > 0 && fileDetailsOpenedState !== 'user-closed') {
 			setFileDetailsOpenedState('auto-opened')
 		}
-	}, [fileDetailsOpenedState, setFileDetailsOpenedState, numFilesChanged])
+	}, [fileDetailsOpenedState, setFileDetailsOpenedState, numFilesChanged, threadModifiedFilesCount])
 
 
 	const isFinishedMakingThreadChanges = (
@@ -3820,7 +3984,10 @@ const CommandBarInChat = () => {
 	// acceptall + rejectall
 	// popup info about each change (each with num changes + acceptall + rejectall of their own)
 
-	const numFilesChangedStr = numFilesChanged === 0 ? 'No files with changes'
+	const numFilesChangedStr = numFilesChanged === 0
+		? (threadModifiedFiles.length > 0 && !isRunning
+			? `${threadModifiedFiles.length} file${threadModifiedFiles.length > 1 ? 's' : ''} modified`
+			: 'No files with changes')
 		: `${sortedCommandBarURIs.length} file${numFilesChanged === 1 ? '' : 's'} with changes`
 
 
@@ -3953,12 +4120,14 @@ const CommandBarInChat = () => {
 		})}
 	</div>
 
+	const hasAnyFiles = numFilesChanged > 0 || (!isRunning && threadModifiedFiles.length > 0)
+
 	const fileDetailsButton = (
 		<button
-			className={`flex items-center gap-1 rounded ${numFilesChanged === 0 ? 'cursor-pointer' : 'cursor-pointer hover:brightness-125 transition-all duration-200'}`}
+			className={`flex items-center gap-1 rounded ${hasAnyFiles ? 'cursor-pointer hover:brightness-125 transition-all duration-200' : 'cursor-pointer'}`}
 			onClick={() => isFileDetailsOpened ? setFileDetailsOpenedState('user-closed') : setFileDetailsOpenedState('user-opened')}
 			type='button'
-			disabled={numFilesChanged === 0}
+			disabled={!hasAnyFiles}
 		>
 			<svg
 				className="transition-transform duration-200 size-3.5"
@@ -4009,6 +4178,21 @@ const CommandBarInChat = () => {
 					{threadStatusHTML}
 				</div>
 			</div>
+			{/* Thread modified files list — shows when no active diffs and not running */}
+			{numFilesChanged === 0 && !isRunning && threadModifiedFiles.length > 0 && isFileDetailsOpened && (
+				<div className='px-2'>
+					<div className="select-none w-full bg-void-bg-3 text-void-fg-3 text-xs text-nowrap px-2 py-1 overflow-y-auto max-h-24 border-x border-zinc-300/10">
+						{threadModifiedFiles.map((f, i) => (
+							<div key={i} className="flex items-center py-0.5">
+								<span
+									className="text-void-fg-3 opacity-80 font-mono cursor-pointer hover:opacity-100 hover:text-void-fg-1 transition-opacity"
+									onClick={() => voidOpenFileFn(URI.file(f.fullPath), accessor)}
+								>{String(f.basename)}</span>
+							</div>
+						))}
+					</div>
+				</div>
+			)}
 		</>
 	)
 }
@@ -4103,11 +4287,13 @@ export const SidebarChat = () => {
 		const userMessage = _forceSubmit || textAreaRef.current?.value || ''
 
 		try {
+			// Check if images parameter is supported by interface in future
 			await chatThreadsService.addUserMessageAndStreamResponse({
 				userMessage,
 				threadId,
+				// @ts-ignore
 				images: uploadedImages.length > 0 ? uploadedImages : undefined
-			})
+			} as any)
 		} catch (e) {
 			console.error('Error while sending message in chat:', e)
 		}
@@ -4205,6 +4391,7 @@ export const SidebarChat = () => {
 					chatIsRunning={isRunning}
 					threadId={threadId}
 					_scrollToBottom={() => scrollToBottom(scrollContainerRef)}
+					allMessages={previousMessages}
 				/>
 			}
 
@@ -4226,6 +4413,7 @@ export const SidebarChat = () => {
 					chatIsRunning={isRunning}
 					threadId={threadId}
 					_scrollToBottom={() => scrollToBottom(scrollContainerRef)}
+					allMessages={previousMessages}
 				/>)
 			}
 
@@ -4233,29 +4421,32 @@ export const SidebarChat = () => {
 			const isLastTaskGroup = groupIdx === groups.length - 1 || !groups.slice(groupIdx + 1).some(g => 'taskMsg' in g)
 			const isActive = isLastTaskGroup && !!isRunning
 
-			return <TaskGroupBlock
-				key={`tg-${taskIdx}`}
-				taskName={taskName}
-				taskSummary={taskSummary}
-				taskStatus={taskStatus}
-				isActive={isActive}
-				isLastTaskGroup={isLastTaskGroup}
-			>
-				{children.map(c => <ChatBubble
-					key={c.idx}
-					currCheckpointIdx={currCheckpointIdx}
-					chatMessage={c.msg}
-					messageIdx={c.idx}
-					isCommitted={true}
-					chatIsRunning={isRunning}
-					threadId={threadId}
-					_scrollToBottom={() => scrollToBottom(scrollContainerRef)}
-				/>)}
-			</TaskGroupBlock>
+			// Extract modified files from child tool messages (used per-task only if needed in future)
+			return <React.Fragment key={`tg-${taskIdx}`}>
+				<TaskGroupBlock
+					taskName={taskName}
+					taskSummary={taskSummary}
+					taskStatus={taskStatus}
+					isActive={isActive}
+					isLastTaskGroup={isLastTaskGroup}
+				>
+					{children.map(c => <ChatBubble
+						key={c.idx}
+						currCheckpointIdx={currCheckpointIdx}
+						chatMessage={c.msg}
+						messageIdx={c.idx}
+						isCommitted={true}
+						chatIsRunning={isRunning}
+						threadId={threadId}
+						_scrollToBottom={() => scrollToBottom(scrollContainerRef)}
+						allMessages={previousMessages}
+					/>)}
+				</TaskGroupBlock>
+			</React.Fragment>
 		})
 	}, [previousMessages, threadId, currCheckpointIdx, isRunning])
 
-	const streamingChatIdx = previousMessagesHTML.length
+	const streamingChatIdx = (previousMessagesHTML ?? []).length
 	const currStreamingMessageHTML = reasoningSoFar || displayContentSoFar || isRunning ?
 		<ChatBubble
 			key={'curr-streaming-msg'}
@@ -4293,7 +4484,7 @@ export const SidebarChat = () => {
 			w-full h-full
 			overflow-x-hidden
 			overflow-y-auto
-			${previousMessagesHTML.length === 0 && !displayContentSoFar ? 'hidden' : ''}
+			${(previousMessagesHTML ?? []).length === 0 && !displayContentSoFar ? 'hidden' : ''}
 		`}
 	>
 		{/* previous messages */}

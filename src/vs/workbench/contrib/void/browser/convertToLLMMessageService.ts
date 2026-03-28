@@ -116,18 +116,24 @@ const prepareMessages_openai_tools = (messages: SimpleLLMMessage[]): AnthropicOr
 		// Find the last assistant message in the already-built output and append the tool_call.
 		// Using [...].reverse().find() because newMessages is built sequentially and multiple
 		// tool messages in one turn must all attach to the same assistant entry.
-		const lastAssistantMsg = [...newMessages].reverse().find(m => m.role === 'assistant') as OpenAILLMChatMessage | undefined;
-		if (lastAssistantMsg?.role === 'assistant') {
-			if (!lastAssistantMsg.tool_calls) lastAssistantMsg.tool_calls = [];
-			lastAssistantMsg.tool_calls.push({
-				type: 'function',
-				id: currMsg.id,
-				function: {
-					name: currMsg.name,
-					arguments: JSON.stringify(currMsg.rawParams)
-				}
-			});
+		let lastAssistantMsg = [...newMessages].reverse().find(m => m.role === 'assistant') as OpenAILLMChatMessage | undefined;
+
+		// If no preceding assistant message exists, inject a synthetic one so the
+		// tool result has a valid tool_calls parent (OpenAI requires this).
+		if (!lastAssistantMsg || lastAssistantMsg.role !== 'assistant') {
+			lastAssistantMsg = { role: 'assistant', content: '' };
+			newMessages.push(lastAssistantMsg);
 		}
+
+		if (!lastAssistantMsg.tool_calls) lastAssistantMsg.tool_calls = [];
+		lastAssistantMsg.tool_calls.push({
+			type: 'function',
+			id: currMsg.id,
+			function: {
+				name: currMsg.name,
+				arguments: JSON.stringify(currMsg.rawParams)
+			}
+		});
 
 		// add the tool result
 		newMessages.push({

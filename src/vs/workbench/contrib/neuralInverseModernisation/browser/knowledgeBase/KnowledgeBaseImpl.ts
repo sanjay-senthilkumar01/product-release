@@ -314,6 +314,11 @@ export class KnowledgeBaseImpl extends Disposable implements IKnowledgeBaseServi
 			this._scheduleSave();
 			upsertSessionInIndex(kb, this._storage);
 		}
+		// Notify listeners (e.g. sync service) that the KB is now active.
+		// This is important when init() loads an existing KB from storage — without
+		// firing here, the sync service would never schedule a snapshot push because
+		// it checked isActive=false before init() completed.
+		this._onDidChange.fire();
 	}
 
 	get isActive(): boolean { return !!this._kb; }

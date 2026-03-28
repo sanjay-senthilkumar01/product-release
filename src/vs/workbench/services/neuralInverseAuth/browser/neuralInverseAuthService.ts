@@ -337,7 +337,11 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 
 	async syncWithWebConsole(isActive: boolean = true): Promise<void> {
 		this.logService.info('NeuralInverseAuth: syncWithWebConsole logic started, active=' + isActive);
-		const token = await this.getToken();
+		// Read raw token directly — do NOT call getToken() here because getToken() can call
+		// logout() when the token is expired, and logout() calls syncWithWebConsole(false),
+		// creating an infinite loop. We accept an expired/invalid token here; the server
+		// will return 401 which is handled below, and does NOT re-trigger logout.
+		const token = await this.secretStorageService.get(TOKEN_KEY);
 		if (!token) {
 			this.logService.info('NeuralInverseAuth: Aborting sync - No access token');
 			return;
@@ -380,10 +384,10 @@ export class NeuralInverseAuthService extends Disposable implements INeuralInver
 
 			if (response.statusCode === 401) {
 				this.logService.warn(`NeuralInverseAuth: Unauthorized (401), token expired. Logging out.`);
-				await this.logout();
+				if (isActive) { await this.logout(); } // only logout from active sync, not from logout-triggered sync
 			} else if (response.statusCode === 403) {
 				this.logService.warn(`NeuralInverseAuth: Device Revoked/Blocked (403). Logging out.`);
-				await this.logout();
+				if (isActive) { await this.logout(); }
 			} else if (response.statusCode >= 400) {
 				this.logService.error(`NeuralInverseAuth: Failed to sync: ${response.statusCode}`);
 				this.logService.error(`NeuralInverseAuth: Response body: ${response.body}`);

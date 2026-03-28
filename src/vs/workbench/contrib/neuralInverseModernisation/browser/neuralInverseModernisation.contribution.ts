@@ -35,9 +35,11 @@ import { ModernisationPart } from './ui/modernisationPart.js';
 import { ModernisationStatusContribution } from './statusbar/modernisationStatus.contribution.js';
 import { IModernisationSessionService } from './modernisationSessionService.js';
 import { IKnowledgeBaseService } from './knowledgeBase/service.js';
+import { IModernisationSyncService } from './modernisationSyncService.js';
 
 // Register DI singletons (side-effect imports)
 import './modernisationSessionService.js';
+import './modernisationSyncService.js';
 import './knowledgeBase/index.js';
 import './engine/fingerprint/index.js';
 import './stage3-migration/fingerprintComparisonService.js';
@@ -98,6 +100,7 @@ class ModernisationContribution extends Disposable implements IWorkbenchContribu
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IModernisationSessionService private readonly sessionService: IModernisationSessionService,
 		@IKnowledgeBaseService private readonly kbService: IKnowledgeBaseService,
+		@IModernisationSyncService _syncService: IModernisationSyncService, // ensures sync service is instantiated
 	) {
 		super();
 
