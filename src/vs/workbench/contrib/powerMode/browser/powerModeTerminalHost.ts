@@ -113,6 +113,9 @@ export class PowerModeTerminalHost extends Disposable {
 	// Running time display
 	private _runningTimeInterval: ReturnType<typeof setInterval> | undefined;
 
+	// Column tracker for streaming word-wrap
+	private _streamCol = 2; // starts at 2 (after the 2-space indent)
+
 	constructor(
 		private readonly terminalService: ITerminalService,
 		private readonly powerModeService: IPowerModeService,
@@ -161,6 +164,11 @@ export class PowerModeTerminalHost extends Disposable {
 			rawXterm.onData((data: string) => {
 				this._handleInput(data);
 			});
+		}
+
+		// Large scrollback so users can scroll up through full conversation history
+		if (rawXterm) {
+			rawXterm.options.scrollback = 10000;
 		}
 
 		// Fit terminal to container after a brief delay to allow layout
@@ -831,16 +839,16 @@ export class PowerModeTerminalHost extends Disposable {
 		const start = Date.now();
 		const verb = this._thinkingVerbs[Math.floor(Math.random() * this._thinkingVerbs.length)];
 
-		// Write on a committed line so cursor advances past it
-		this._write(`  ${MAGENTA}⠋${RESET} ${DARK}${verb} for 0.0s...${RESET}\r\n`);
+		// NO trailing \r\n — cursor stays parked on this line for in-place updates
+		this._write(`  ${MAGENTA}⠋${RESET} ${DARK}${verb} for 0.0s...${RESET}`);
 
 		let frameIdx = 0;
 		this._runningTimeInterval = setInterval(() => {
 			const elapsedStr = ((Date.now() - start) / 1000).toFixed(1);
 			frameIdx = (frameIdx + 1) % this._spinnerFrames.length;
 			const frame = this._spinnerFrames[frameIdx];
-			// Move up one line, erase it, reprint
-			this._write(`${ESC}F${ESC}2K  ${MAGENTA}${frame}${RESET} ${DARK}${verb} for ${elapsedStr}s...${RESET}\r\n`);
+			// \r rewinds to the start of the CURRENT line to overwrite
+			this._write(`\r${ESC}K  ${MAGENTA}${frame}${RESET} ${DARK}${verb} for ${elapsedStr}s...${RESET}`);
 		}, 100);
 	}
 
@@ -874,6 +882,7 @@ export class PowerModeTerminalHost extends Disposable {
 			this._write(line());
 			this._isStreaming = false;
 			this._streamingPartId = undefined;
+			this._streamCol = 2; // reset column tracker
 		}
 	}
 
@@ -936,8 +945,8 @@ export class PowerModeTerminalHost extends Disposable {
 		this._drawnRunningTools.add(partId);
 		this._stopThinking();
 		this._endStreaming();
-		// Commit spinner on its own line so cursor sits below it
-		this._write(`  ${CYAN}⠋${RESET}  ${toolName} ${GRAY}${title}${RESET}\r\n`);
+		// NO trailing \r\n — cursor stays parked on this line for in-place updates
+		this._write(`  ${CYAN}⠋${RESET}  ${toolName} ${GRAY}${title}${RESET}`);
 		this._lastDrawnToolPartId = partId;
 
 		const start = Date.now();
@@ -950,8 +959,8 @@ export class PowerModeTerminalHost extends Disposable {
 			const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 			frameIdx = (frameIdx + 1) % this._spinnerFrames.length;
 			const frame = this._spinnerFrames[frameIdx];
-			// Move up one line to overwrite the spinner row
-			this._write(`${ESC}F${ESC}2K  ${CYAN}${frame}${RESET}  ${toolName} ${GRAY}${title} · ${elapsed}s${RESET}\r\n`);
+			// \r rewinds to the start of the CURRENT line to overwrite
+			this._write(`\r${ESC}K  ${CYAN}${frame}${RESET}  ${toolName} ${GRAY}${title} · ${elapsed}s${RESET}`);
 		}, 100);
 		this._activeToolTimers.set(partId, interval);
 	}
@@ -964,8 +973,8 @@ export class PowerModeTerminalHost extends Disposable {
 		}
 
 		if (this._lastDrawnToolPartId === partId) {
-			// Move up one line to overwrite the spinner row with the completed state
-			this._write(`${ESC}F${ESC}2K  ${GREEN}✓${RESET}  ${toolName} ${GRAY}${title || ''}${RESET} ${DARK}${duration}${RESET}\r\n`);
+			// Overwrite the in-place spinner line, then commit with newline
+			this._write(`\r${ESC}K  ${GREEN}✓${RESET}  ${toolName} ${GRAY}${title || ''}${RESET} ${DARK}${duration}${RESET}\r\n`);
 		} else {
 			this._write(line(`  ${GREEN}✓${RESET}  ${toolName} ${GRAY}${title || ''}${RESET} ${DARK}${duration}${RESET}`));
 		}
@@ -979,7 +988,7 @@ export class PowerModeTerminalHost extends Disposable {
 			this._activeToolTimers.delete(partId);
 		}
 		if (this._lastDrawnToolPartId === partId) {
-			this._write(`${ESC}F${ESC}2K  ${RED}✗${RESET}  ${toolName} ${RED}${error}${RESET}\r\n`);
+			this._write(`\r${ESC}K  ${RED}✗${RESET}  ${toolName} ${RED}${error}${RESET}\r\n`);
 		} else {
 			this._write(line(`  ${RED}✗${RESET}  ${toolName} ${RED}${error}${RESET}`));
 		}
@@ -1360,14 +1369,13 @@ ${frames[frame]}${ESC}K`);
 			case 'part-delta': {
 				this._stopThinking();
 				this._streamedPartIds.add(event.partId);
-				// Start on a new line with NO padding.
-				// By printing LLM text at column 0, xterm natively wraps all overflowing words
-				// straight to the next column 0 cleanly without visual jaggedness.
+
 				if (!this._isStreaming || this._streamingPartId !== event.partId) {
 					this._endStreaming();
 					this._isStreaming = true;
 					this._streamingPartId = event.partId;
-					this._write(`\r\n${WHITE}`);
+					this._streamCol = 2;
+					this._write(`\r\n  ${WHITE}`);
 				}
 
 				// Reset stream timeout (120s - reasoning models need more time)
@@ -1384,13 +1392,40 @@ ${frames[frame]}${ESC}K`);
 					}
 				}, 120000);
 
-				// Append delta directly without rewriting the entire buffer
-				let delta = event.delta;
-				if (delta.includes('\n')) {
-					delta = delta.replace(/\n/g, `\r\n  `);
+				// Erase stale cursor before writing new delta
+				if (this._streamingCursor) {
+					this._write(' \b');
+					this._streamingCursor = false;
 				}
 
-				this._write(delta);
+				// Word-wrap the delta at 90 cols with a 2-space left indent
+				const MAX_COL = 90;
+				const INDENT = '  ';
+				const raw = event.delta;
+				let out = '';
+				let col = this._streamCol;
+
+				for (let i = 0; i < raw.length; i++) {
+					const ch = raw[i];
+					if (ch === '\n') {
+						out += '\r\n' + INDENT;
+						col = INDENT.length;
+					} else if (ch === '\r') {
+						// skip bare CR
+					} else {
+						// If adding this char would overflow, break at the last space
+						if (col >= MAX_COL && ch === ' ') {
+							out += '\r\n' + INDENT;
+							col = INDENT.length;
+						} else {
+							out += ch;
+							col++;
+						}
+					}
+				}
+
+				this._streamCol = col;
+				this._write(out);
 
 				// Show the non-destructive block cursor
 				this._write(`${CYAN}▋${RESET}${WHITE}\b`);
