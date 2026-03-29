@@ -85,6 +85,11 @@ jobs:
         env:
           NODE_OPTIONS: "--max-old-space-size=6144"
 
+      - name: Compile extensions (syntax + language features)
+        run: node node_modules/.bin/gulp compile-extensions-build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=6144"
+
       - name: Package macOS arm64
         run: node node_modules/.bin/gulp vscode-darwin-arm64-min-ci
         env:

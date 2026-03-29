@@ -144,6 +144,11 @@ jobs:
         env:
           NODE_OPTIONS: "--max-old-space-size=12288"
 
+      - name: Compile extensions (syntax + language features)
+        run: node_modules\.bin\gulp.cmd compile-extensions-build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=12288"
+
       - name: Ensure WiX on PATH
         shell: pwsh
         run: |
@@ -321,6 +326,11 @@ jobs:
 
       - name: Minify (produces out-vscode-min/)
         run: node_modules\.bin\gulp.cmd minify-vscode
+        env:
+          NODE_OPTIONS: "--max-old-space-size=12288"
+
+      - name: Compile extensions (syntax + language features)
+        run: node_modules\.bin\gulp.cmd compile-extensions-build
         env:
           NODE_OPTIONS: "--max-old-space-size=12288"
 
