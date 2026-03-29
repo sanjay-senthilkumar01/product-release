@@ -88,12 +88,12 @@ export function createSpawnAgentTool(
 
 			const shortId = agent.id.substring(0, 8);
 			const accessNote = (role === 'editor' || role === 'verifier')
-				? '\n  ⚠ Has write/edit/bash access'
+				? '\n  \x1b[33m⚠ Has write/edit/bash access\x1b[0m'
 				: '';
 
 			return {
 				title: `● Spawned ${role} agent`,
-				output: `Agent ${shortId} running in background${accessNote}\n  └─ ${goal.substring(0, 80)}${goal.length > 80 ? '...' : ''}\n\n  Use wait_for_agent to get results`,
+				output: `\x1b[1mAgent ${shortId}\x1b[0m running in background \x1b[90m[${role}]\x1b[0m${accessNote}\n  \x1b[36m└─\x1b[0m ${goal.substring(0, 80)}${goal.length > 80 ? '...' : ''}\n\n  \x1b[90mUse \x1b[36mwait_for_agent\x1b[90m to get results\x1b[0m`,
 				metadata: { agentId: agent.id, role, goal, status: agent.status, canWrite: role === 'editor' || role === 'verifier' },
 			};
 		},
@@ -149,14 +149,14 @@ If completed, includes the result.`,
 			const remainingSeconds = elapsedSeconds % 60;
 			const elapsedStr = elapsedMinutes > 0 ? `${elapsedMinutes}m ${remainingSeconds}s` : `${elapsedSeconds}s`;
 
-			let output = `Agent ${shortId} [${agent.role}]\nStatus: ${statusIcon} ${agent.status} · ${elapsedStr}`;
+			let output = `\x1b[1mAgent ${shortId}\x1b[0m \x1b[90m[${agent.role}]\x1b[0m\nStatus: ${statusIcon} \x1b[1m${agent.status}\x1b[0m · ${elapsedStr}`;
 
 			if (agent.status === 'running') {
-				output += `\n\n${agent.goal}`;
+				output += `\n\n\x1b[36mGoal:\x1b[0m ${agent.goal}`;
 			} else if (agent.status === 'completed' && agent.result) {
-				output += `\n\n${agent.result}`;
+				output += `\n\n\x1b[32m${agent.result}\x1b[0m`;
 			} else if (agent.status === 'failed' && agent.error) {
-				output += `\n\n${agent.error}`;
+				output += `\n\n\x1b[31m${agent.error}\x1b[0m`;
 			}
 
 			return {
